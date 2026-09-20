@@ -3,18 +3,31 @@ const layout = @import("layout.zig");
 const a = @import("os.zig").allocator;
 
 pub const max_workspaces = 32;
+
 pub const Workspace = struct {
     id: u32,
     name_buf: [80]u8 = .{0} ** 80,
     name_len: usize = 0,
     cwd: []const u8,
     model: layout.Model = .{},
-    pub fn name(w: *const Workspace) []const u8 {
+    pub fn customName(w: *const Workspace) []const u8 {
         return w.name_buf[0..w.name_len];
+    }
+    pub fn name(w: *const Workspace) []const u8 {
+        if (w.name_len > 0) return w.customName();
+        const base = std.fs.path.basename(w.cwd);
+        return if (base.len > 0) base else "/";
+    }
+    pub fn follow(w: *Workspace, cwd: []const u8) !bool {
+        if (cwd.len == 0 or std.mem.eql(u8, w.cwd, cwd)) return false;
+        const next = try a.dupe(u8, cwd);
+        a.free(w.cwd);
+        w.cwd = next;
+        return true;
     }
     fn rename(w: *Workspace, value: []const u8) void {
         const trimmed = std.mem.trim(u8, value, " ");
-        const label = if (trimmed.len == 0) "Workspace" else trimmed;
+        const label = trimmed;
         w.name_len = @min(label.len, w.name_buf.len);
         for (label[0..w.name_len], 0..) |ch, i| w.name_buf[i] = if (ch >= 32 and ch < 127) ch else '_';
     }
@@ -25,7 +38,7 @@ pub const Store = struct {
     next_id: u32 = 1,
     next_pane_id: u32 = 1,
     const SavedWorkspace = struct { id: u32, name: []const u8, cwd: []const u8 };
-    const Saved = struct { version: u32 = 1, active: u32, next_id: u32, workspaces: []const SavedWorkspace };
+    const Saved = struct { version: u32 = 2, active: u32, next_id: u32, workspaces: []const SavedWorkspace };
 
     pub fn statePath(socket: []const u8) ![]const u8 {
         const os = @import("os.zig");
@@ -35,7 +48,7 @@ pub const Store = struct {
     }
     pub fn save(s: *Store, path: []const u8) !void {
         var entries: [max_workspaces]SavedWorkspace = undefined;
-        for (s.items.items, 0..) |*w, i| entries[i] = .{ .id = w.id, .name = w.name(), .cwd = w.cwd };
+        for (s.items.items, 0..) |*w, i| entries[i] = .{ .id = w.id, .name = w.customName(), .cwd = w.cwd };
         const bytes = try std.json.Stringify.valueAlloc(a, Saved{ .active = s.current().id, .next_id = s.next_id, .workspaces = entries[0..s.items.items.len] }, .{ .whitespace = .indent_2 });
         defer a.free(bytes);
         try std.fs.cwd().makePath(std.fs.path.dirname(path) orelse ".");
@@ -54,10 +67,10 @@ pub const Store = struct {
             else => return err,
         };
         defer a.free(bytes);
-        const parsed = try std.json.parseFromSlice(Saved, a, bytes, .{});
+        const parsed = try std.json.parseFromSlice(Saved, a, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         const saved = parsed.value;
-        if (saved.version != 1 or saved.workspaces.len == 0 or saved.workspaces.len > max_workspaces) return error.InvalidWorkspaceState;
+        if ((saved.version != 1 and saved.version != 2) or saved.workspaces.len == 0 or saved.workspaces.len > max_workspaces) return error.InvalidWorkspaceState;
         var restored: Store = .{};
         errdefer restored.deinit();
         for (saved.workspaces) |w| {
@@ -119,3 +132,52 @@ pub const Store = struct {
         s.items.items[i].rename(name);
     }
 };
+
+test "automatic workspace names follow folders while overrides survive save and load" {
+    var store: Store = .{};
+    defer store.deinit();
+    const id = try store.add("", ".");
+    _ = try store.current().follow("/tmp/项目");
+    try std.testing.expectEqualStrings("项目", store.current().name());
+    try store.rename(id, "My project");
+    _ = try store.current().follow("/tmp/next");
+    try std.testing.expectEqualStrings("My project", store.current().name());
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    const path = try std.fs.path.join(a, &.{ root, "workspaces.json" });
+    defer a.free(path);
+    try store.save(path);
+    var restored: Store = .{};
+    defer restored.deinit();
+    try std.testing.expect(try restored.load(path));
+    try std.testing.expectEqualStrings("My project", restored.current().name());
+    try store.rename(id, "");
+    try store.save(path);
+    try std.testing.expect(try restored.load(path));
+    _ = try restored.current().follow("/tmp/new");
+    try std.testing.expectEqualStrings("new", restored.current().name());
+    try std.testing.expectEqualStrings("", restored.current().customName());
+    _ = try restored.current().follow("/");
+    try std.testing.expectEqualStrings("/", restored.current().name());
+}
+
+test "old workspace state drops pins and preserves all existing names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const legacy =
+        \\{"version":1,"active":1,"next_id":3,"workspaces":[{"id":1,"name":"Default","cwd":"/tmp/project","pinned":true},{"id":2,"name":"Custom","cwd":"/tmp/other","pinned":true}]}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "workspaces.json", .data = legacy });
+    const path = try tmp.dir.realpathAlloc(a, "workspaces.json");
+    defer a.free(path);
+    var store: Store = .{};
+    defer store.deinit();
+    try std.testing.expect(try store.load(path));
+    try std.testing.expectEqualStrings("Default", store.current().name());
+    try std.testing.expectEqualStrings("Custom", store.items.items[1].name());
+    try store.rename(store.current().id, "");
+    _ = try store.current().follow("/tmp/moved");
+    try std.testing.expectEqualStrings("moved", store.current().name());
+}

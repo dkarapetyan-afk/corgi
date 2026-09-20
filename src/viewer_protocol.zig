@@ -22,7 +22,7 @@ pub fn handle(s: anytype, cl: anytype, v: std.json.Value) anyerror!bool {
         if (s.runtime.panes.items.len == 0 and s.runtime.workspaces.current().model.count == 0) {
             const cwd = agents.str(v, "cwd");
             if (s.default_folder_pending and cwd.len > 0) {
-                try s.runtime.workspaces.edit(s.runtime.workspaces.current().id, s.runtime.workspaces.current().name(), cwd);
+                try s.runtime.workspaces.edit(s.runtime.workspaces.current().id, s.runtime.workspaces.current().customName(), cwd);
                 s.default_folder_pending = false;
                 s.saveWorkspaces();
             }

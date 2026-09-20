@@ -16,6 +16,22 @@ class Reloads(smoke.Runtime):
         return self.rpc(op='pane.create',protocol=1,workspace=self.session()['workspaces'][0]['id'],cwd=self.temp.name,command=command,title=title)['pane']
     def reload(self, exe=smoke.EXE):
         return self.rpc(op='server.reload',protocol=1,executable=exe)
+    def test_workspace_automatic_and_custom_names_survive_handoff(self):
+        first=self.new()
+        folder=pathlib.Path(self.temp.name,'project');folder.mkdir()
+        ws=self.session()['workspaces'][0]['id']
+        self.reload()
+        self.rpc(op='send',pane=first,text='cd '+shlex.quote(str(folder)),enter=True)
+        self.until(lambda:self.session()['workspaces'][0]['name']=='project')
+        self.assertEqual(self.session()['workspaces'][0]['custom_name'],'')
+        self.rpc(op='workspace.edit',workspace=ws,name='Override')
+        self.reload()
+        self.rpc(op='send',pane=first,text='cd /',enter=True)
+        self.until(lambda:self.session()['panes'][0]['cwd']=='/')
+        self.assertEqual(self.session()['workspaces'][0]['name'],'Override')
+        self.rpc(op='workspace.edit',workspace=ws,name='')
+        self.until(lambda:self.session()['workspaces'][0]['name']=='/')
+
     def test_handoff_preserves_processes_viewers_and_queued_controls(self):
         first=self.new();second=self.new();a=Viewer(self);b=Viewer(self)
         a.focus(first);b.focus(second);a.input('\x02')

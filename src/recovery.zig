@@ -46,7 +46,7 @@ pub fn load(r: *Runtime, socket: []const u8, executable: []const u8) !bool {
         else => return err,
     };
     defer a.free(bytes);
-    const parsed = try std.json.parseFromSlice(checkpoint.State, a, bytes, .{});
+    const parsed = try std.json.parseFromSlice(checkpoint.State, a, bytes, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     try checkpoint.restore(r, parsed.value, false, socket, executable);
     return true;

@@ -181,6 +181,7 @@ pub fn Controller(comptime remote: bool) type {
             const workspace_id = owner.id;
             if (workspace_id != s.runtime.workspaces.current().id) try s.switchWorkspace(workspace_id);
             try s.model().focus(id);
+            s.followWorkspaceDirectories();
         }
         pub fn area(s: *Server) layout.Rect {
             return s.sidebarView(0).area();
@@ -188,7 +189,20 @@ pub fn Controller(comptime remote: bool) type {
         fn sidebarView(s: *Server, count: usize) sidebar.View {
             return sidebar.View.init(s.width, s.height, s.sidebar_open, s.sidebar_offset, count).withWorkspaces(s.runtime.workspaces.items.items.len, s.workspace_offset);
         }
+        fn followWorkspaceDirectories(s: *Server) void {
+            var changed = false;
+            for (s.runtime.workspaces.items.items) |*ws| {
+                if (ws.model.count == 0) continue;
+                const p = s.pane(ws.model.tabs[0].focus) orelse continue;
+                changed = (ws.follow(p.cwd) catch false) or changed;
+            }
+            if (changed) {
+                s.dirty = true;
+                if (!remote) s.saveWorkspaces();
+            }
+        }
         pub fn workspaceEntries(s: *Server, out: *[workspace.max_workspaces]sidebar.WorkspaceEntry) []sidebar.WorkspaceEntry {
+            s.followWorkspaceDirectories();
             for (s.runtime.workspaces.items.items, 0..) |*ws, i| out[i] = .{ .id = ws.id, .name = ws.name(), .cwd = ws.cwd, .active = i == s.runtime.workspaces.active };
             return out[0..s.runtime.workspaces.items.items.len];
         }
@@ -310,7 +324,7 @@ pub fn Controller(comptime remote: bool) type {
         }
         fn beginWorkspace(s: *Server, id: ?u32) void {
             s.dismissName();
-            const initial = if (id) |value| s.runtime.workspaces.items.items[s.runtime.workspaces.index(value) orelse return].name() else "";
+            const initial = if (id) |value| s.runtime.workspaces.items.items[s.runtime.workspaces.index(value) orelse return].customName() else "";
             s.name_dialog = naming.Dialog.init(.{ .workspace_name = id }, initial);
             s.prepareName();
         }
@@ -338,6 +352,7 @@ pub fn Controller(comptime remote: bool) type {
             s.prepareName();
         }
         fn beginNewTab(s: *Server) !void {
+            s.followWorkspaceDirectories();
             const cwd = try a.dupe(u8, s.runtime.workspaces.current().cwd);
             s.dismissName();
             s.name_dialog = naming.Dialog.init(.{ .create = cwd }, "");
@@ -421,7 +436,7 @@ pub fn Controller(comptime remote: bool) type {
             const dir = try workspace.Store.directory(cwd);
             defer a.free(dir);
             if (s.default_folder_pending and s.runtime.workspaces.current().id == 1) {
-                try s.runtime.workspaces.edit(1, s.runtime.workspaces.current().name(), dir);
+                try s.runtime.workspaces.edit(1, s.runtime.workspaces.current().customName(), dir);
                 s.saveWorkspaces();
             }
             s.default_folder_pending = false;
@@ -581,6 +596,7 @@ pub fn Controller(comptime remote: bool) type {
             s.notice(" Nothing needs your attention");
         }
         pub fn action(s: *Server, name: []const u8, value: []const u8) !void {
+            s.followWorkspaceDirectories();
             if (remote and (eq(name, "break") or eq(name, "join"))) {
                 if (s.model().count == 0) return error.NoPane;
                 const id = s.model().tab().focus;
@@ -1215,6 +1231,7 @@ pub fn Controller(comptime remote: bool) type {
                 s.message_len = 0;
                 s.native_notice = null;
             }
+            s.followWorkspaceDirectories();
             s.reconcile();
         }
         pub fn reconcile(s: *Server) void {
@@ -1369,7 +1386,8 @@ pub fn Controller(comptime remote: bool) type {
                     const ws = &s.runtime.workspaces.items.items[index];
                     const name = agents.str(v, "name");
                     const cwd = agents.str(v, "cwd");
-                    try s.runtime.workspaces.edit(id, if (name.len == 0) ws.name() else name, if (cwd.len == 0) ws.cwd else cwd);
+                    try s.runtime.workspaces.edit(id, if (v.object.get("name") == null) ws.customName() else name, if (cwd.len == 0) ws.cwd else cwd);
+                    s.followWorkspaceDirectories();
                     if (id == 1) s.default_folder_pending = false;
                     s.saveWorkspaces();
                     s.dirty = true;
@@ -1643,7 +1661,7 @@ pub fn Controller(comptime remote: bool) type {
             } else if (try s.runtime.workspaces.load(state_path)) {
                 s.default_folder_pending = false;
             } else {
-                _ = try s.runtime.workspaces.add("Default", ".");
+                _ = try s.runtime.workspaces.add("", ".");
                 try s.runtime.workspaces.save(state_path);
             }
             if (s.inherited_listener == null) for ([_][]const u8{ "codex", "claude" }) |provider| {
@@ -1688,6 +1706,7 @@ pub fn Controller(comptime remote: bool) type {
                 if (now - s.last_detection >= 250) {
                     s.last_detection = now;
                     for (s.runtime.panes.items) |*p| if (!p.terminal.exited) s.detectPane(p);
+                    s.followWorkspaceDirectories();
                 }
                 for (s.runtime.sessions.items) |*session| {
                     const old_seq = session.next_seq;

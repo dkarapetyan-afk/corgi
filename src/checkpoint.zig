@@ -73,7 +73,7 @@ pub const Screen = struct {
 };
 pub const Pane = struct { id: u32, cwd: []const u8, screen: Screen, agent: agents.Agent = .{}, detection: @import("detection.zig").Tracker = .{}, resume_hint: Resume = .{} };
 pub const Closed = struct { cwd: []const u8, screen: Screen, tab: layout.Tab, workspace_id: u32 };
-pub const Workspace = struct { id: u32, name: []const u8, cwd: []const u8, tabs: []const protocol.Tab, active: usize, pinned: bool = false, focus: []const u32, zoom: []const bool };
+pub const Workspace = struct { id: u32, name: []const u8, cwd: []const u8, tabs: []const protocol.Tab, active: usize, custom_name: ?[]const u8 = null, focus: []const u32, zoom: []const bool };
 pub const Native = struct {
     id: u32,
     provider: agents.Provider,
@@ -120,7 +120,7 @@ pub fn capture(alloc: std.mem.Allocator, r: *runtime.Runtime, live: bool) !State
             f.* = tab.focus;
             z.* = tab.zoom;
         }
-        out.* = .{ .id = w.id, .name = w.name(), .cwd = w.cwd, .tabs = try protocol.encodeTabs(alloc, &w.model), .active = w.model.active, .pinned = if (@hasField(workspace.Workspace, "pinned")) w.pinned else false, .focus = focus, .zoom = zoom };
+        out.* = .{ .id = w.id, .name = w.name(), .cwd = w.cwd, .tabs = try protocol.encodeTabs(alloc, &w.model), .active = w.model.active, .custom_name = w.customName(), .focus = focus, .zoom = zoom };
     }
     const panes = try alloc.alloc(Pane, r.panes.items.len);
     for (r.panes.items, panes) |*p, *out| {
@@ -147,8 +147,7 @@ pub fn restore(r: *runtime.Runtime, state: State, live: bool, socket: []const u8
     for (state.workspaces) |w| {
         if (w.id == 0 or w.id >= state.next_workspace or r.workspaces.index(w.id) != null or !std.fs.path.isAbsolute(w.cwd)) return error.InvalidCheckpoint;
         var item: workspace.Workspace = .{ .id = w.id, .cwd = try a.dupe(u8, w.cwd) };
-        if (@hasField(workspace.Workspace, "pinned")) item.pinned = w.pinned;
-        item.name_len = agents.clean(&item.name_buf, w.name);
+        item.name_len = agents.clean(&item.name_buf, w.custom_name orelse w.name);
         item.model = try protocol.modelFromTabs(w.tabs, &.{});
         if (w.focus.len != w.tabs.len or w.zoom.len != w.tabs.len or (w.tabs.len > 0 and w.active >= w.tabs.len)) return error.InvalidCheckpoint;
         for (item.model.tabs[0..item.model.count], 0..) |*tab, i| {

@@ -47,6 +47,28 @@ class Viewers(unittest.TestCase):
         ws=self.session()['workspaces'][0]['id']
         return self.rpc(op='pane.create',protocol=1,workspace=ws,cwd=self.temp.name,command=command,title=title)['pane']
     def geometry(self):return {p['id']:(p['cols'],p['rows']) for p in self.session()['panes']}
+    def test_workspace_name_uses_first_tab_in_both_viewers(self):
+        one=pathlib.Path(self.temp.name,'one');one.mkdir()
+        two=pathlib.Path(self.temp.name,'two');two.mkdir()
+        first=self.rpc(op='new',cwd=str(one),command='exec /bin/sh')['pane']
+        second=self.rpc(op='new',cwd=str(two),command='exec /bin/sh')['pane']
+        a=Viewer(self);b=Viewer(self)
+        a.focus(first);b.focus(second)
+        self.assertIn('/one',a.poll()['data'])
+        self.assertIn('/one',b.poll()['data'])
+        self.assertNotIn('📌',a.state['data'])
+        b.action('move-tab','left')
+        self.assertIn('/two',a.poll()['data'])
+        self.assertIn('/two',b.poll()['data'])
+        b.input('\x02W');b.input('Custom\r')
+        self.assertIn('Custom',a.poll()['data'])
+        self.assertIn('Custom',b.poll()['data'])
+        b.input('\x02W');b.input('\x03\r')
+        self.assertEqual(self.session()['workspaces'][0]['custom_name'],'')
+        self.assertIn('/two',a.poll()['data'])
+        a.action('new')
+        self.assertEqual(next(p['cwd'] for p in self.session()['panes'] if p['id']==a.state['pane']),str(two.resolve()))
+
     def test_selection_and_dialogs_are_viewer_specific(self):
         first=self.new(title='First');second=self.new(title='Second')
         ws=self.rpc(op='workspace.create',protocol=1,name='Other',cwd=self.temp.name)['workspace']

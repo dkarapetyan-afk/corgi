@@ -156,7 +156,7 @@ pub const Runtime = struct {
             const previous = if (r.workspaces.index(ws.id)) |i| r.workspaces.items.items[i].model else layout.Model{};
             // Do not resolve remote paths or persist the viewer's selection.
             var item: workspace.Workspace = .{ .id = ws.id, .cwd = try a.dupe(u8, ws.cwd), .model = try protocol.modelFromTabs(ws.tabs, &previous) };
-            item.name_len = agents.clean(&item.name_buf, ws.name);
+            item.name_len = agents.clean(&item.name_buf, ws.custom_name orelse ws.name);
             try next.items.append(a, item);
             if (ws.id == selected) next.active = index;
             r.tokens[index] = ws.token;

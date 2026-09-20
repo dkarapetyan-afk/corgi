@@ -150,7 +150,7 @@ fn importInner(socket: []const u8, executable: []const u8, state_fd: c_int, cont
         const bytes = try file.readToEndAlloc(a, 256 * 1024 * 1024);
         defer a.free(bytes);
         file.close();
-        const parsed = try std.json.parseFromSlice(Manifest, a, bytes, .{});
+        const parsed = try std.json.parseFromSlice(Manifest, a, bytes, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         const m = parsed.value;
         if (m.version != 1 or m.terminal_abi != @import("corgi_options").terminal_checkpoint_abi or m.clients.len > 32) return error.IncompatibleCheckpoint;
