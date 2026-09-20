@@ -8,6 +8,7 @@ import pathlib
 import re
 import select
 import shlex
+import shutil
 import socket
 import struct
 import subprocess
@@ -67,7 +68,9 @@ class Runtime(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='wrangler-test-')
         self.path = self.temp.name + '/control.sock'
         fake = pathlib.Path(self.temp.name, 'provider'); fake.write_text(FAKE); fake.chmod(0o700)
-        self.env = {**os.environ, 'WRANGLER_SOCKET':self.path, 'WRANGLER_BELL':'off', 'WRANGLER_CODEX_BIN':str(fake), 'WRANGLER_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
+        # Provider settings must be isolated: startup now installs ordinary-CLI hooks.
+        self.env = {**os.environ, 'HOME':self.temp.name, 'CODEX_HOME':self.temp.name+'/.codex', 'CLAUDE_CONFIG_DIR':self.temp.name+'/.claude', 'WRANGLER_SOCKET':self.path, 'WRANGLER_BELL':'off', 'WRANGLER_CODEX_BIN':str(fake), 'WRANGLER_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
+        self.env.pop('CODEX_THREAD_ID',None)
         self.client = None
         self.client_file = None
         self.proc = None
@@ -104,6 +107,10 @@ class Runtime(unittest.TestCase):
         self.client_file=self.client.makefile('rb')
         self.write(op='attach',cols=80,rows=24,cwd=self.temp.name)
         self.assertEqual(self.message()['type'],'attached')
+    def reconnect(self):
+        self.client_file.close();self.client_file=None
+        self.client.close();self.client=None
+        self.attach();self.get_type('frame')
     def write(self,**v): self.client.sendall(json.dumps(v).encode()+b'\n')
     def message(self): return json.loads(self.client_file.readline())
     def get_type(self,kind):
@@ -113,11 +120,18 @@ class Runtime(unittest.TestCase):
         self.fail('missing message '+kind)
     def input(self,text): self.write(op='input',data=text)
     def click(self,x,y):self.input(f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m')
-    def frame_with(self,text,cols=80,rows=24):
+    def frame_with(self,text,cols=80,rows=24,row=None):
         for _ in range(100):
             screen=screen_text(self.get_type('frame')['data'],cols,rows)
-            if any(text in row for row in screen):return screen
+            if any(text in line for line in (screen if row is None else screen[row:row+1])):return screen
         self.fail('missing visible text '+text)
+    def tab_frame(self,text,cols=80,rows=24):
+        return self.frame_with(text,cols,rows,row=0)
+    def tabs_are(self,labels):
+        for _ in range(100):
+            screen=screen_text(self.get_type('frame')['data'])
+            if ' '.join(screen[0][28:].split())==labels+' +':return screen
+        self.fail('missing tab labels '+labels)
     def click_text(self,screen,text):
         for y,row in enumerate(screen):
             if text in row:
@@ -131,17 +145,17 @@ class Runtime(unittest.TestCase):
         two=pathlib.Path(self.temp.name,'two');two.mkdir()
         first=self.rpc(op='new',cwd=str(one),title='One')['pane']
         second=self.rpc(op='new',cwd=str(two),title='Two')['pane']
-        self.attach();screen=self.frame_with('2:Two')
-        self.right_click_tab(screen,'1:One');menu=self.frame_with('|New tab')
+        self.attach();screen=self.tab_frame('Two')
+        self.right_click_tab(screen,'One');menu=self.frame_with('|New tab')
         self.assertTrue(any('|Rename' in row for row in menu))
         self.assertTrue(any('|Close' in row for row in menu))
         self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),second)
         self.input('\x1b[200~touch CONTEXT_LEAK\r\x1b[201~')
         self.click_text(menu,'Rename');self.frame_with('rename tab')
-        self.input('First\r');screen=self.frame_with('1:First')
+        self.input('First\r');screen=self.tab_frame('First')
         self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),first)
         self.rpc(op='focus',pane=second)
-        self.right_click_tab(screen,'1:First');menu=self.frame_with('|New tab')
+        self.right_click_tab(screen,'First');menu=self.frame_with('|New tab')
         self.click_text(menu,'New tab');self.frame_with('new tab')
         self.assertEqual(self.rpc(op='list')['tabs'],2)
         self.input('\r')
@@ -154,8 +168,8 @@ class Runtime(unittest.TestCase):
         first=self.rpc(op='new',cwd=self.temp.name,title='First')['pane']
         self.rpc(op='split',cwd=self.temp.name,axis='right')
         second=self.rpc(op='new',cwd=self.temp.name,title='Second')['pane']
-        self.attach();screen=self.frame_with('2:Second')
-        self.right_click_tab(screen,'1:First');menu=self.frame_with('|New tab')
+        self.attach();screen=self.tab_frame('Second')
+        self.right_click_tab(screen,'First');menu=self.frame_with('|New tab')
         self.click_text(menu,'Close');confirm=self.frame_with('[ Close ]')
         self.rpc(op='focus',pane=second)
         self.rpc(op='action',name='move-tab',value='left')
@@ -163,31 +177,31 @@ class Runtime(unittest.TestCase):
         self.until(lambda:[p['id'] for p in self.panes()]==[second])
         self.assertEqual(self.rpc(op='list')['closed_panes'],2)
         gone=self.rpc(op='new',cwd=self.temp.name,title='Gone')['pane']
-        self.rpc(op='focus',pane=second);screen=self.frame_with('2:Gone')
-        self.right_click_tab(screen,'2:Gone');self.frame_with('|New tab')
+        self.rpc(op='focus',pane=second);screen=self.tab_frame('Gone')
+        self.right_click_tab(screen,'Gone');self.frame_with('|New tab')
         self.rpc(op='close',pane=gone)
         # Dismiss when its target disappears, never reuse the neighboring tab.
         for _ in range(100):
             screen=screen_text(self.get_type('frame')['data'])
-            if '|New tab' not in '\n'.join(screen) and '2:Gone' not in screen[0]:break
+            if '|New tab' not in '\n'.join(screen) and 'Gone' not in screen[0]:break
         else:self.fail('stale tab menu')
         self.assertEqual([p['id'] for p in self.panes()],[second])
     def test_tab_context_keyboard_dismissal_and_minimum_size(self):
-        self.attach();screen=self.frame_with('1:shell')
-        self.right_click_tab(screen,'1:shell');menu=self.frame_with('|New tab')
+        self.attach();screen=self.frame_with(' 1 ')
+        self.right_click_tab(screen,' 1 ');menu=self.frame_with('|New tab')
         self.click(79,23);screen=self.frame_with('^B commands')
         self.assertNotIn('|New tab','\n'.join(screen))
-        self.right_click_tab(screen,'1:shell');self.frame_with('|New tab')
+        self.right_click_tab(screen,' 1 ');self.frame_with('|New tab')
         self.input('\x1b');screen=self.frame_with('^B commands')
         self.assertNotIn('|New tab','\n'.join(screen))
         self.write(op='size',cols=10,rows=4)
-        screen=self.frame_with('1:shel',10,4)
-        self.right_click_tab(screen,'1:shel');menu=self.frame_with('|New tab',10,4)
+        screen=self.frame_with(' 1 ',10,4)
+        self.right_click_tab(screen,' 1 ');menu=self.frame_with('|New tab',10,4)
         self.assertTrue(any('|Rename' in row for row in menu))
         self.assertTrue(any('|Close' in row for row in menu))
         self.input('\x1b[');self.input('B\r')
         self.frame_with('rename t',10,4);self.input('Tiny\r')
-        self.frame_with('1:Tiny',10,4)
+        self.tab_frame('Tiny',10,4)
     def test_prefix_menu_keyboard_mouse_and_no_paste_leak(self):
         self.attach();self.get_type('frame')
         self.input('\x02');menu=self.frame_with('Commands')
@@ -217,15 +231,18 @@ class Runtime(unittest.TestCase):
         self.input("printf '%s%s\\n' MENU_ CLOSED\r")
         pane=next(p for p in self.panes() if p['focused'])['id']
         self.until(lambda:'MENU_CLOSED' in self.run_cli('read',str(pane)))
-    def test_plus_creates_tab_and_prefills_editable_name(self):
+    def test_plus_creates_tab_and_previews_automatic_number(self):
         self.attach();initial=self.frame_with(' + ')
+        self.assertEqual(initial[0].index(' + ')-28,10)
         self.click_text(initial[:1],' + ')
         prompt=self.frame_with('new tab')
         self.assertEqual(self.rpc(op='list')['tabs'],1)
         title_row=next(i for i,row in enumerate(prompt) if 'new tab' in row)
-        self.assertIn(pathlib.Path(self.temp.name).name,prompt[title_row+2])
+        self.assertEqual(prompt[title_row+2].split('│')[1].strip(),'2')
         self.input('My work\r')
-        screen=self.frame_with('2:My work')
+        screen=self.tab_frame('My work')
+        self.assertNotIn('2:My work',screen[0])
+        self.assertEqual(screen[0].index(' + ')-28,20)
         self.assertNotIn('new tab','\n'.join(screen))
         pane=next(p for p in self.panes() if p['focused'])
         self.assertTrue(pathlib.Path(pane['cwd']).samefile(self.temp.name))
@@ -233,8 +250,41 @@ class Runtime(unittest.TestCase):
         self.input('\x1b');screen=self.frame_with('^B commands')
         self.assertEqual(self.rpc(op='list')['tabs'],2)
         self.click_text(screen[:1],' + ');self.frame_with('new tab')
-        self.input('\r');screen=self.frame_with('3:'+pathlib.Path(self.temp.name).name[:16])
+        self.input('\r');screen=self.frame_with(' 3 ')
         self.assertEqual(self.rpc(op='list')['tabs'],3)
+    def test_unnamed_tabs_recompute_numbers_after_reorder_close_and_restore(self):
+        self.attach();self.frame_with(' 1 ')
+        first=self.panes()[0]['id']
+        self.input('\x02c');self.frame_with('new tab')
+        self.rpc(op='action',name='new')
+        screen=self.frame_with('│3')  # A draft does not freeze the next position.
+        self.input('\r');screen=self.tabs_are('1 2 3')
+        third=next(p['id'] for p in self.panes() if p['focused'])
+        self.rpc(op='hook',pane=third,provider='codex',seq=1,event={'hook_event_name':'SessionStart','session_id':'numbering'})
+        self.frame_with('Tab 3')
+        self.rpc(op='action',name='move-tab',value='left');screen=self.frame_with('Tab 2')
+        self.assertEqual(' '.join(screen[0][28:].split()),'1 2 3 +')
+        self.rpc(op='close',pane=first);screen=self.frame_with('Tab 1')
+        self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +');self.assertNotIn(' 3 ',screen[0])
+        self.input('\x02T');self.frame_with('rename tab')
+        self.rpc(op='action',name='move-tab',value='right');self.frame_with('│2')
+        self.input('\r');screen=self.frame_with('Tab 2')
+        self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +')  # Saving the preview keeps the name unset.
+        self.input('\x02TPinned\r');self.tab_frame('Pinned')
+        self.input('\x02T\x03');self.frame_with('│2')
+        self.input('\r');screen=self.frame_with('Tab 2')
+        self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +')
+        self.input('\x02T2\r');self.tabs_are('1 2')
+        self.rpc(op='action',name='move-tab',value='left');self.tabs_are('2 2')
+        self.rpc(op='action',name='undo-close');screen=self.frame_with(' 3 ')
+        self.assertEqual(' '.join(screen[0][28:].split()),'2 2 3 +')
+        second=next(p['id'] for p in self.panes() if p['id']!=third and not p['focused'])
+        self.rpc(op='close',pane=second);screen=self.tabs_are('2 2')
+        self.assertNotIn(' 3 ',screen[0])
+        self.rpc(op='split',cwd=self.temp.name,axis='right')
+        self.rpc(op='action',name='break');screen=self.tabs_are('2 2 3')
+        self.run_cli('new','sleep 30');screen=self.tabs_are('2 2 3 4')
+        self.assertNotIn('shell',screen[0])
     def test_menu_paging_and_plus_remain_usable_in_narrow_terminal(self):
         self.attach();self.get_type('frame')
         self.write(op='size',cols=30,rows=8)
@@ -243,7 +293,7 @@ class Runtime(unittest.TestCase):
         self.click_text(menu,'Next >');menu=self.frame_with('Split right',30,8)
         self.click_text(menu,'Split right');self.until(lambda:len(self.panes())==2)
         for i in range(4):self.rpc(op='new',cwd=self.temp.name,title='Long tab name '+str(i))
-        screen=self.frame_with('5:Long tab',30,8)
+        screen=self.tab_frame('Long tab',30,8)
         self.click_text(screen[:1],' + ')
         self.frame_with('new tab',30,8);self.input('\r')
         self.until(lambda:self.rpc(op='list')['tabs']==6)
@@ -253,31 +303,31 @@ class Runtime(unittest.TestCase):
         self.assertTrue(any('┌' in row and '┐' in row for row in dialog))
         self.click_text(dialog,'^C clear')
         self.input('ac\x1b[Db');dialog=self.frame_with('│abc')
-        self.click_text(dialog,'↵ save');screen=self.frame_with('1:abc')
+        self.click_text(dialog,'↵ save');screen=self.tab_frame('abc')
         self.input('\x02T');dialog=self.frame_with('rename tab')
         self.input('discarded');self.frame_with('│discarded')
-        self.click_text(dialog,'esc cancel');screen=self.frame_with('1:abc')
+        self.click_text(dialog,'esc cancel');screen=self.tab_frame('abc')
         self.assertNotIn('discarded',screen[0])
         self.input('\x02T');self.frame_with('rename tab')
         self.input('\x03\x1b[200~new\rname\x1b[201~')
         dialog=self.frame_with('│newname')
-        self.click_text(dialog,'↵ save');self.frame_with('1:newname')
+        self.click_text(dialog,'↵ save');self.tab_frame('newname')
         self.input('\x02c');dialog=self.frame_with('new tab')
-        self.click_text(dialog,'esc cancel');self.frame_with('1:newname')
+        self.click_text(dialog,'esc cancel');self.tab_frame('newname')
         self.assertEqual(self.rpc(op='list')['tabs'],1)
         self.assertEqual(self.rpc(op='list')['closed_panes'],0)
     def test_name_dialog_retains_target_and_failed_creation_is_cancelable(self):
         self.attach();self.get_type('frame')
         self.input('\x02T');self.frame_with('rename tab')
         self.rpc(op='new',cwd=self.temp.name,title='Other')
-        self.input('Original\r');self.frame_with('1:Original')
+        self.input('Original\r');self.tab_frame('Original')
         self.assertEqual(self.rpc(op='list')['tabs'],2)
         folder=pathlib.Path(self.temp.name,'removed');folder.mkdir()
         self.rpc(op='new',cwd=str(folder),title='Removed')
         self.input('\x02c');self.frame_with('new tab');folder.rmdir()
         self.input('\r');dialog=self.frame_with('Could not save.')
         self.assertEqual(self.rpc(op='list')['tabs'],3)
-        self.click_text(dialog,'esc cancel');self.frame_with('3:Removed')
+        self.click_text(dialog,'esc cancel');self.tab_frame('Removed')
         self.assertTrue(self.rpc(op='ping')['ok'])
     def test_tab_pane_identity_and_process_survival(self):
         first=self.rpc(op='new',cwd=self.temp.name,command="printf 'PERSIST\\n'; exec /bin/sh")['pane']
@@ -297,19 +347,19 @@ class Runtime(unittest.TestCase):
         self.rpc(op='send',pane=first,text='exit',enter=True)
         self.until(lambda:[p['id'] for p in self.panes()]==[third])
         self.assertTrue(self.panes()[0]['focused']);self.assertEqual(self.rpc(op='list')['tabs'],1)
-    def test_last_shell_exit_and_keyboard_undo_preserve_output_and_cwd(self):
+    def test_last_shell_exit_detaches_and_keyboard_undo_preserves_output_and_cwd(self):
         self.attach();self.get_type('frame')
         sub=pathlib.Path(self.temp.name,'nested');sub.mkdir()
         self.input('cd nested; printf "SAVED_OUTPUT\\n"\r')
         self.until(lambda:'SAVED_OUTPUT' in self.run_cli('read','1'))
         self.until(lambda:pathlib.Path(self.panes()[0]['cwd']).samefile(sub))
         self.input('exit\r');self.until(lambda:self.rpc(op='list')['tabs']==0)
-        while 'No panes.' not in self.get_type('frame')['data']:pass
+        self.get_type('detach')
         self.assertEqual(self.rpc(op='list')['closed_panes'],1)
-        # Empty-view actions must not leave a stale rename target.
-        self.input('\x02T\r\x02u')
-        self.until(lambda:len(self.panes())==1)
-        pane=self.panes()[0];self.assertNotEqual(pane['id'],1)
+        self.reconnect()
+        self.input('\x02u')
+        self.until(lambda:len(self.panes())==2)
+        pane=next(p for p in self.panes() if p['focused']);self.assertNotEqual(pane['id'],1)
         self.assertFalse(pane['exited']);self.assertEqual(pane['provider'],'other')
         self.assertTrue(pathlib.Path(pane['cwd']).samefile(sub))
         self.assertIn('SAVED_OUTPUT',self.run_cli('read',str(pane['id'])))
@@ -336,9 +386,10 @@ class Runtime(unittest.TestCase):
         self.until(lambda:'line-49' in self.run_cli('read','1'))
         self.input('\x02TStored name\r\x02[/missing')
         self.rpc(op='close',pane=1)
+        self.get_type('detach');self.reconnect()
         self.input('\x02u')
-        self.until(lambda:len(self.panes())==1)
-        pane=self.panes()[0]['id']
+        self.until(lambda:len(self.panes())==2)
+        pane=next(p['id'] for p in self.panes() if p['focused'])
         self.input('\x02[g')
         self.until(lambda:'SCROLLBACK_SENTINEL' in self.run_cli('read',str(pane)))
         while 'Stored name' not in self.get_type('frame')['data']:pass
@@ -430,7 +481,7 @@ while True:
         self.until(lambda:self.panes()[0]['focused'] and self.panes()[0]['attention']=='none')
         self.assertEqual(self.panes()[0]['state'],'blocked')
         self.rpc(op='action',name='rename',value='Renamed')
-        screen=self.frame_with('1:Renamed')
+        screen=self.tab_frame('Renamed')
         self.assertIn('Renamed','\n'.join(row[:27] for row in screen))
         hook('UserPromptSubmit');self.frame_with('codex  working')
         hook('Stop');self.frame_with('codex  idle')
@@ -504,6 +555,99 @@ while True:
         self.until(lambda:self.panes()[0]['state']=='working')
         for provider in ('claude','codex'):
             config=json.loads(self.run_cli('hooks',provider));self.assertIn('PermissionRequest',config['hooks'])
+    def restart_runtime(self):
+        self.run_cli('shutdown')
+        self.until(lambda:not pathlib.Path(self.path).exists())
+        self.run_cli('start')
+    def test_automatic_hook_install_preserves_settings_and_is_idempotent(self):
+        original={'theme':'dark','hooks':{'Stop':[{'hooks':[{'type':'command','command':'echo existing'}]}]}}
+        paths=[pathlib.Path(self.env['CODEX_HOME'],'hooks.json'),pathlib.Path(self.env['CLAUDE_CONFIG_DIR'],'settings.json')]
+        for path in paths:
+            path.parent.mkdir();path.write_text(json.dumps(original))
+        self.restart_runtime()
+        contents=[]
+        for path in paths:
+            self.until(lambda:'WRANGLER_BIN' in path.read_text())
+            saved=json.loads(path.read_text());self.assertEqual(saved['theme'],'dark')
+            self.assertEqual(saved['hooks']['Stop'][0],original['hooks']['Stop'][0])
+            self.assertEqual(json.loads(path.with_name(path.name+'.wrangler-backup').read_text()),original)
+            contents.append((path.read_bytes(),path.stat().st_mtime_ns))
+            command=saved['hooks']['Stop'][-1]['hooks'][0]['command']
+            outside={k:v for k,v in self.env.items() if not k.startswith('WRANGLER_')}
+            result=subprocess.run(['/bin/sh','-c',command],env=outside,input='{}',text=True,capture_output=True,timeout=3)
+            self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
+        self.restart_runtime()
+        # A new pane request waits behind startup installation.
+        self.rpc(op='new',cwd=self.temp.name)
+        for path,expected in zip(paths,contents):self.assertEqual((path.read_bytes(),path.stat().st_mtime_ns),expected)
+    def test_invalid_or_symlink_settings_are_left_intact(self):
+        codex=pathlib.Path(self.env['CODEX_HOME']);codex.mkdir()
+        claude=pathlib.Path(self.env['CLAUDE_CONFIG_DIR']);claude.mkdir()
+        bad=codex/'hooks.json';bad.write_text('{broken')
+        target=pathlib.Path(self.temp.name,'external.json');target.write_text('{}')
+        (claude/'settings.json').symlink_to(target)
+        self.restart_runtime();self.rpc(op='new',cwd=self.temp.name)
+        self.assertEqual(bad.read_text(),'{broken');self.assertEqual(target.read_text(),'{}')
+        self.assertTrue((claude/'settings.json').is_symlink())
+    def ordinary_agent(self,provider,hooks=False):
+        program=pathlib.Path(self.temp.name,provider)
+        program.write_text('#!'+sys.executable+'\n'+r'''
+import os,sys,json,pathlib,subprocess
+provider=pathlib.Path(sys.argv[0]).name
+path=pathlib.Path(os.environ['CODEX_HOME'],'hooks.json') if provider=='codex' else pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'],'settings.json')
+def event(name):
+    if not path.exists():return
+    for group in json.loads(path.read_text()).get('hooks',{}).get(name,[]):
+        for hook in group['hooks']:
+            subprocess.run(['/bin/sh','-c',hook['command']],input=json.dumps({'hook_event_name':name,'session_id':'ordinary-'+provider}),text=True)
+event('SessionStart')
+print('\x1b[2J\x1b[H\x1b]2;✳ Ready\x07› ',flush=True)
+for line in sys.stdin:
+    command=line.strip()
+    if command=='exit':break
+    if command=='work':
+        event('UserPromptSubmit');print('\x1b[2J\x1b[H\x1b]2;⠋ Task\x07Working (esc to interrupt)',flush=True)
+    elif command=='block':
+        event('PermissionRequest');print('\x1b[2J\x1b[H\x1b]2;Action Required\x07enter to confirm or esc to cancel',flush=True)
+    elif command=='stop':
+        event('Stop');print('\x1b[2J\x1b[H\x1b]2;✳ Ready\x07› ',flush=True)
+event('SessionEnd')
+''');program.chmod(0o700)
+        if hooks:
+            pathlib.Path(self.env['CODEX_HOME' if provider=='codex' else 'CLAUDE_CONFIG_DIR']).mkdir(exist_ok=True)
+            self.restart_runtime()
+        pane=self.rpc(op='new',cwd=self.temp.name)['pane']
+        self.rpc(op='send',pane=pane,text='PATH='+shlex.quote(self.temp.name)+':$PATH '+provider,enter=True)
+        self.until(lambda:any(p['id']==pane and p['provider']==provider for p in self.panes()))
+        return pane
+    def test_plain_commands_gain_hooks_without_wrappers(self):
+        for provider in ('codex','claude'):
+            pane=self.ordinary_agent(provider,hooks=True)
+            self.until(lambda:self.panes()[0]['session']=='ordinary-'+provider)
+            for command,state in [('work','working'),('block','blocked'),('stop','idle')]:
+                self.rpc(op='send',pane=pane,text=command,enter=True)
+                self.until(lambda:self.panes()[0]['state']==state)
+            self.rpc(op='send',pane=pane,text='exit',enter=True)
+            self.until(lambda:self.panes()[0]['provider']=='other')
+            self.assertEqual(self.panes()[0]['session'],'')
+    def test_plain_agent_detection_and_terminal_attention_without_hooks(self):
+        pane=self.ordinary_agent('codex')
+        self.until(lambda:self.panes()[0]['state']=='idle')
+        self.assertEqual(self.panes()[0]['session'],'')
+        for command,state in [('work','working'),('block','blocked'),('stop','idle')]:
+            self.rpc(op='send',pane=pane,text=command,enter=True)
+            self.until(lambda:self.panes()[0]['state']==state)
+        self.rpc(op='send',pane=pane,text='exit',enter=True)
+        self.until(lambda:self.panes()[0]['provider']=='other')
+    @unittest.skipUnless(shutil.which('bun'),'Bun is not installed')
+    def test_bun_agent_detection(self):
+        script=pathlib.Path(self.temp.name,'node_modules/@anthropic-ai/claude-code/cli.js')
+        script.parent.mkdir(parents=True)
+        script.write_text('console.log("\\x1b]2;✳ Bun agent\\x07");setInterval(()=>{},1000);')
+        pane=self.rpc(op='new',cwd=self.temp.name,command=shlex.quote(shutil.which('bun'))+' '+shlex.quote(str(script)))['pane']
+        self.until(lambda:self.panes()[0]['provider']=='claude')
+        self.until(lambda:self.panes()[0]['state']=='idle')
+        self.rpc(op='close',pane=pane)
     def test_native_handshake_retained_approvals_and_event_rotation(self):
         for provider in ('codex','claude'):
             ident=self.rpc(op='native.start',provider=provider,cwd=self.temp.name)['session']
@@ -544,6 +688,19 @@ while True:
         events=self.rpc(op='native.events',session=ident)['events']
         self.assertTrue(any(json.loads(e['line']).get('result',{}).get('version')=='fixture' for e in events))
     def test_real_client_restores_terminal_on_detach(self):
+        self.check_real_client_exit(b'\x02q',1)
+    def test_real_client_returns_to_terminal_on_last_shell_exit(self):
+        self.check_real_client_exit(b'exit\r',0)
+        self.assertEqual(self.rpc(op='list')['closed_panes'],1)
+    def test_real_client_returns_to_terminal_on_last_tab_close(self):
+        self.rpc(op='new',cwd=self.temp.name)
+        self.rpc(op='split',cwd=self.temp.name,axis='right')
+        ident=self.rpc(op='native.start',provider='codex',cwd=self.temp.name)['session']
+        # Input following confirmation must not recreate tabs after detaching.
+        self.check_real_client_exit(b'\x02Xy\x02c\r',0)
+        self.assertEqual(self.rpc(op='list')['closed_panes'],2)
+        self.assertEqual(self.rpc(op='native.list')['sessions'][0]['id'],ident)
+    def check_real_client_exit(self,keys,remaining_panes):
         self.master,slave=os.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
         before=termios.tcgetattr(slave)
         self.proc=subprocess.Popen([EXE],env=self.env,stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
@@ -553,15 +710,18 @@ while True:
             if ready:collected.extend(os.read(self.master,65536))
             if b'wrangler' in collected:break
         self.assertIn(b'wrangler',collected)
-        os.write(self.master,b'\x02q')
+        os.write(self.master,keys)
         end=time.monotonic()+4
         while self.proc.poll() is None and time.monotonic()<end:
             ready,_,_=select.select([self.master],[],[],.1)
             if ready: collected.extend(os.read(self.master,65536))
         self.proc.wait(timeout=1)
+        self.assertEqual(self.proc.returncode,0)
+        while select.select([self.master],[],[],0)[0]:collected.extend(os.read(self.master,65536))
+        self.assertIn(b'\x1b[?1049l',collected)
         self.assertEqual(termios.tcgetattr(slave),before)
         os.close(slave)
-        self.assertEqual(len(self.panes()),1)
+        self.assertEqual(len(self.panes()),remaining_panes)
 
 class Discovery(unittest.TestCase):
     def setUp(self):

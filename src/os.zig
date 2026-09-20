@@ -14,6 +14,7 @@ pub const c = @cImport({
         @cInclude("util.h");
         @cInclude("libproc.h");
         @cInclude("sys/proc_info.h");
+        @cInclude("sys/sysctl.h");
     } else @cInclude("pty.h");
 });
 pub fn sig_ignore(_: c_int) callconv(.c) void {}

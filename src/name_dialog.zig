@@ -9,8 +9,6 @@ pub const Dialog = struct {
     len: usize = 0,
     cursor: usize = 0,
     selected: bool = true,
-    fallback: [80]u8 = .{0} ** 80,
-    fallback_len: usize = 0,
     failed: bool = false,
 
     pub fn init(target: Target, initial: []const u8) Dialog {
@@ -18,13 +16,10 @@ pub const Dialog = struct {
         d.len = @min(initial.len, d.text.len);
         for (initial[0..d.len], 0..) |ch, i| d.text[i] = if (ch >= 32 and ch < 127) ch else '_';
         d.cursor = d.len;
-        d.fallback = d.text;
-        d.fallback_len = d.len;
         return d;
     }
     pub fn name(d: *const Dialog) []const u8 {
-        const trimmed = std.mem.trim(u8, d.text[0..d.len], " ");
-        return if (trimmed.len > 0) trimmed else d.fallback[0..d.fallback_len];
+        return std.mem.trim(u8, d.text[0..d.len], " ");
     }
     pub fn clear(d: *Dialog) void {
         d.len = 0;
@@ -117,7 +112,7 @@ pub const View = struct {
         };
         return .none;
     }
-    pub fn draw(v: View, d: Dialog, w: *std.Io.Writer) !void {
+    pub fn draw(v: View, d: Dialog, w: *std.Io.Writer, number: usize) !void {
         const panel = "\x1b[0;38;2;205;214;244;48;2;24;24;37m";
         const border = "\x1b[0;38;2;137;180;250;48;2;24;24;37m";
         for (0..v.height) |row| {
@@ -143,9 +138,14 @@ pub const View = struct {
         try w.print("\x1b[{d};{d}H\x1b[0;38;2;205;214;244;48;2;49;50;68m", .{ v.field_y + 1, v.x + 2 });
         try w.splatByteAll(' ', v.width - 2);
         try w.print("\x1b[{d};{d}H", .{ v.field_y + 1, v.x + 2 });
-        if (d.selected) try w.writeAll("\x1b[38;2;24;27;32;48;2;137;180;250m");
-        const end = @min(d.len, v.offset + v.width - 2);
-        try w.writeAll(d.text[v.offset..end]);
+        if (d.len == 0) {
+            // This is a preview of the current position, never an editable/saved name.
+            try w.print("\x1b[38;2;125;132;143m{d}", .{number});
+        } else {
+            if (d.selected) try w.writeAll("\x1b[38;2;24;27;32;48;2;137;180;250m");
+            const end = @min(d.len, v.offset + v.width - 2);
+            try w.writeAll(d.text[v.offset..end]);
+        }
         for (v.buttons(), 0..) |b, i| {
             try w.print("\x1b[{d};{d}H{s}", .{ v.buttons_y + 1, b.x + 1, if (i == 0) "\x1b[1;38;2;24;27;32;48;2;137;180;250m" else "\x1b[1;38;2;205;214;244;48;2;49;50;68m" });
             if (b.padded) try w.writeByte(' ');
@@ -172,5 +172,5 @@ test "name editing supports selection, insertion, cursor movement and clear" {
     try std.testing.expectEqualStrings("a", d.name());
     _ = d.key(3);
     try std.testing.expectEqual(@as(usize, 0), d.len);
-    try std.testing.expectEqualStrings("original", d.name());
+    try std.testing.expectEqualStrings("", d.name());
 }

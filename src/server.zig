@@ -88,6 +88,7 @@ pub const Server = struct {
     search_skip: usize = 0,
     last_frame: i64 = 0,
     last_bell: i64 = 0,
+    last_detection: i64 = 0,
 
     fn area(s: *Server) layout.Rect {
         return s.sidebarView(0).area();
@@ -101,7 +102,11 @@ pub const Server = struct {
             for (s.panes.items) |*p| {
                 if (p.agent.provider == .other or s.model.tabForPane(p.id) != tab_index) continue;
                 entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model.tab().focus == p.id, .activity = p.agent.label() };
-                entries[count].setTitle(tab.title());
+                if (tab.name_len > 0) {
+                    entries[count].setTitle(tab.title());
+                } else {
+                    entries[count].title_len = (std.fmt.bufPrint(&entries[count].title, "Tab {d}", .{tab_index + 1}) catch unreachable).len;
+                }
                 count += 1;
             }
         }
@@ -220,8 +225,7 @@ pub const Server = struct {
         const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
         const cwd = current orelse try a.dupe(u8, if (s.focused()) |p| p.cwd else ".");
         s.dismissName();
-        const title = std.fs.path.basename(cwd);
-        s.name_dialog = naming.Dialog.init(.{ .create = cwd }, if (title.len == 0 or eq(title, ".")) "shell" else title);
+        s.name_dialog = naming.Dialog.init(.{ .create = cwd }, "");
         s.prepareName();
     }
     fn prepareName(s: *Server) void {
@@ -266,7 +270,7 @@ pub const Server = struct {
         const dir = try a.dupe(u8, cwd);
         errdefer a.free(dir);
         const before = s.model;
-        const id = if (split) |axis| try s.model.split(axis) else try s.model.newTab(if (title.len == 0) "shell" else title);
+        const id = if (split) |axis| try s.model.split(axis) else try s.model.newTab(title);
         errdefer s.model = before;
         try s.panes.ensureUnusedCapacity(a, 1);
         try t.spawn(dir, s.socket, id, s.executable, command);
@@ -320,6 +324,13 @@ pub const Server = struct {
         }
         s.dirty = true;
         try s.resizePanes();
+        if (s.model.count == 0) {
+            s.dismissName();
+            for (s.clients.items) |*cl| if (cl.attached) {
+                try cl.queue(.{ .type = "detach" });
+                cl.attached = false;
+            };
+        }
     }
     fn refreshCwd(p: *render.Pane) void {
         if (p.terminal.exited) return;
@@ -378,8 +389,7 @@ pub const Server = struct {
             const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
             defer if (current) |dir| a.free(dir);
             const cwd = current orelse if (s.focused()) |p| p.cwd else ".";
-            const title = std.fs.path.basename(cwd);
-            _ = try s.create(null, cwd, null, if (title.len == 0 or eq(title, ".")) "shell" else title);
+            _ = try s.create(null, cwd, null, "");
             s.copy_mode = false;
         } else if (eq(name, "sidebar")) {
             s.sidebar_open = !s.sidebar_open;
@@ -606,6 +616,10 @@ pub const Server = struct {
         try s.keybuf.appendSlice(a, data);
         var used: usize = 0;
         while (used < s.keybuf.items.len) {
+            if (!cl.attached) {
+                s.keybuf.clearRetainingCapacity();
+                return;
+            }
             const rest = s.keybuf.items[used..];
             if (rest[0] != 27) {
                 if (s.paste) {
@@ -901,13 +915,16 @@ pub const Server = struct {
             s.ui_mouse_down = false;
             s.copy_mode = false;
             s.dismissName();
+            s.paste = false;
+            s.paste_to_pane = false;
+            s.paste_to_name = false;
             s.resize_mode = false;
             s.confirm = .none;
             s.confirm_tab = null;
             s.keybuf.clearRetainingCapacity();
             s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
             s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
-            if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "shell");
+            if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "");
             try s.resizePanes();
             s.acknowledge();
             s.dirty = true;
@@ -958,6 +975,9 @@ pub const Server = struct {
             } else {
                 const provider = std.meta.stringToEnum(agents.Provider, agents.str(v, "provider")) orelse return error.BadProvider;
                 const event = v.object.get("event") orelse return error.NoEvent;
+                // Bind a newly launched foreground process before applying its
+                // first hook, including back-to-back launches in the same pane.
+                s.detectPane(p);
                 const viewed = s.watched and s.model.count > 0 and s.model.tab().focus == id and s.hasClient();
                 const ding = p.agent.apply(provider, event, number(v, "seq", std.time.microTimestamp()), viewed);
                 if (ding) {
@@ -976,9 +996,31 @@ pub const Server = struct {
         for (s.clients.items) |cl| if (cl.attached and !cl.dead) return true;
         return false;
     }
+    fn detectPane(s: *Server, p: *render.Pane) void {
+        const detection = @import("detection.zig");
+        const job = detection.foreground(p.terminal.fd);
+        const before = p.agent;
+        const live_screen = p.terminal.vt.screens.active.pages.viewport == .active;
+        const text = if (job != null and p.agent.last_seq == 0 and live_screen) p.terminal.text() catch null else null;
+        defer if (text) |bytes| a.free(bytes);
+        const watched = s.watched and s.model.count > 0 and s.model.tab().focus == p.id and s.hasClient();
+        const ding = p.detection.update(&p.agent, job, p.terminal.vt.getTitle() orelse "", text orelse "", watched);
+        if (!std.meta.eql(before, p.agent)) s.dirty = true;
+        if (ding) {
+            s.bell = true;
+            if (s.bell_kind != .needs_input) s.bell_kind = p.agent.attention;
+        }
+    }
     pub fn run(s: *Server) !void {
         _ = c.signal(c.SIGPIPE, os.sig_ignore);
         const fd = try os.listen(s.socket);
+        for ([_][]const u8{ "codex", "claude" }) |provider| {
+            @import("integration.zig").install(provider) catch |err| {
+                std.log.warn("{s} hook setup: {s}; using automatic detection", .{ provider, @errorName(err) });
+                var msg: [180]u8 = undefined;
+                s.notice(std.fmt.bufPrint(&msg, "{s} hooks: {s}; automatic detection is active", .{ provider, @errorName(err) }) catch "Hook setup failed; automatic detection is active");
+            };
+        }
         defer {
             _ = c.close(fd);
             std.fs.cwd().deleteFile(s.socket) catch {};
@@ -1020,6 +1062,11 @@ pub const Server = struct {
                     copy.focus(p.id) catch continue;
                     if (copy.active == s.model.active and (!s.model.tab().zoom or s.model.tab().focus == p.id)) s.dirty = true;
                 }
+            }
+            const now = std.time.milliTimestamp();
+            if (now - s.last_detection >= 250) {
+                s.last_detection = now;
+                for (s.panes.items) |*p| if (!p.terminal.exited) s.detectPane(p);
             }
             for (s.sessions.items) |*session| {
                 const old_state = session.state;

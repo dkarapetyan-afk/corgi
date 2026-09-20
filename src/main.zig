@@ -79,7 +79,7 @@ fn run() !void {
         const split = eq(cmd, "split");
         const command_index: usize = if (split) 3 else 2;
         const command = if (args.len > command_index) args[command_index] else "";
-        return request(path, .{ .op = cmd, .cwd = cwd, .axis = if (split and args.len > 2) args[2] else "right", .command = command, .title = "shell" }, false);
+        return request(path, .{ .op = cmd, .cwd = cwd, .axis = if (split and args.len > 2) args[2] else "right", .command = command }, false);
     }
     if (eq(cmd, "focus") or eq(cmd, "close") or eq(cmd, "read") or eq(cmd, "send")) {
         if (args.len < 3) return error.Usage;
@@ -179,7 +179,7 @@ const help =
     \\  wrangler action NAME [VALUE]     zoom, rename, next, prev, tab,
     \\                                   focus, swap, resize, move-tab,
     \\                                   attention, mute, close-tab, undo-close
-    \\  wrangler agent claude|codex ...   launch with session-local hooks
+    \\  wrangler agent claude|codex ...   optional discovered-binary launcher
     \\  wrangler hooks claude|codex       print hook configuration
     \\  wrangler which codex             show automatically selected executable
     \\  wrangler native start PROVIDER    durable native JSONL session
@@ -207,4 +207,5 @@ test {
     _ = @import("agents.zig");
     _ = @import("terminal.zig");
     _ = @import("integration.zig");
+    _ = @import("detection.zig");
 }

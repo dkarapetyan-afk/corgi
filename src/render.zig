@@ -6,7 +6,7 @@ const commands = @import("commands.zig");
 const naming = @import("name_dialog.zig");
 const sidebar = @import("sidebar.zig");
 const a = @import("os.zig").allocator;
-pub const Pane = struct { id: layout.Id, terminal: *terminal.Terminal, agent: agents.Agent = .{}, cwd: []const u8 };
+pub const Pane = struct { id: layout.Id, terminal: *terminal.Terminal, agent: agents.Agent = .{}, detection: @import("detection.zig").Tracker = .{}, cwd: []const u8 };
 pub const Buffer = std.Io.Writer.Allocating;
 pub const Ui = struct {
     message: []const u8,
@@ -22,7 +22,13 @@ pub const Ui = struct {
     agents: []const sidebar.Entry = &.{},
 };
 pub fn tabWidth(tab: layout.Tab, index: usize) usize {
-    return @min(tab.title().len, 16) + (if (index + 1 >= 10) @as(usize, 5) else 4);
+    const digits: usize = if (index + 1 >= 10) 2 else 1;
+    return @max(10, 2 + (if (tab.name_len > 0) @min(tab.title().len, 16) else digits));
+}
+fn tabExtent(tab: layout.Tab, index: usize, first: usize, remaining: usize) usize {
+    const width = tabWidth(tab, index);
+    // Clip only when even the first tab cannot fit; avoid tiny trailing tabs.
+    return if (index == first) @min(width, remaining) else if (width <= remaining) width else 0;
 }
 pub fn tabStart(model: *const layout.Model, width: u16) usize {
     if (model.count == 0) return 0;
@@ -38,7 +44,12 @@ pub fn tabStart(model: *const layout.Model, width: u16) usize {
 pub fn addTabX(model: *const layout.Model, width: u16) u16 {
     const available = width -| 3;
     var x: usize = 0;
-    for (model.tabs[tabStart(model, available)..model.count], tabStart(model, available)..) |tab, i| x += @min(tabWidth(tab, i), available - x);
+    const first = tabStart(model, available);
+    for (model.tabs[first..model.count], first..) |tab, i| {
+        const len = tabExtent(tab, i, first, available - x);
+        if (len == 0) break;
+        x += len;
+    }
     return @intCast(x);
 }
 pub fn tabAt(model: *const layout.Model, width: u16, x: u16) ?usize {
@@ -46,7 +57,8 @@ pub fn tabAt(model: *const layout.Model, width: u16, x: u16) ?usize {
     var start: usize = 0;
     const first = tabStart(model, available);
     for (model.tabs[first..model.count], first..) |tab, i| {
-        const len = @min(tabWidth(tab, i), available - start);
+        const len = tabExtent(tab, i, first, available - start);
+        if (len == 0) break;
         if (x >= start and x < start + len) return i;
         start += len;
     }
@@ -63,12 +75,19 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     const tab_space = width - side.tabX() -| 3;
     const start = tabStart(model, tab_space);
     for (model.tabs[start..model.count], start..) |tab, i| {
-        if (x >= tab_space) break;
+        const len = tabExtent(tab, i, start, tab_space - x);
+        if (len == 0) break;
         try w.writeAll(if (i == model.active) "\x1b[1;38;2;226;230;233;48;2;48;53;61m" else "\x1b[0;38;2;125;132;143;48;2;24;27;32m");
         var name: [96]u8 = undefined;
-        const text = try std.fmt.bufPrint(&name, " {d}:{s} ", .{ i + 1, tab.title()[0..@min(tab.title().len, 16)] });
-        const len = @min(text.len, tab_space - x);
-        try w.writeAll(text[0..len]);
+        const text = if (tab.name_len == 0)
+            try std.fmt.bufPrint(&name, "{d}", .{i + 1})
+        else
+            tab.title()[0..@min(tab.title().len, 16)];
+        const text_len = @min(text.len, len);
+        const padding = (len - text_len) / 2;
+        try w.splatByteAll(' ', padding);
+        try w.writeAll(text[0..text_len]);
+        try w.splatByteAll(' ', len - text_len - padding);
         x += len;
     }
     try w.writeAll("\x1b[1;38;2;161;194;178;48;2;35;40;47m + ");
@@ -167,7 +186,16 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     };
     if (ui.menu) |menu| try menu.draw(w);
     if (ui.tab_menu) |menu| try menu.draw(w, width, height);
-    if (ui.dialog) |dialog| try naming.View.init(width, height, dialog).draw(dialog, w);
+    if (ui.dialog) |dialog| {
+        var number = model.count + 1;
+        if (dialog.target == .rename) for (model.tabs[0..model.count], 0..) |tab, i| {
+            if (tab.id == dialog.target.rename) {
+                number = i + 1;
+                break;
+            }
+        };
+        try naming.View.init(width, height, dialog).draw(dialog, w, number);
+    }
     try w.writeAll("\x1b[?2026l");
     return out.toOwnedSlice();
 }

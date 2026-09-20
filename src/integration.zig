@@ -15,6 +15,14 @@ pub fn hook(provider: []const u8, path: []const u8) !void {
     }
     const parsed = std.json.parseFromSlice(std.json.Value, a, input.items, .{}) catch return;
     defer parsed.deinit();
+    if (std.mem.eql(u8, provider, "codex")) {
+        // Codex tools/subagents inherit the pane environment. Their sessions
+        // must not take ownership of the parent terminal's sidebar entry.
+        if (os.env("CODEX_THREAD_ID")) |parent| {
+            const session = @import("agents.zig").str(parsed.value, "session_id");
+            if (parent.len > 0 and !std.mem.eql(u8, parent, session)) return;
+        }
+    }
     const fd = os.connect(path) catch return;
     defer _ = os.c.close(fd);
     try os.sendJson(fd, .{ .op = "hook", .provider = provider, .pane = id, .event = parsed.value, .seq = std.time.microTimestamp() });
@@ -22,6 +30,9 @@ pub fn hook(provider: []const u8, path: []const u8) !void {
 pub fn config(provider: []const u8, executable: []const u8) ![]u8 {
     const command = try hookCommand(provider, executable);
     defer a.free(command);
+    return configCommand(provider, command);
+}
+fn configCommand(provider: []const u8, command: []const u8) ![]u8 {
     var hooks: std.json.ObjectMap = .init(a);
     defer {
         var it = hooks.iterator();
@@ -65,6 +76,103 @@ fn hookCommand(provider: []const u8, executable: []const u8) ![]u8 {
     defer a.free(quoted);
     return std.fmt.allocPrint(a, "{s} hook {s}", .{ quoted, provider });
 }
+// A stable definition survives moving/rebuilding Wrangler and is a no-op in
+// ordinary terminals. The pane sets WRANGLER_BIN to its actual executable.
+fn installedCommand(provider: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "if [ -n \"${{WRANGLER_PANE:-}}\" ] && [ -n \"${{WRANGLER_SOCKET:-}}\" ] && [ -x \"${{WRANGLER_BIN:-}}\" ]; then \"$WRANGLER_BIN\" hook {s}; fi", .{provider});
+}
+
+/// Merge into the existing provider JSON; never replace other hook handlers.
+/// The arena owns both parsed data and appended entries until serialization.
+pub fn mergedConfig(allocator: std.mem.Allocator, provider: []const u8, existing: []const u8) !?[]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const mem = arena.allocator();
+    const parsed = try std.json.parseFromSlice(std.json.Value, mem, existing, .{ .allocate = .alloc_always });
+    var root = parsed.value;
+    if (root != .object) return error.InvalidHookSettings;
+    const entry = try root.object.getOrPut("hooks");
+    if (!entry.found_existing) entry.value_ptr.* = .{ .object = .init(mem) };
+    if (entry.value_ptr.* != .object) return error.InvalidHookSettings;
+    const hooks = &entry.value_ptr.object;
+    const command = try installedCommand(provider);
+    defer a.free(command);
+    const generated = try configCommand(provider, command);
+    defer a.free(generated);
+    const template = try std.json.parseFromSlice(std.json.Value, mem, generated, .{});
+    var events = template.value.object.get("hooks").?.object.iterator();
+    var changed = false;
+    while (events.next()) |event| {
+        const groups = try hooks.getOrPut(event.key_ptr.*);
+        if (!groups.found_existing) groups.value_ptr.* = .{ .array = .init(mem) };
+        if (groups.value_ptr.* != .array) return error.InvalidHookSettings;
+        var found = false;
+        for (groups.value_ptr.array.items) |group| {
+            if (group != .object) return error.InvalidHookSettings;
+            const handlers = group.object.get("hooks") orelse return error.InvalidHookSettings;
+            if (handlers != .array) return error.InvalidHookSettings;
+            for (handlers.array.items) |handler| {
+                if (std.mem.eql(u8, @import("agents.zig").str(handler, "command"), command)) found = true;
+            }
+        }
+        if (found) continue;
+        try groups.value_ptr.array.append(event.value_ptr.array.items[0]);
+        changed = true;
+    }
+    if (!changed) return null;
+    return try std.json.Stringify.valueAlloc(allocator, root, .{ .whitespace = .indent_2 });
+}
+
+pub fn install(provider: []const u8) !void {
+    const home_dir = os.env("HOME") orelse return;
+    const override = os.env(if (std.mem.eql(u8, provider, "codex")) "CODEX_HOME" else "CLAUDE_CONFIG_DIR");
+    const directory = if (override) |dir| try a.dupe(u8, dir) else try std.fs.path.join(a, &.{ home_dir, if (std.mem.eql(u8, provider, "codex")) ".codex" else ".claude" });
+    defer a.free(directory);
+    var dir = std.fs.cwd().openDir(directory, .{}) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer dir.close();
+    const lock = try dir.createFile(".wrangler-hooks.lock", .{ .truncate = false, .mode = 0o600 });
+    defer lock.close();
+    if (!try lock.tryLock(.exclusive)) return error.HookSettingsBusy;
+    defer lock.unlock();
+    const filename = if (std.mem.eql(u8, provider, "codex")) "hooks.json" else "settings.json";
+    // Don't replace a symlink, FIFO, or other user-managed indirection.
+    const path = try std.fs.path.join(a, &.{ directory, filename });
+    defer a.free(path);
+    const z = try a.dupeZ(u8, path);
+    defer a.free(z);
+    var stat: os.c.struct_stat = undefined;
+    const exists = os.c.lstat(z, &stat) == 0;
+    if (exists and (stat.st_mode & os.c.S_IFMT) != os.c.S_IFREG) return error.HookSettingsNotRegular;
+    const before = if (exists) try dir.readFileAlloc(a, filename, 1024 * 1024) else try a.dupe(u8, "{}");
+    defer a.free(before);
+    const after = try mergedConfig(a, provider, before) orelse return;
+    defer a.free(after);
+    if (exists) {
+        const backup_name = try std.fmt.allocPrint(a, "{s}.wrangler-backup", .{filename});
+        defer a.free(backup_name);
+        if (dir.createFile(backup_name, .{ .exclusive = true, .mode = 0o600 })) |backup| {
+            defer backup.close();
+            try backup.writeAll(before);
+        } else |err| if (err != error.PathAlreadyExists) return err;
+    }
+    var buffer: [4096]u8 = undefined;
+    var output = try dir.atomicFile(filename, .{ .mode = if (exists) @intCast(stat.st_mode & 0o777) else 0o600, .write_buffer = &buffer });
+    defer output.deinit();
+    try output.file_writer.interface.writeAll(after);
+    try output.file_writer.interface.writeAll("\n");
+    // Catch concurrent edits by tools which don't use our installation lock.
+    if (exists) {
+        const latest = try dir.readFileAlloc(a, filename, 1024 * 1024);
+        defer a.free(latest);
+        if (!std.mem.eql(u8, latest, before)) return error.HookSettingsChanged;
+    } else {
+        if (os.c.lstat(z, &stat) == 0) return error.HookSettingsChanged;
+    }
+    try output.finish();
+}
 pub fn shellQuote(text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.append(a, '\'');
@@ -73,24 +181,13 @@ pub fn shellQuote(text: []const u8) ![]u8 {
     return out.toOwnedSlice(a);
 }
 pub fn launch(provider: []const u8, args: []const []const u8, executable: []const u8) !noreturn {
+    _ = executable;
     if (os.env("WRANGLER_PANE") == null) return error.LaunchInsideWrangler;
     var argv: std.ArrayList([]const u8) = .empty;
     const provider_kind = std.meta.stringToEnum(@import("agents.zig").Provider, provider) orelse return error.BadProvider;
     const binary = try @import("discovery.zig").resolve(provider_kind, null);
     defer a.free(binary);
     try argv.append(a, binary);
-    if (std.mem.eql(u8, provider, "claude")) {
-        try argv.appendSlice(a, &.{ "--settings", try config(provider, executable) });
-    } else if (std.mem.eql(u8, provider, "codex")) {
-        const command = try hookCommand(provider, executable);
-        const quoted = try std.json.Stringify.valueAlloc(a, command, .{});
-        for (common) |event| {
-            const override = try std.fmt.allocPrint(a, "hooks.{s}=[{{hooks=[{{type=\"command\",command={s},timeout=2}}]}}]", .{ event, quoted });
-            try argv.appendSlice(a, &.{ "-c", override });
-        }
-        const interrupt = try std.fmt.allocPrint(a, "hooks.Interrupt=[{{hooks=[{{type=\"command\",command={s},timeout=2}}]}}]", .{quoted});
-        try argv.appendSlice(a, &.{ "-c", interrupt });
-    } else return error.BadProvider;
     try argv.appendSlice(a, args);
     return os.exec(argv.items);
 }

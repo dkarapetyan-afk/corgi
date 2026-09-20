@@ -21,9 +21,11 @@ One runtime has a flat list of tabs. Tabs contain binary split trees; pane IDs i
 
 `prefix` means press Ctrl-B, release, then the next key. **Ctrl-B immediately opens a compact command menu**: press a displayed shortcut or click its row. Escape, the menu's `x`, or a click outside dismisses it. Resize has its own clickable direction menu. In short terminals, use the menu's previous/next buttons, the wheel, or PageUp/PageDown to see more commands.
 
-Click **+** after the visible tabs, choose **New tab** from a menu, or press `prefix c` to open the **new tab** dialog. The directory name is prefilled and selected. Save (Enter) creates the tab in that directory; Cancel (Escape or clicking outside) creates nothing. The + button remains visible when tabs overflow. The CLI/control API still creates tabs immediately.
+Click **+** after the visible tabs, choose **New tab** from a menu, or press `prefix c` to open the **new tab** dialog. The empty name field previews the new tab's position as a number. Save (Enter) creates an unnamed tab in the current directory unless you type a custom name; Cancel (Escape or clicking outside) creates nothing. Unnamed tabs store no name: their displayed numbers are recomputed as tabs move or close. The + button remains visible when tabs overflow. The CLI/control API still creates tabs immediately, unnamed unless an explicit title is supplied.
 
-**Rename tab** uses the same bordered dialog. Type to replace the selection, or move the cursor with Left/Right, Home/End and edit with Backspace/Delete. Ctrl-C, Ctrl-U, or **Clear** empties the field; saving an empty field keeps the default name. Save, Clear, and Cancel are clickable. Cancel leaves the existing name unchanged.
+Headers show either the custom name or the automatic number, centered in a minimum width of 10 columns. Narrow terminals clip the active tab as needed while keeping **+** accessible.
+
+**Rename tab** uses the same bordered dialog. Type to replace the selection, or move the cursor with Left/Right, Home/End and edit with Backspace/Delete. Ctrl-C, Ctrl-U, or **Clear** empties the field; saving an empty field removes the custom name and restores automatic numbering. The number shown in an empty field is a preview, not saved text. A number you explicitly type is a custom name and stays fixed. Save, Clear, and Cancel are clickable. Cancel leaves the existing name unchanged.
 
 Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab inherits that tab's current directory and prompts for a name; Close confirms before ending all of that tab's panes.
 
@@ -52,7 +54,7 @@ Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text
 
 `wrangler action move-tab left|right` reorders tabs. `wrangler action join N` moves the focused pane into tab N. New tabs and splits created from the UI inherit the shell's current directory.
 
-Exiting a shell immediately removes its pane; an empty tab disappears too. Wrangler keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `wrangler action undo-close`) restores the most recent one into a new tab with a **fresh shell**, not the old process or agent session. Closing the last pane leaves an empty view where you can create a tab or undo. Snapshots survive detach/reattach but disappear when the runtime shuts down.
+Exiting a shell immediately removes its pane; an empty tab disappears too. Wrangler keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `wrangler action undo-close`) restores the most recent one into a new tab with a **fresh shell**, not the old process or agent session. Closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
 
 This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. There is one interactive client per runtime; a second attach is rejected rather than stealing input ownership. Limits: 24 tabs, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
 
@@ -60,31 +62,33 @@ This is an initial implementation of Herdr's core tab/pane operations. Copy mode
 
 The left sidebar lists agents across all tabs, grouped by tab order, with their provider, status, tab name, and current tool or activity. Click an entry to focus its pane and acknowledge its attention marker. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
 
-Terminal entries are driven by the session-local hooks installed by `wrangler agent codex|claude`. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden. This sidebar does not infer state from terminal text or run background inference.
+Terminal agents are discovered from each pane's foreground process group, including native binaries and CLI scripts launched with Bun, Node, or Python. Ordinary shells are omitted, and an agent disappears when its process returns to the shell. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden.
 
 Inside a pane:
 
 ```sh
-wrangler agent claude
-wrangler agent codex
-wrangler agent claude --resume SESSION_ID
-wrangler agent claude --remote-control
-wrangler agent codex resume SESSION_ID
+claude
+codex
+claude --resume SESSION_ID
+claude --remote-control
+codex resume SESSION_ID
 ```
 
-Wrangler execs the real provider CLI with additional **session-local hooks**. It leaves your user/project configuration files and permission policies intact. Claude gets `--settings`; Codex gets inline hook configuration through `-c`. Provider flags, login, model selection, inference, resume, and native remoting remain available.
+At runtime startup, Wrangler merges its hooks into `~/.codex/hooks.json` and `~/.claude/settings.json` when those provider directories exist. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected. It preserves other settings and hook handlers, saves the original file beside it as `.wrangler-backup`, and writes atomically. Repeated startup does not duplicate hooks or rewrite unchanged files. Malformed files and symlinks are left untouched, with a diagnostic in the status bar/server log. Restart Wrangler after first installing a provider. Hook setup applies to newly launched agent sessions.
 
-Codex requires trusting new hook definitions in its `/hooks` UI. Wrangler does not bypass hook trust or approvals. Managed policies that disable session hooks still apply. Hook collection is best effort and silent; unsupported or disabled hooks leave state unknown, rather than guessing from screen text.
+The installed commands use the pane's `WRANGLER_BIN`, `WRANGLER_SOCKET`, and `WRANGLER_PANE`; they do nothing outside Wrangler. No aliases or executable shims are needed. Provider flags, login, model selection, inference, resume, and native remoting remain available. Permission policies and project configuration are unchanged.
 
-`wrangler hooks claude|codex` prints configuration for inspection or your own integration. You can launch the plain provider commands too, but those do not gain Wrangler's session-local hooks automatically.
+Codex requires trusting new hook definitions in its `/hooks` UI. Wrangler does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong terminal title and visible prompt signals supply debounced working/waiting/idle status. Unrecognized displays remain unknown. Hook events take precedence once received; output activity alone never means a turn finished.
 
-Codex is found automatically: working executables on PATH first, then common user/system installation locations, then macOS app bundles in `~/Applications` and `/Applications` (including Codex and ChatGPT). Candidates must successfully answer `--version`; broken package wrappers, missing binaries, and hung commands are skipped. Both terminal agents and native App Server sessions use this lookup. Run `wrangler which codex` to see the selected executable. No environment variables or configuration files are required.
+`wrangler hooks claude|codex` prints hook configuration for inspection or your own integration. `wrangler agent claude|codex ...` remains an optional executable-discovery launcher; it no longer injects duplicate hooks.
+
+The optional launcher and native App Server sessions find Codex automatically: working executables on PATH first, then common user/system installation locations, then macOS app bundles in `~/Applications` and `/Applications` (including Codex and ChatGPT). Candidates must successfully answer `--version`; broken package wrappers, missing binaries, and hung commands are skipped. Run `wrangler which codex` to see the selected executable. Plain `codex` uses your shell's usual command resolution.
 
 Optional explicit `WRANGLER_CODEX_BIN` / `WRANGLER_CLAUDE_BIN` overrides remain available for development, set before starting the runtime.
 
 Hook evidence drives working, waiting, idle, and done. Session IDs and event timestamps reject late updates from a previous session; child-agent hooks cannot overwrite the parent's lifecycle. Permissions and explicit user questions are waiting states. Tool names provide bounded activity labels. No transcript scraping or background summarization inference.
 
-Provider contracts: [Codex hooks](https://developers.openai.com/codex/hooks), [Claude hooks](https://code.claude.com/docs/en/hooks).
+Provider contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude hooks](https://code.claude.com/docs/en/hooks).
 
 ## A ding with somewhere to go
 

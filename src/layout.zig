@@ -23,13 +23,14 @@ pub const Tab = struct {
     focus: Id,
     zoom: bool = false,
     name: [80]u8 = .{0} ** 80,
-    name_len: usize = 0,
+    name_len: usize = 0, // Zero means unnamed; its number is derived from its current position.
     pub fn title(t: *const Tab) []const u8 {
         return t.name[0..t.name_len];
     }
     pub fn rename(t: *Tab, name: []const u8) void {
-        t.name_len = @min(name.len, t.name.len);
-        for (name[0..t.name_len], 0..) |ch, i| t.name[i] = if (ch >= 32 and ch < 127) ch else '_';
+        const trimmed = std.mem.trim(u8, name, " ");
+        t.name_len = @min(trimmed.len, t.name.len);
+        for (trimmed[0..t.name_len], 0..) |ch, i| t.name[i] = if (ch >= 32 and ch < 127) ch else '_';
     }
 };
 pub const Placement = struct { id: Id, rect: Rect };
@@ -246,7 +247,6 @@ pub const Model = struct {
         const root = try m.alloc(.{ .pane = id });
         m.tabs[m.count] = .{ .id = m.next_id, .root = root, .focus = id };
         m.next_id += 1;
-        m.tabs[m.count].rename("shell");
         m.active = m.count;
         m.count += 1;
     }

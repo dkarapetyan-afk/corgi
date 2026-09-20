@@ -1,0 +1,236 @@
+//! Passive foreground-job discovery. No shell aliases or PATH shims required.
+const std = @import("std");
+const os = @import("os.zig");
+const c = os.c;
+const agents = @import("agents.zig");
+const Provider = agents.Provider;
+const State = agents.State;
+pub const Job = struct { pid: c_int, provider: Provider };
+
+fn name(path: []const u8) Provider {
+    const base = std.fs.path.basename(path);
+    if (std.mem.eql(u8, base, "codex")) return .codex;
+    if (std.mem.eql(u8, base, "claude") or std.mem.eql(u8, base, "claude-code")) return .claude;
+    return .other;
+}
+
+// Only executable/script positions count. `sh -c 'codex ...'`, `node -e
+// 'codex'`, and an editor opening a file named codex are not agents.
+pub fn identify(argv: []const []const u8) Provider {
+    if (argv.len == 0) return .other;
+    const direct = name(argv[0]);
+    if (direct != .other) return direct;
+    const exe = std.fs.path.basename(argv[0]);
+    const interpreter = std.mem.eql(u8, exe, "node") or std.mem.eql(u8, exe, "bun") or
+        std.mem.eql(u8, exe, "sh") or std.mem.eql(u8, exe, "bash") or
+        std.mem.eql(u8, exe, "zsh") or std.ascii.startsWithIgnoreCase(exe, "python");
+    if (!interpreter or argv.len < 2) return .other;
+    var i: usize = 1;
+    if (std.mem.eql(u8, exe, "bun") and std.mem.eql(u8, argv[i], "run")) i += 1;
+    while (i < argv.len and argv[i].len > 0 and argv[i][0] == '-') : (i += 1) {
+        if (std.mem.eql(u8, argv[i], "--")) {
+            i += 1;
+            break;
+        }
+        // Be conservative with interpreter flags that consume another argument.
+        const bun_flag = std.mem.eql(u8, exe, "bun") and (std.mem.eql(u8, argv[i], "--bun") or std.mem.eql(u8, argv[i], "-b"));
+        if (!bun_flag and !std.mem.eql(u8, argv[i], "-u") and !std.mem.eql(u8, argv[i], "--no-warnings")) return .other;
+    }
+    if (i < argv.len and std.mem.eql(u8, exe, "bun") and std.mem.eql(u8, argv[i], "run")) i += 1;
+    if (i >= argv.len) return .other;
+    const script = argv[i];
+    const script_name = name(script);
+    if (script_name != .other) return script_name;
+    if (std.mem.endsWith(u8, script, "/@anthropic-ai/claude-code/cli.js")) return .claude;
+    if (std.mem.endsWith(u8, script, "/@openai/codex/bin/codex.js")) return .codex;
+    return .other;
+}
+
+fn process(pid: c_int) Provider {
+    var bytes: [65536]u8 = undefined;
+    var data: []const u8 = undefined;
+    var max_args: usize = 64;
+    if (@import("builtin").os.tag == .macos) {
+        var mib = [_]c_int{ c.CTL_KERN, c.KERN_PROCARGS2, pid };
+        var len: usize = bytes.len;
+        if (c.sysctl(&mib, mib.len, &bytes, &len, null, 0) != 0 or len < @sizeOf(c_int)) return .other;
+        const argc = std.mem.bytesToValue(c_int, bytes[0..@sizeOf(c_int)]);
+        if (argc <= 0) return .other;
+        max_args = @min(max_args, @as(usize, @intCast(argc)));
+        data = bytes[@sizeOf(c_int)..len];
+        const end = std.mem.indexOfScalar(u8, data, 0) orelse return .other;
+        // The kernel starts with the executable path and alignment padding,
+        // followed by argc NUL-separated arguments (then environment data).
+        data = std.mem.trimStart(u8, data[end..], "\x00");
+    } else if (@import("builtin").os.tag == .linux) {
+        var path: [64]u8 = undefined;
+        const file = std.fs.cwd().openFile(std.fmt.bufPrint(&path, "/proc/{d}/cmdline", .{pid}) catch return .other, .{}) catch return .other;
+        defer file.close();
+        const len = file.readAll(&bytes) catch return .other;
+        data = bytes[0..len];
+    } else return .other;
+    var argv: [64][]const u8 = undefined;
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, data, 0);
+    while (count < max_args) {
+        argv[count] = it.next() orelse break;
+        count += 1;
+    }
+    return identify(argv[0..count]);
+}
+
+pub fn foreground(fd: c_int) ?Job {
+    const pgid = c.tcgetpgrp(fd);
+    if (pgid <= 0) return null;
+    const leader = process(pgid);
+    if (leader != .other) return .{ .pid = pgid, .provider = leader };
+    if (@import("builtin").os.tag == .macos) {
+        var pids: [128]c_int = undefined;
+        const n = c.proc_listpids(c.PROC_PGRP_ONLY, @intCast(pgid), &pids, @sizeOf(@TypeOf(pids)));
+        if (n <= 0) return null;
+        for (pids[0..@min(pids.len, @as(usize, @intCast(n)) / @sizeOf(c_int))]) |pid| {
+            if (pid <= 0 or pid == pgid) continue;
+            const provider = process(pid);
+            if (provider != .other) return .{ .pid = pid, .provider = provider };
+        }
+    } else if (@import("builtin").os.tag == .linux) {
+        var dir = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return null;
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch null) |entry| {
+            const pid = std.fmt.parseInt(c_int, entry.name, 10) catch continue;
+            if (pid == pgid or c.getpgid(pid) != pgid) continue;
+            const provider = process(pid);
+            if (provider != .other) return .{ .pid = pid, .provider = provider };
+        }
+    }
+    return null;
+}
+
+// Hook events are authoritative once received. The fallback only uses strong
+// UI signals, never inactivity or arbitrary mentions in an agent's response.
+pub fn screenState(provider: Provider, title: []const u8, screen: []const u8) ?State {
+    if (provider == .codex and std.mem.indexOf(u8, title, "Action Required") != null) return .blocked;
+    const visible = std.mem.trimEnd(u8, screen, " \t\r\n");
+    var start = visible.len;
+    var lines: usize = 0;
+    while (start > 0 and lines < 8) {
+        start -= 1;
+        if (visible[start] == '\n') lines += 1;
+    }
+    var lower: [8192]u8 = undefined;
+    const tail = visible[start..];
+    const text = lower[0..@min(tail.len, lower.len)];
+    for (text, tail[0..text.len]) |*out, ch| out.* = std.ascii.toLower(ch);
+    if ((has(text, "enter to confirm") and has(text, "esc to cancel")) or has(text, "enter to submit answer") or has(text, "enter to submit all")) return .blocked;
+    var title_chars = std.unicode.Utf8View.init(title) catch return null;
+    var it = title_chars.iterator();
+    while (it.nextCodepoint()) |cp| {
+        if ((cp >= 0x2800 and cp <= 0x28ff) or (cp >= 0x25d0 and cp <= 0x25d3)) return .working;
+    }
+    if (has(text, "esc to interrupt")) return .working;
+    if (provider == .claude and std.mem.startsWith(u8, title, "✳ ")) return .idle;
+    if (provider == .codex) {
+        var rows = std.mem.splitScalar(u8, text, '\n');
+        while (rows.next()) |row| {
+            if (std.mem.startsWith(u8, std.mem.trimStart(u8, row, " "), "›")) return .idle;
+        }
+    }
+    return null;
+}
+fn has(text: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, text, needle) != null;
+}
+
+pub const Tracker = struct {
+    pid: c_int = 0,
+    missing: u8 = 0,
+    candidate: ?State = null,
+    confirmations: u8 = 0,
+
+    pub fn update(t: *Tracker, agent: *agents.Agent, job: ?Job, title: []const u8, screen: []const u8, watched: bool) bool {
+        const current = job orelse {
+            // Don't erase hook-only integrations we have never observed as a
+            // foreground process. Two missing polls absorb exec transitions.
+            if (t.pid != 0) {
+                t.missing += 1;
+                if (t.missing >= 2) {
+                    agent.* = .{};
+                    t.* = .{};
+                }
+            }
+            return false;
+        };
+        t.missing = 0;
+        if (t.pid != current.pid or agent.provider != current.provider) {
+            if (t.pid != 0 or agent.provider != current.provider) agent.* = .{};
+            t.pid = current.pid;
+            t.candidate = null;
+            t.confirmations = 0;
+            agent.provider = current.provider;
+        }
+        if (agent.last_seq != 0) return false;
+        const next = screenState(current.provider, title, screen) orelse {
+            t.candidate = null;
+            t.confirmations = 0;
+            return false;
+        };
+        if (t.candidate != next) {
+            t.candidate = next;
+            t.confirmations = 0;
+        }
+        t.confirmations +|= 1;
+        if (t.confirmations < (if (next == .idle) @as(u8, 3) else 2) or agent.state == next) return false;
+        const old = agent.state;
+        agent.state = next;
+        agent.changed_at = std.time.microTimestamp();
+        agent.activity_len = 0;
+        if (next == .working) agent.attention = .none;
+        if (watched) return false;
+        if (next == .blocked) {
+            agent.attention = .needs_input;
+            return true;
+        }
+        if (next == .idle and old == .working) {
+            agent.attention = .finished;
+            return true;
+        }
+        return false;
+    }
+};
+
+test "identify actual executables and scripts, not arguments or shell text" {
+    try std.testing.expectEqual(Provider.codex, identify(&.{"/opt/bin/codex"}));
+    try std.testing.expectEqual(Provider.claude, identify(&.{ "node", "/a/node_modules/@anthropic-ai/claude-code/cli.js" }));
+    try std.testing.expectEqual(Provider.claude, identify(&.{ "bun", "/a/node_modules/@anthropic-ai/claude-code/cli.js" }));
+    try std.testing.expectEqual(Provider.codex, identify(&.{ "bun", "/a/node_modules/@openai/codex/bin/codex.js" }));
+    try std.testing.expectEqual(Provider.claude, identify(&.{ "bun", "run", "--bun", "/a/node_modules/@anthropic-ai/claude-code/cli.js" }));
+    try std.testing.expectEqual(Provider.codex, identify(&.{ "python3", "/tmp/codex" }));
+    try std.testing.expectEqual(Provider.codex, identify(&.{ "/Frameworks/Python", "/tmp/codex" }));
+    try std.testing.expectEqual(Provider.other, identify(&.{ "sh", "-c", "codex" }));
+    try std.testing.expectEqual(Provider.other, identify(&.{ "node", "-e", "codex" }));
+    try std.testing.expectEqual(Provider.other, identify(&.{ "bun", "-e", "codex" }));
+    try std.testing.expectEqual(Provider.other, identify(&.{ "vim", "codex" }));
+}
+
+test "fallback debounces attention, yields to hooks, and clears exited agents" {
+    var tracker: Tracker = .{};
+    var agent: agents.Agent = .{};
+    const job: Job = .{ .pid = 123, .provider = .claude };
+    try std.testing.expect(!tracker.update(&agent, job, "⠋ Task", "", false));
+    try std.testing.expect(!tracker.update(&agent, job, "⠋ Task", "", false));
+    try std.testing.expectEqual(State.working, agent.state);
+    try std.testing.expect(!tracker.update(&agent, job, "✳ Task", "", false));
+    try std.testing.expect(!tracker.update(&agent, job, "✳ Task", "", false));
+    try std.testing.expect(tracker.update(&agent, job, "✳ Task", "", false));
+    try std.testing.expectEqual(agents.Attention.finished, agent.attention);
+    agent.last_seq = 1;
+    agent.state = .blocked;
+    for (0..4) |_| _ = tracker.update(&agent, job, "⠋ Task", "", false);
+    try std.testing.expectEqual(State.blocked, agent.state);
+    _ = tracker.update(&agent, null, "", "", false);
+    try std.testing.expectEqual(Provider.claude, agent.provider);
+    _ = tracker.update(&agent, null, "", "", false);
+    try std.testing.expectEqual(Provider.other, agent.provider);
+    try std.testing.expectEqual(@as(i64, 0), agent.last_seq);
+}

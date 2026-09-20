@@ -76,6 +76,9 @@ pub const Terminal = struct {
             os.setenv("COLORTERM", "truecolor") catch c._exit(127);
             os.setenv("WRANGLER_SOCKET", socket) catch c._exit(127);
             os.setenv("WRANGLER_BIN", executable) catch c._exit(127);
+            // A new interactive pane is not a tool/subagent of the Codex
+            // process that may have originally started the daemon.
+            _ = c.unsetenv("CODEX_THREAD_ID");
             const path = std.fmt.allocPrint(a, "{s}:{s}", .{ std.fs.path.dirname(executable) orelse ".", os.env("PATH") orelse "/usr/bin:/bin" }) catch c._exit(127);
             os.setenv("PATH", path) catch c._exit(127);
             const pane = std.fmt.allocPrint(a, "{d}", .{id}) catch c._exit(127);
