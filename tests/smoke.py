@@ -129,6 +129,45 @@ class Runtime(unittest.TestCase):
             if m.get('type')==kind:return m
         self.fail('missing message '+kind)
     def input(self,text): self.write(op='input',data=text)
+    def test_synchronized_redraw_keeps_completed_frame_and_cursor(self):
+        fixture=pathlib.Path(self.temp.name,'sync.py')
+        begin=pathlib.Path(self.temp.name,'begin')
+        middle=pathlib.Path(self.temp.name,'middle')
+        finish=pathlib.Path(self.temp.name,'finish')
+        fixture.write_text('''import os, pathlib, time
+def emit(s): os.write(1,s.encode())
+def wait(name):
+    while not pathlib.Path(name).exists(): time.sleep(.005)
+emit("\\x1b[2J\\x1b[5;5HREADY\\x1b[5;5H\\x1b[?25h")
+wait('begin')
+emit("\\x1b[?2026h\\x1b[2;20HMID_SYNC\\x1b[2;20H")
+pathlib.Path('middle').touch()
+wait('finish')
+emit("\\x1b[2;20H        \\x1b[5;5HDONE_SYNC\\x1b[5;5H\\x1b[?2026l")
+time.sleep(30)
+''')
+        pane=self.rpc(op='new',cwd=self.temp.name,command=shlex.join([sys.executable,str(fixture)]))['pane']
+        self.attach()
+        while True:
+            frame=self.get_type('frame')['data']
+            if 'READY' in frame:break
+        cursor=re.findall(r'\x1b\[(\d+);(\d+)H\x1b\[\?25h',frame)
+        self.assertTrue(cursor)
+        begin.touch();self.until(middle.exists)
+        # Force unrelated frames and text captures while the child is mid-batch.
+        for _ in range(3):
+            self.assertNotIn('MID_SYNC',self.rpc(op='read',pane=pane)['text'])
+            self.write(op='size',cols=80,rows=24)
+            frame=self.get_type('frame')['data']
+            self.assertIn('READY',frame)
+            self.assertNotIn('MID_SYNC',frame)
+            self.assertEqual(cursor,re.findall(r'\x1b\[(\d+);(\d+)H\x1b\[\?25h',frame))
+        finish.touch()
+        while True:
+            frame=self.get_type('frame')['data']
+            self.assertNotIn('MID_SYNC',frame)
+            if 'DONE_SYNC' in frame:break
+        self.assertEqual(cursor,re.findall(r'\x1b\[(\d+);(\d+)H\x1b\[\?25h',frame))
     def click(self,x,y):self.input(f'\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m')
     def frame_with(self,text,cols=80,rows=24,row=None):
         for _ in range(100):

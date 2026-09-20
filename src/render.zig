@@ -103,7 +103,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
         if (place.rect.w == 0 or place.rect.h == 0) continue;
         for (panes) |p| if (p.id == place.id) {
             const r = place.rect;
-            try p.terminal.render.update(a, &p.terminal.vt);
+            try p.terminal.updateRender();
             const state = &p.terminal.render;
             var last_style: ?terminal.vt.Style = null;
             var last_fg: ?terminal.vt.color.RGB = null;

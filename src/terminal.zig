@@ -12,6 +12,8 @@ pub const Terminal = struct {
     exited: bool = false,
     exit_status: c_int = 0,
     pending: std.ArrayList(u8) = .empty,
+    synchronized_since: ?i64 = null,
+    const synchronized_timeout_ms = 1000;
 
     pub fn create(cols: u16, rows: u16) !*Terminal {
         const t = try a.create(Terminal);
@@ -96,6 +98,7 @@ pub const Terminal = struct {
     }
     // Release the process/PTY while retaining the Ghostty screen and scrollback.
     pub fn stop(t: *Terminal) void {
+        t.endSynchronizedOutput();
         if (t.fd >= 0) _ = c.close(t.fd);
         if (t.pid > 0 and !t.exited) {
             _ = c.kill(-t.pid, c.SIGHUP);
@@ -140,6 +143,27 @@ pub const Terminal = struct {
     }
     pub fn feed(t: *Terminal, bytes: []const u8) void {
         t.stream.nextSlice(bytes);
+        if (t.vt.modes.get(.synchronized_output)) {
+            if (t.synchronized_since == null) t.synchronized_since = std.time.milliTimestamp();
+        } else {
+            t.synchronized_since = null;
+        }
+    }
+    fn endSynchronizedOutput(t: *Terminal) void {
+        t.vt.modes.set(.synchronized_output, false);
+        t.synchronized_since = null;
+    }
+    fn expireSynchronizedOutput(t: *Terminal, now: i64) bool {
+        const since = t.synchronized_since orelse return false;
+        if (now - since < synchronized_timeout_ms and !t.exited) return false;
+        t.endSynchronizedOutput();
+        return true;
+    }
+    // Keep both cells and cursor from the last completed update, including when
+    // another pane, UI event, or text capture requests a refresh mid-redraw.
+    pub fn updateRender(t: *Terminal) !void {
+        if (t.vt.modes.get(.synchronized_output)) return;
+        try t.render.update(a, &t.vt);
     }
     pub fn send(t: *Terminal, bytes: []const u8) !void {
         if (t.pending.items.len + bytes.len > 1024 * 1024) return error.InputBackpressure;
@@ -173,10 +197,11 @@ pub const Terminal = struct {
                 dirty = true;
             }
         }
-        return dirty;
+        if (t.expireSynchronizedOutput(std.time.milliTimestamp())) dirty = true;
+        return dirty and !t.vt.modes.get(.synchronized_output);
     }
     pub fn text(t: *Terminal) ![]u8 {
-        try t.render.update(a, &t.vt);
+        try t.updateRender();
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(a);
         for (t.render.row_data.items(.cells)) |cells| {
@@ -210,6 +235,48 @@ test "Ghostty keeps fragmented escapes, unicode, alternate screen and resize" {
     const after = try t.text();
     defer a.free(after);
     try std.testing.expect(std.mem.indexOf(u8, after, "hello") != null);
+}
+
+test "synchronized redraw retains completed cells and cursor even during text capture" {
+    const t = try Terminal.create(40, 8);
+    defer t.destroy();
+    t.feed("\x1b[5;5HREADY\x1b[5;5H\x1b[?25h");
+    const before = try t.text();
+    defer a.free(before);
+    const cursor = t.render.cursor.viewport;
+    t.feed("\x1b[?2026");
+    t.feed("h\x1b[2;20HMID_SYNC\x1b[2;20H\x1b[?25l");
+    const during = try t.text();
+    defer a.free(during);
+    try std.testing.expectEqualStrings(before, during);
+    try std.testing.expectEqualDeep(cursor, t.render.cursor.viewport);
+    try std.testing.expect(t.render.cursor.visible);
+    t.feed("\x1b[5;5HDONE_SYNC\x1b[5;5H\x1b[?25h\x1b[?2026");
+    try t.updateRender();
+    try std.testing.expectEqualDeep(cursor, t.render.cursor.viewport);
+    try std.testing.expect(t.render.cursor.visible);
+    t.feed("l");
+    const after = try t.text();
+    defer a.free(after);
+    try std.testing.expect(std.mem.indexOf(u8, after, "DONE_SYNC") != null);
+    try std.testing.expectEqualDeep(cursor, t.render.cursor.viewport);
+    try std.testing.expect(t.render.cursor.visible);
+}
+
+test "unfinished synchronized output expires or releases on process exit" {
+    const t = try Terminal.create(40, 8);
+    defer t.destroy();
+    t.feed("\x1b[?2026hTIMEOUT");
+    const since = t.synchronized_since.?;
+    try std.testing.expect(!t.expireSynchronizedOutput(since + 999));
+    try std.testing.expect(t.expireSynchronizedOutput(since + 1000));
+    const text = try t.text();
+    defer a.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "TIMEOUT") != null);
+    t.feed("\x1b[?2026hEXIT");
+    t.exited = true;
+    try std.testing.expect(t.expireSynchronizedOutput(t.synchronized_since.?));
+    try std.testing.expect(!t.vt.modes.get(.synchronized_output));
 }
 
 test "snapshot restores primary history and alternate output without input modes" {
