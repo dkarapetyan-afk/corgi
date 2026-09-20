@@ -127,6 +127,11 @@ pub fn Controller(comptime remote: bool) type {
         next_viewer: u32 = 1,
         last_bell_kind: agents.Attention = .none,
         last_detection: i64 = 0,
+        inherited_listener: ?c_int = null,
+        reload_executable: ?[]const u8 = null,
+        reload_requester: c_int = -1,
+        last_recovery: i64 = 0,
+        saved_revision: u64 = 0,
 
         fn model(s: *Server) *layout.Model {
             return &s.runtime.workspaces.current().model;
@@ -1325,6 +1330,24 @@ pub fn Controller(comptime remote: bool) type {
 
         fn request(s: *Server, cl: *Client, v: std.json.Value) !void {
             if (v != .object) return error.UnknownOperation;
+            const operation = agents.str(v, "op");
+            if (eq(operation, "server.reload")) {
+                try protocol.require(v, cl.protocol_version);
+                if (s.reload_executable != null) return error.ReloadInProgress;
+                const executable = agents.str(v, "executable");
+                if (!std.fs.path.isAbsolute(executable)) return error.InvalidExecutable;
+                s.reload_executable = try a.dupe(u8, executable);
+                s.reload_requester = cl.fd;
+                return;
+            }
+            if (eq(operation, "recovery.save")) {
+                try protocol.require(v, cl.protocol_version);
+                try @import("recovery.zig").save(&s.runtime, s.socket);
+                const path = try @import("recovery.zig").path(s.socket);
+                defer a.free(path);
+                try cl.queue(.{ .ok = true, .path = path });
+                return;
+            }
             if (try @import("viewer_protocol.zig").handle(s, cl, v)) return;
             if (try @import("viewer_protocol.zig").routeControl(s, cl, v)) return;
             if (try s.runtimeRequest(cl, v)) return;
@@ -1372,10 +1395,10 @@ pub fn Controller(comptime remote: bool) type {
                 s.dirty = true;
                 try cl.queue(.{ .ok = true, .session = session.id, .provider = provider });
             } else if (eq(op, "native.list")) {
-                const Info = struct { id: u32, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, active_tools: usize, next_seq: u64 };
+                const Info = struct { id: u32, pid: i32, session_id: []const u8, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, active_tools: usize, next_seq: u64 };
                 var info: std.ArrayList(Info) = .empty;
                 defer info.deinit(a);
-                for (s.runtime.sessions.items) |session| try info.append(a, .{ .id = session.id, .provider = session.provider, .ready = session.ready, .exited = session.exited, .state = session.state, .attention = session.attention, .pending_requests = session.approvals.items.len, .active_tools = session.active_tools.items.len, .next_seq = session.next_seq });
+                for (s.runtime.sessions.items) |session| try info.append(a, .{ .id = session.id, .pid = session.child.id, .session_id = session.resume_hint.session[0..session.resume_hint.len], .provider = session.provider, .ready = session.ready, .exited = session.exited, .state = session.state, .attention = session.attention, .pending_requests = session.approvals.items.len, .active_tools = session.active_tools.items.len, .next_seq = session.next_seq });
                 try cl.queue(.{ .ok = true, .sessions = info.items });
             } else if (std.mem.startsWith(u8, op, "native.")) {
                 const id = std.math.cast(u32, number(v, "session", 0)) orelse return error.NoNativeSession;
@@ -1504,7 +1527,7 @@ pub fn Controller(comptime remote: bool) type {
         pub fn updateTheme(s: *Server, v: std.json.Value) void {
             const value = v.object.get("theme") orelse return;
             s.theme.merge(Theme.fromJson(value));
-            for (s.runtime.panes.items) |p| s.theme.apply(&p.terminal.emulator().*);
+            for (s.runtime.panes.items) |p| if (remote) s.theme.apply(p.terminal.emulator()) else p.terminal.applyTheme(s.theme);
             s.dirty = true;
         }
         pub fn resizeViewers(s: *Server) !void {
@@ -1544,11 +1567,17 @@ pub fn Controller(comptime remote: bool) type {
             const detection = @import("detection.zig");
             const job = detection.foreground(p.terminal.fd);
             const before = p.agent;
+            const previous_pid = p.detection.pid;
+            p.resume_hint.observe(&p.agent);
             const live_screen = p.terminal.emulator().*.screens.active.pages.viewport == .active;
             const text = if (job != null and p.agent.last_seq == 0 and live_screen) p.terminal.text() catch null else null;
             defer if (text) |bytes| a.free(bytes);
             const watched = s.paneWatched(p.id);
             const ding = p.detection.update(&p.agent, job, p.terminal.emulator().*.getTitle() orelse "", text orelse "", watched);
+            if (job) |current| if (current.pid != previous_pid and p.agent.session_len == 0) {
+                p.resume_hint = .{ .provider = current.provider };
+            };
+            p.resume_hint.observe(&p.agent);
             // A quiet agent can change directory without writing to the PTY.
             const previous_cwd = std.hash.Wyhash.hash(0, p.cwd);
             p.refreshCwd();
@@ -1599,7 +1628,7 @@ pub fn Controller(comptime remote: bool) type {
         }
         pub fn run(s: *Server) !void {
             _ = c.signal(c.SIGPIPE, os.sig_ignore);
-            const fd = try os.listen(s.socket);
+            const fd = s.inherited_listener orelse try os.listen(s.socket);
             defer {
                 _ = c.close(fd);
                 std.fs.cwd().deleteFile(s.socket) catch {};
@@ -1607,19 +1636,23 @@ pub fn Controller(comptime remote: bool) type {
             defer s.runtime.deinit();
             const state_path = try workspace.Store.statePath(s.socket);
             defer a.free(state_path);
-            if (try s.runtime.workspaces.load(state_path)) {
+            if (s.inherited_listener != null) {
+                // Imported state and sockets are ready before ownership commits.
+            } else if (try @import("recovery.zig").load(&s.runtime, s.socket, s.executable)) {
+                s.default_folder_pending = false;
+            } else if (try s.runtime.workspaces.load(state_path)) {
                 s.default_folder_pending = false;
             } else {
                 _ = try s.runtime.workspaces.add("Default", ".");
                 try s.runtime.workspaces.save(state_path);
             }
-            for ([_][]const u8{ "codex", "claude" }) |provider| {
+            if (s.inherited_listener == null) for ([_][]const u8{ "codex", "claude" }) |provider| {
                 @import("integration.zig").install(provider) catch |err| {
                     std.log.warn("{s} hook setup: {s}; using automatic detection", .{ provider, @errorName(err) });
                     var msg: [180]u8 = undefined;
                     s.notice(std.fmt.bufPrint(&msg, "{s} hooks: {s}; automatic detection is active", .{ provider, @errorName(err) }) catch "Hook setup failed; automatic detection is active");
                 };
-            }
+            };
             defer {
                 for (s.clients.items) |*cl| cl.deinit();
                 s.clients.deinit(a);
@@ -1642,12 +1675,14 @@ pub fn Controller(comptime remote: bool) type {
                 for (s.runtime.panes.items, 0..) |*p, i| {
                     if (polls[i + 1].revents != 0) p.refreshCwd();
                     p.terminal.flush();
+                    const journal_size = p.terminal.journal.bytes.items.len;
                     if (p.terminal.read()) {
                         s.runtime.changed();
                         var copy = s.model().*;
                         copy.focus(p.id) catch continue;
                         if (copy.active == s.model().active and (!s.model().tab().zoom or s.model().tab().focus == p.id)) s.dirty = true;
                     }
+                    if (journal_size != p.terminal.journal.bytes.items.len) s.runtime.changed();
                 }
                 const now = std.time.milliTimestamp();
                 if (now - s.last_detection >= 250) {
@@ -1655,6 +1690,7 @@ pub fn Controller(comptime remote: bool) type {
                     for (s.runtime.panes.items) |*p| if (!p.terminal.exited) s.detectPane(p);
                 }
                 for (s.runtime.sessions.items) |*session| {
+                    const old_seq = session.next_seq;
                     const old_state = session.state;
                     const old_ready = session.ready;
                     const old_attention = session.attention;
@@ -1664,6 +1700,7 @@ pub fn Controller(comptime remote: bool) type {
                         _ = c.kill(-session.child.id, c.SIGTERM);
                         break :blk false;
                     };
+                    if (old_seq != session.next_seq) s.runtime.changed();
                     if (session.state != old_state or session.ready != old_ready or session.attention != old_attention or session.toolActive() != old_tool) s.dirty = true;
                     if (ding) {
                         s.bell = true;
@@ -1706,6 +1743,8 @@ pub fn Controller(comptime remote: bool) type {
                         cl.touched = std.time.milliTimestamp();
                         try cl.input.appendSlice(a, bytes[0..@intCast(n)]);
                         if (cl.input.items.len > 1024 * 1024) cl.dead = true;
+                    }
+                    if (cl.input.items.len > 0) {
                         var consumed: usize = 0;
                         while (!cl.dead) {
                             const newline = std.mem.indexOfScalarPos(u8, cl.input.items, consumed, '\n') orelse break;
@@ -1720,6 +1759,7 @@ pub fn Controller(comptime remote: bool) type {
                                 if (cl.attached) s.notice(@errorName(err));
                             };
                             consumed = newline + 1;
+                            if (s.reload_executable != null and s.reload_requester == cl.fd) break;
                         }
                         std.mem.copyForwards(u8, cl.input.items[0 .. cl.input.items.len - consumed], cl.input.items[consumed..]);
                         cl.input.items.len -= consumed;
@@ -1788,6 +1828,23 @@ pub fn Controller(comptime remote: bool) type {
                             try s.clients.append(a, .{ .fd = client_fd, .touched = std.time.milliTimestamp() });
                         }
                     }
+                }
+                if (!s.quit) if (s.reload_executable) |executable| {
+                    @import("handoff.zig").replace(s, fd, executable, s.reload_requester) catch |err| {
+                        for (s.clients.items) |*cl| if (cl.fd == s.reload_requester) try cl.queue(.{ .ok = false, .err = @errorName(err) });
+                        a.free(executable);
+                        s.reload_executable = null;
+                        s.notice(@errorName(err));
+                    };
+                };
+                if ((now - s.last_recovery >= 2000 and s.saved_revision != s.runtime.revision) or s.quit) {
+                    s.last_recovery = now;
+                    @import("recovery.zig").save(&s.runtime, s.socket) catch |err| {
+                        std.log.err("saving recovery: {s}", .{@errorName(err)});
+                        s.notice(" Could not save recovery snapshot; see server.log");
+                        continue;
+                    };
+                    s.saved_revision = s.runtime.revision;
                 }
             }
         }

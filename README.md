@@ -26,7 +26,7 @@ Multiple terminals can attach to the same runtime. They share workspaces, tabs, 
 - The left sidebar is split equally: **workspaces** above, **agents in the selected workspace** below. Click the workspace header **+** to create one; enter just its name to inherit the current workspace’s default folder. Click a workspace to switch, or right-click to rename it. **Ctrl-B w** creates a workspace with just a name, inheriting the current workspace’s folder; **Ctrl-B W** edits it; **Ctrl-B { / }** switches. New tabs and splits use its default folder. Existing panes keep their working directories.
 - The **agent sidebar** shows a colored status circle and working directory, with an activity icon and agent name underneath. Click an agent to jump to its pane; **Ctrl-B**, then **b** toggles the sidebar.
 
-Workspaces retain their tabs, focused panes, and running processes while switching or detaching. Workspace names and default folders are saved automatically across runtime restarts. Selection belongs to each viewer and is not saved across viewer restarts. Tabs and running processes end on restart. No Git worktrees are involved.
+Workspaces retain their tabs, focused panes, and running processes while switching or detaching. Workspace names and folders are saved automatically across runtime restarts. Selection belongs to each viewer and is not saved across viewer restarts. Live reload preserves tabs and running processes. After a crash or reboot, Corgi restores the saved arrangement and terminal output into new shells, in their saved directories, with agent resume commands when known. No Git worktrees are involved.
 
 ```sh
 corgi workspace new Backend ~/dev/backend
@@ -45,11 +45,13 @@ claude
 
 Corgi detects agents automatically, including Bun and Node launches, and sets up hooks in existing Codex/Claude settings directories. Existing settings are preserved, with a backup before editing. Codex may ask you to trust the hooks in `/hooks`.
 
-For UI-only changes, detach with **Ctrl-B q** and run `./go.sh` again, or open another viewer. The new viewer renders and handles input locally while the daemon and its processes keep running. Runtime/protocol changes still require `./go.sh --restart` from outside Corgi; that ends existing shells and agents. Upgrading an older daemon to this viewer protocol requires one such restart.
+For UI-only changes, detach with **Ctrl-B q** and run `./go.sh` again, or open another viewer. The new viewer renders and handles input locally while the daemon and its processes keep running. For runtime/protocol changes, run `./go.sh --reload` even from inside a Corgi pane. It replaces the daemon while preserving pane processes and connected viewers; failure leaves the old daemon running. An older daemon without handoff support needs one final ordinary `./go.sh --restart` from outside Corgi after saving work.
 
-Tests: `./scripts/zig build test`, then `./scripts/zig build -Doptimize=ReleaseSafe -Dviewer-test-driver=true`, `python3 tests/smoke.py`, and `python3 tests/viewers.py`. The last suite drives multiple real viewer controllers over an isolated test transport.
+Recovery snapshots are saved every two seconds when state changes, and on clean shutdown. `corgi checkpoint` saves immediately and prints the private file path. Restored agent commands are displayed for you to run; they are never executed automatically. Shell command history remains managed by the shell.
+
+Tests: `./scripts/zig build test`, then `./scripts/zig build -Doptimize=ReleaseSafe -Dviewer-test-driver=true`, `python3 tests/smoke.py`, `python3 tests/viewers.py`, and `python3 tests/reloads.py`. The last suite drives multiple real viewer controllers over an isolated test transport.
 
 The [development reload milestones](docs/development-reloads.md) describe the
-versioned runtime interface, viewer-owned UI, and planned live handoff.
+versioned runtime interface, viewer-owned UI, live handoff, and recovery after reboot.
 
 See the [reference](docs/reference.md) for all controls and agent APIs.

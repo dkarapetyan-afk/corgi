@@ -9,7 +9,7 @@ pub const version: u32 = 1;
 pub const capabilities = [_][]const u8{
     "viewer.open",      "viewer.sync",       "viewer.search", "layout.apply", "pane.transfer", "pane.restore", "pane.acknowledge", "workspace.create",
     "session.snapshot", "session.subscribe", "pane.surface",  "pane.input",   "pane.create",   "pane.split",   "pane.close",       "tab.rename",
-    "split.resize",
+    "split.resize",     "server.reload",     "recovery.save",
 };
 
 pub fn require(v: std.json.Value, negotiated: ?u32) !void {

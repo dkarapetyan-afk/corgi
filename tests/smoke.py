@@ -79,7 +79,7 @@ class Runtime(unittest.TestCase):
         self.path = self.temp.name + '/control.sock'
         fake = pathlib.Path(self.temp.name, 'provider'); fake.write_text(FAKE); fake.chmod(0o700)
         # Provider settings must be isolated: startup now installs ordinary-CLI hooks.
-        self.env = {**os.environ, 'HOME':self.temp.name, 'CODEX_HOME':self.temp.name+'/.codex', 'CLAUDE_CONFIG_DIR':self.temp.name+'/.claude', 'CORGI_SOCKET':self.path, 'CORGI_BELL':'off', 'CORGI_CODEX_BIN':str(fake), 'CORGI_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
+        self.env = {**os.environ, 'HOME':self.temp.name, 'XDG_STATE_HOME':self.temp.name+'/.local/state', 'CODEX_HOME':self.temp.name+'/.codex', 'CLAUDE_CONFIG_DIR':self.temp.name+'/.claude', 'CORGI_SOCKET':self.path, 'CORGI_BELL':'off', 'CORGI_CODEX_BIN':str(fake), 'CORGI_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
         self.env.pop('CODEX_THREAD_ID',None)
         self.client = None
         self.client_file = None
@@ -267,7 +267,7 @@ class Runtime(unittest.TestCase):
         self.rpc(op='workspace.switch',workspace=default)
         before=self.workspaces()
         self.restart_runtime()
-        self.assertEqual(self.workspaces(),[{**w,'tabs':0} for w in before])
+        self.assertEqual(self.workspaces(),before)
         self.rpc(op='workspace.switch',workspace=ws)
         self.attach();self.frame_with('Renamed')
         self.assertEqual(self.panes()[0]['cwd'],str(folder.resolve()))
@@ -1226,13 +1226,13 @@ event('SessionEnd')
     def test_plain_commands_gain_hooks_without_wrappers(self):
         for provider in ('codex','claude'):
             pane=self.ordinary_agent(provider,hooks=True)
-            self.until(lambda:self.panes()[0]['session']=='ordinary-'+provider)
+            self.until(lambda:next(p for p in self.panes() if p['id']==pane)['session']=='ordinary-'+provider)
             for command,state in [('work','working'),('block','blocked'),('stop','idle')]:
                 self.rpc(op='send',pane=pane,text=command,enter=True)
-                self.until(lambda:self.panes()[0]['state']==state)
+                self.until(lambda:next(p for p in self.panes() if p['id']==pane)['state']==state)
             self.rpc(op='send',pane=pane,text='exit',enter=True)
-            self.until(lambda:self.panes()[0]['provider']=='other')
-            self.assertEqual(self.panes()[0]['session'],'')
+            self.until(lambda:next(p for p in self.panes() if p['id']==pane)['provider']=='other')
+            self.assertEqual(next(p for p in self.panes() if p['id']==pane)['session'],'')
     def test_plain_agent_detection_and_terminal_attention_without_hooks(self):
         pane=self.ordinary_agent('codex')
         self.until(lambda:self.panes()[0]['state']=='idle')

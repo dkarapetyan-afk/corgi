@@ -74,7 +74,7 @@ pub fn connect(path: []const u8) !c_int {
     const fd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
     errdefer std.posix.close(fd);
     try std.posix.connect(fd, &addr.any, addr.getOsSockLen());
-    const timeout: c.struct_timeval = .{ .tv_sec = 3, .tv_usec = 0 };
+    const timeout: c.struct_timeval = .{ .tv_sec = 30, .tv_usec = 0 };
     _ = c.setsockopt(fd, c.SOL_SOCKET, c.SO_SNDTIMEO, &timeout, @sizeOf(@TypeOf(timeout)));
     _ = c.setsockopt(fd, c.SOL_SOCKET, c.SO_RCVTIMEO, &timeout, @sizeOf(@TypeOf(timeout)));
     return fd;

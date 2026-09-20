@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
     mod.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
     const options = b.addOptions();
     options.addOption(bool, "viewer_test_driver", b.option(bool, "viewer-test-driver", "Enable stdio viewer integration harness") orelse false);
+    options.addOption(u64, "terminal_checkpoint_abi", std.hash.Wyhash.hash(0, @embedFile("build.zig.zon")));
     mod.addOptions("corgi_options", options);
     const exe = b.addExecutable(.{ .name = "corgi", .root_module = mod });
     b.installArtifact(exe);

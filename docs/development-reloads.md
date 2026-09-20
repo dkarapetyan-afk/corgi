@@ -7,19 +7,19 @@ manual restart and user check before continuing.
    `runtime.zig`; protocol 1 exposes session data and terminal surfaces separately
    from presentation. The existing daemon-rendered UI and legacy commands still
    work. This milestone does not change viewer focus behavior or enable handoff.
-2. **Viewer-owned UI (this milestone).** Composition, menus, dialogs, and interaction run in
+2. **Viewer-owned UI (complete).** Composition, menus, dialogs, and interaction run in
    the viewer. Workspace/tab order and split arrangement remain shared. Selected
    workspace, selected tab, focused pane, and transient presentation state belong
    to each viewer. Keep selection by ID and reconcile it when another viewer
    closes or moves its target. PTY sizing must account for which panes each
    viewer actually displays; a hidden viewer selection must not steal input or
    resize unrelated panes.
-3. **Live daemon handoff.** Drain accepted writes, pause I/O, transfer PTYs and
+3. **Live daemon handoff and cold recovery (this milestone).** Drain accepted writes, pause I/O, transfer PTYs and
    native-session pipes to a replacement executable, restore state, commit
-   ownership, and reconnect viewers. Preserve process IDs; rollback before
+   ownership, and preserve connected viewers. Preserve process IDs; rollback before
    commit on failure. Never turn a failed reload into a destructive restart.
 
-Normal shutdown remains destructive until milestone 3. An already-running old
+Normal shutdown terminates processes; the next startup now recovers saved context in new shells. An already-running old
 daemon cannot gain export support just because a new executable has been built.
 
 ## Protocol 1
@@ -122,8 +122,7 @@ share selection in this milestone. The new independent selections arrive in 2.
 After the one-time daemon upgrade, rebuild and open `./go.sh` to pick up UI changes.
 The daemon PID and all existing pane processes stay the same. Viewer-only changes
 include menus, dialogs, key bindings, sidebar composition, and presentation. A
-feature needing a new runtime capability still requires a daemon update until
-milestone 3 provides handoff.
+feature needing a new runtime capability uses the live daemon handoff below.
 
 `controller.zig` shares interaction behavior between normal local viewers and the
 legacy socket adapter. The viewer instantiates it with a private `mirror.zig`
@@ -172,3 +171,69 @@ search/copy, agent attention, and sounds.
 Validation uses the existing real-PTY smoke suite plus `tests/viewers.py`, which
 runs the same controller/transport through a deterministic stdio harness enabled
 only by `-Dviewer-test-driver=true`. Normal builds exclude the harness entry point.
+
+
+## Milestone 3: live handoff and recovery
+
+`./go.sh --reload` builds and replaces the daemon, including when invoked inside
+one of its panes. It returns after the handoff; it does not open a nested viewer.
+`corgi reload [ABSOLUTE_EXE]` reloads an existing build. The daemon queues the
+request until the current input slice completes, drains accepted terminal/native
+writes, and stops polling. A forked candidate execs the new binary with an
+allowlist of inherited PTYs, native pipes, client sockets, listener, anonymous
+manifest file, and private handshake socket. Fork inheritance provides the FD
+transfer; it does not fork or restart the pane processes.
+
+The candidate reconstructs and validates all state before reporting ready. It
+cannot perform process I/O until the source sends commit. Before commit, a bad
+binary, incompatible checkpoint, timeout, replay failure, or backpressure kills
+only the candidate and resumes the source. On commit the source exits without
+running process-killing destructors or unlinking the listener. The new daemon
+uses PTY/pipe EOF and process checks for children it cannot waitpid. Normal viewer
+sockets, buffered requests/replies, pending controls, and acknowledgements survive,
+so viewer instances keep all their local state without reconnecting or retrying
+mutations. Legacy raw attachments must detach first.
+
+Exact terminal restoration uses the output byte stream plus resize, theme,
+completed-render, and synchronization-timeout events. Replaying those events with
+PTY reply effects suppressed preserves both screens, retained history, parser
+fragments, saved cursor, margins/origin, wrapping, colors, and keyboard push/pop
+stacks. A terminal dependency fingerprint rejects incompatible replay engines.
+Journals stop being eligible for live handoff at 64 MiB per pane; manifests are
+limited to 256 MiB. No journal is silently truncated. The old daemon continues
+serving when handoff is unavailable. Replay must finish within the 15-second
+candidate readiness timeout.
+
+Disk recovery is intentionally different: every two seconds when changed, before
+handoff, and on clean shutdown, save a versioned snapshot atomically (fsync plus
+rename). `corgi checkpoint` forces a save and prints its location. Files are mode
+0600 inside a mode-0700 recovery directory under XDG_STATE_HOME or HOME, keyed by
+socket path; the default runtime's file survives `/tmp` cleanup. A malformed or
+unsupported saved file fails startup instead of being overwritten by an empty
+session. Recovery restores arrangement, IDs, directories, retained output, and
+recorded agent IDs. New shells show explicit resume commands; no saved input,
+old launch command, pending approval, or agent command is automatically executed.
+Native transports restore as archived sessions plus recovery shell tabs. Existing
+shell history files remain the shell's responsibility. Missing directories use
+HOME and retain the original path in the pane's recovery banner.
+
+### Manual check
+
+The currently running milestone-2 daemon cannot export live state. Save work and
+perform one ordinary `./go.sh --restart` from outside Corgi to install export
+support. Then open two viewers, put a long-running command or agent in a pane,
+and run `./go.sh --reload` from another pane. The daemon PID should change while
+pane PIDs, viewer selections, scrollback, input, menus, and agent sessions survive.
+Repeat with different panes visible and after resizing. Try a nonexistent binary
+with `corgi reload /does/not/exist`; the old runtime should remain usable.
+
+For a cold recovery check in a disposable runtime, change a pane's directory,
+produce recognizable output, and run `corgi checkpoint`. Stop that test runtime
+and start it again. Its saved layout and output should return with new shell PIDs,
+the saved directory, and a resume command for any recorded agent session. Closing
+a pane intentionally removes it from the next recovery snapshot.
+
+Validation: `./scripts/zig build test`, then
+`./scripts/zig build -Doptimize=ReleaseSafe -Dviewer-test-driver=true`,
+`python3 tests/smoke.py`, `python3 tests/viewers.py`, and `python3 tests/reloads.py`.
+All process tests use isolated sockets, HOME/state directories, and provider doubles.

@@ -2,6 +2,11 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 "$root/scripts/zig" build -Doptimize=ReleaseSafe
+if [ "${1:-}" = "--reload" ]; then
+    shift
+    "$root/zig-out/bin/corgi" reload
+    if [ "$#" -eq 0 ]; then exit 0; fi
+fi
 if [ "${1:-}" = "--restart" ]; then
     shift
     binary="$root/zig-out/bin/corgi"

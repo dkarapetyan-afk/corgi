@@ -6,7 +6,7 @@ const a = os.allocator;
 const c = os.c;
 const agents = @import("agents.zig");
 pub const Event = struct { seq: u64, line: []const u8 };
-const Tool = struct {
+pub const Tool = struct {
     id: []const u8,
     thread: []const u8,
     turn: []const u8,
@@ -22,6 +22,8 @@ pub const Session = struct {
     cwd: []const u8,
     child: std.process.Child,
     ready: bool = false,
+    imported: bool = false,
+    resume_hint: @import("checkpoint.zig").Resume = .{},
     workspace_id: u32 = 0,
     exited: bool = false,
     state: agents.State = .initializing,
@@ -64,6 +66,7 @@ pub const Session = struct {
         os.cloexec(child.stdout.?.handle);
         os.cloexec(child.stdin.?.handle);
         var result: Session = .{ .id = id, .provider = provider, .cwd = directory, .child = child, .ready = provider == .claude, .state = if (provider == .claude) .idle else .initializing };
+        result.resume_hint.provider = provider;
         if (provider == .codex) try result.queue(.{ .id = "__corgi_init", .method = "initialize", .params = .{ .clientInfo = .{ .name = "corgi", .version = "0.1.0" } } });
         return result;
     }
@@ -220,8 +223,8 @@ pub const Session = struct {
             }
         }
     }
-    pub fn poll(s: *Session) !bool {
-        if (s.exited) return false;
+    pub fn flush(s: *Session) void {
+        if (s.exited) return;
         while (s.output.items.len > 0) {
             const n = c.write(s.child.stdin.?.handle, s.output.items.ptr, s.output.items.len);
             if (n <= 0) break;
@@ -229,11 +232,18 @@ pub const Session = struct {
             std.mem.copyForwards(u8, s.output.items[0 .. s.output.items.len - count], s.output.items[count..]);
             s.output.items.len -= count;
         }
+    }
+    pub fn poll(s: *Session) !bool {
+        if (s.exited) return false;
+        s.flush();
         var ding = false;
         var buf: [16384]u8 = undefined;
         for (0..8) |_| {
             const n = c.read(s.child.stdout.?.handle, &buf, buf.len);
-            if (n <= 0) break;
+            if (n <= 0) {
+                if (s.imported and n == 0) s.markExited();
+                break;
+            }
             try s.input.appendSlice(a, buf[0..@intCast(n)]);
             if (s.input.items.len > 4 * 1024 * 1024) return error.NativeMessageTooLarge;
             var consumed: usize = 0;
@@ -258,6 +268,14 @@ pub const Session = struct {
                 const kind = agents.str(v, "type");
                 const params = if (v == .object) v.object.get("params") orelse .null else .null;
                 const thread_id = agents.str(params, "threadId");
+                // Remember concrete provider IDs, never infer a session from cwd.
+                var session_id = if (s.provider == .claude) agents.str(v, "session_id") else thread_id;
+                if (session_id.len == 0 and s.provider == .codex and v == .object) {
+                    const result = v.object.get("result") orelse params;
+                    if (result == .object) session_id = agents.str(result.object.get("thread") orelse .null, "id");
+                }
+                s.resume_hint.provider = s.provider;
+                if (session_id.len > 0 and session_id.len <= s.resume_hint.session.len) s.resume_hint.len = agents.clean(&s.resume_hint.session, session_id);
                 try s.observeTools(v, params, method, kind);
                 if (requestId(s.provider, v) != null) {
                     if (s.approvals.items.len >= 64) return error.TooManyNativeRequests;

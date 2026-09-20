@@ -15,10 +15,11 @@ pub const Pane = struct {
     agent: agents.Agent = .{},
     detection: @import("detection.zig").Tracker = .{},
     cwd: []const u8,
+    resume_hint: @import("checkpoint.zig").Resume = .{},
 
     pub fn refreshCwd(p: *Pane) void {
         if (p.terminal.exited) return;
-        if ((if (p.detection.pid > 0) os.processCwd(p.detection.pid) else null) orelse os.processCwd(p.terminal.pid)) |cwd| {
+        if ((if (p.detection.pid > 0) os.processCwd(p.detection.pid) else null) orelse (if (os.c.tcgetpgrp(p.terminal.fd) > 0) os.processCwd(os.c.tcgetpgrp(p.terminal.fd)) else null) orelse os.processCwd(p.terminal.pid)) |cwd| {
             a.free(p.cwd);
             p.cwd = cwd;
         }
@@ -97,7 +98,8 @@ pub const Runtime = struct {
         errdefer a.free(dir);
         const t = try Terminal.create(opts.cols, opts.rows);
         errdefer t.destroy();
-        opts.theme.apply(&t.vt);
+        t.record();
+        t.applyTheme(opts.theme);
         try r.panes.ensureUnusedCapacity(a, 1);
         try t.spawn(dir, opts.socket, id, opts.executable, opts.command);
         r.panes.appendAssumeCapacity(.{ .id = id, .terminal = t, .cwd = dir });

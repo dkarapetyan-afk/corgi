@@ -6,7 +6,9 @@ const agents = @import("agents.zig");
 const integration = @import("integration.zig");
 pub fn main() void {
     run() catch |err| {
-        if (err == error.ViewerProtocolUnavailable) {
+        if (err == error.ReloadProtocolUnavailable) {
+            std.debug.print("corgi: this daemon predates live handoff. Save work and perform one ordinary restart from outside Corgi. The current daemon and panes were left running.\n", .{});
+        } else if (err == error.ViewerProtocolUnavailable) {
             std.debug.print("corgi: this daemon needs one update to support local viewers. Save work and restart it from outside Corgi; later UI changes only need a new viewer.\n", .{});
         } else if (err == error.NestedCorgi) {
             std.debug.print("corgi: cannot attach inside a Corgi pane; detach first or use another terminal.\n", .{});
@@ -36,6 +38,15 @@ fn run() !void {
         return os.writeAll(1, "\n");
     }
     if (@import("corgi_options").viewer_test_driver and eq(cmd, "__viewer-test")) return @import("viewer_test.zig").run(path);
+    if (eq(cmd, "__handoff")) {
+        if (args.len != 4) return error.Usage;
+        @import("handoff.zig").importAndRun(path, exe, try std.fmt.parseInt(c_int, args[2], 10), try std.fmt.parseInt(c_int, args[3], 10));
+    }
+    if (eq(cmd, "reload")) {
+        if (args.len > 3) return error.Usage;
+        return reload(path, if (args.len == 3) args[2] else exe);
+    }
+    if (eq(cmd, "checkpoint")) return request(path, .{ .op = "recovery.save", .protocol = 1 }, false);
     if (eq(cmd, "serve")) {
         var server: @import("server.zig").Server = .{ .socket = path, .executable = exe };
         return server.run();
@@ -126,6 +137,32 @@ fn run() !void {
     }
     return error.UnknownCommand;
 }
+fn reload(path: []const u8, executable: []const u8) !void {
+    const fd = try os.connect(path);
+    defer _ = c.close(fd);
+    var conn: @import("rpc.zig").Connection = .{ .fd = fd };
+    const hello = try conn.call(.{ .op = "hello", .protocol = 1 });
+    defer hello.deinit();
+    const caps = if (hello.value == .object) hello.value.object.get("capabilities") orelse return error.ReloadProtocolUnavailable else return error.ReloadProtocolUnavailable;
+    if (caps != .array) return error.ReloadProtocolUnavailable;
+    const supported = for (caps.array.items) |cap| {
+        if (cap == .string and eq(cap.string, "server.reload")) break true;
+    } else false;
+    if (!supported) return error.ReloadProtocolUnavailable;
+    // Keep the server's specific rejection (backpressure, checkpoint limit, etc.).
+    try os.sendJson(fd, .{ .op = "server.reload", .protocol = 1, .executable = executable });
+    const line = try os.readLine(fd, 1024 * 1024);
+    defer a.free(line);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, line, .{});
+    defer parsed.deinit();
+    const err = agents.str(parsed.value, "err");
+    if (err.len > 0) {
+        std.debug.print("corgi: reload failed ({s}); the current daemon and processes remain running.\n", .{err});
+        return error.ReloadFailed;
+    }
+    try os.writeAll(1, line);
+    try os.writeAll(1, "\n");
+}
 fn request(path: []const u8, value: anytype, plain: bool) !void {
     const fd = try os.connect(path);
     defer _ = c.close(fd);
@@ -176,7 +213,6 @@ fn ensureServer(path: []const u8, exe: []const u8) !void {
         if (log > 2) _ = c.close(log);
         if (devnull > 2) _ = c.close(devnull);
         _ = c.close(lock.handle);
-        os.setenv("CORGI_SOCKET", path) catch c._exit(127);
         os.exec(&.{ exe, "serve" }) catch c._exit(127);
     }
     var status: c_int = 0;
@@ -217,6 +253,8 @@ const help =
     \\  corgi native events ID [SEQ]   bounded journal + pending requests
     \\  corgi native stop ID           stop native session
     \\  corgi rpc JSON                local JSON control protocol
+    \\  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes
+    \\  corgi checkpoint               save recovery context now
     \\  corgi shutdown                terminate runtime and its panes
     \\
     \\Keys: Ctrl-B opens a clickable command menu; then c tab, v/- split,
@@ -229,6 +267,7 @@ const help =
 ;
 test {
     _ = @import("checkpoint_probe.zig");
+    _ = @import("replay_test.zig");
     _ = @import("runtime.zig");
     _ = @import("protocol.zig");
     _ = @import("surface.zig");
