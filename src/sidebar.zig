@@ -16,7 +16,7 @@ pub const Entry = struct {
     tool_active: bool = false,
 
     // Herdr's dot style and Catppuccin colors; finished attention is its
-    // unseen-idle state. Wrangler also retains ended native sessions.
+    // unseen-idle state. Corgi also retains ended native sessions.
     fn indicator(e: Entry) struct { icon: []const u8, color: []const u8 } {
         if (e.state == .done) return .{ .icon = "○", .color = "\x1b[38;2;108;112;134m" };
         if (e.state == .blocked or e.attention == .needs_input) return .{ .icon = "●", .color = "\x1b[38;2;243;139;168m" };
@@ -161,7 +161,7 @@ fn directoryLabel(out: []u8, cwd: []const u8, home_dir: ?[]const u8) []const u8 
 
 test "directory labels keep path boundaries, Unicode and terminal safety" {
     var buf: [256]u8 = undefined;
-    try std.testing.expectEqualStrings("~/dev/wrangler", directoryLabel(&buf, "/home/tal/dev/wrangler", "/home/tal"));
+    try std.testing.expectEqualStrings("~/dev/corgi", directoryLabel(&buf, "/home/tal/dev/corgi", "/home/tal"));
     try std.testing.expectEqualStrings("/home/tally", directoryLabel(&buf, "/home/tally", "/home/tal"));
     try std.testing.expectEqualStrings("~/项目", directoryLabel(&buf, "/home/tal/项目", "/home/tal"));
     try std.testing.expectEqualStrings("/tmp/?[2J?oops", directoryLabel(&buf, "/tmp/\x1b[2J\noops", null));

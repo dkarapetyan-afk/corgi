@@ -6,7 +6,7 @@ const agents = @import("agents.zig");
 const integration = @import("integration.zig");
 pub fn main() void {
     run() catch |err| {
-        std.debug.print("wrangler: {s}\n", .{@errorName(err)});
+        std.debug.print("corgi: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 }
@@ -19,7 +19,7 @@ fn run() !void {
     defer a.free(exe);
     const cmd = if (args.len > 1) args[1] else "attach";
     if (eq(cmd, "--help") or eq(cmd, "help")) return os.writeAll(1, help);
-    if (eq(cmd, "--version")) return os.writeAll(1, "wrangler 0.1.0 (Ghostty VT; Zig 0.15.2)\n");
+    if (eq(cmd, "--version")) return os.writeAll(1, "corgi 0.1.0 (Ghostty VT; Zig 0.15.2)\n");
     if (eq(cmd, "which")) {
         if (args.len != 3) return error.Usage;
         const provider = std.meta.stringToEnum(agents.Provider, args[2]) orelse return error.BadProvider;
@@ -149,7 +149,7 @@ fn ensureServer(path: []const u8, exe: []const u8) !void {
         if (log > 2) _ = c.close(log);
         if (devnull > 2) _ = c.close(devnull);
         _ = c.close(lock.handle);
-        os.setenv("WRANGLER_SOCKET", path) catch c._exit(127);
+        os.setenv("CORGI_SOCKET", path) catch c._exit(127);
         os.exec(&.{ exe, "serve" }) catch c._exit(127);
     }
     var status: c_int = 0;
@@ -167,35 +167,35 @@ fn eq(x: []const u8, y: []const u8) bool {
     return std.mem.eql(u8, x, y);
 }
 const help =
-    \\wrangler — a small Ghostty-powered agent terminal
+    \\corgi — a small Ghostty-powered agent terminal
     \\
-    \\  wrangler                         start / attach
-    \\  wrangler start                   start detached runtime
-    \\  wrangler new [shell-command]     create tab
-    \\  wrangler split right|down [cmd]  split focused pane
-    \\  wrangler list                    JSON pane and agent inventory
-    \\  wrangler focus|close|read ID      manage / capture pane
-    \\  wrangler send ID TEXT [--enter]   literal input
-    \\  wrangler action NAME [VALUE]     zoom, rename, next, prev, tab,
+    \\  corgi                         start / attach
+    \\  corgi start                   start detached runtime
+    \\  corgi new [shell-command]     create tab
+    \\  corgi split right|down [cmd]  split focused pane
+    \\  corgi list                    JSON pane and agent inventory
+    \\  corgi focus|close|read ID      manage / capture pane
+    \\  corgi send ID TEXT [--enter]   literal input
+    \\  corgi action NAME [VALUE]     zoom, rename, next, prev, tab,
     \\                                   focus, swap, resize, move-tab,
     \\                                   attention, mute, close-tab, undo-close
-    \\  wrangler agent claude|codex ...   optional discovered-binary launcher
-    \\  wrangler hooks claude|codex       print hook configuration
-    \\  wrangler which codex             show automatically selected executable
-    \\  wrangler native start PROVIDER    durable native JSONL session
-    \\  wrangler native list              list native sessions
-    \\  wrangler native send ID JSON      provider request / approval response
-    \\  wrangler native events ID [SEQ]   bounded journal + pending requests
-    \\  wrangler native stop ID           stop native session
-    \\  wrangler rpc JSON                local JSON control protocol
-    \\  wrangler shutdown                terminate runtime and its panes
+    \\  corgi agent claude|codex ...   optional discovered-binary launcher
+    \\  corgi hooks claude|codex       print hook configuration
+    \\  corgi which codex             show automatically selected executable
+    \\  corgi native start PROVIDER    durable native JSONL session
+    \\  corgi native list              list native sessions
+    \\  corgi native send ID JSON      provider request / approval response
+    \\  corgi native events ID [SEQ]   bounded journal + pending requests
+    \\  corgi native stop ID           stop native session
+    \\  corgi rpc JSON                local JSON control protocol
+    \\  corgi shutdown                terminate runtime and its panes
     \\
     \\Keys: Ctrl-B opens a clickable command menu; then c tab, v/- split,
     \\hjkl focus, HJKL swap, z zoom,
     \\r resize, T rename, n/p tabs, 1–9 jump, x close, X close tab,
     \\u undo close, [ scroll/copy, a attention, b agent sidebar, m mute, q detach, ? help.
     \\
-    \\WRANGLER_SOCKET selects a runtime. No worktrees or workspaces.
+    \\CORGI_SOCKET selects a runtime. No worktrees or workspaces.
     \\
 ;
 test {

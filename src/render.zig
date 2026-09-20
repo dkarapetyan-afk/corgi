@@ -163,7 +163,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
         try w.writeAll(text[0..@min(text.len, width)]);
     } else {
         var agent_label: [64]u8 = undefined;
-        var label: []const u8 = "wrangler";
+        var label: []const u8 = "corgi";
         if (model.count > 0) for (panes) |p| {
             if (p.id == model.tab().focus and p.agent.provider != .other) {
                 label = try std.fmt.bufPrint(&agent_label, "{s} {s}", .{ @tagName(p.agent.provider), @tagName(p.agent.state) });

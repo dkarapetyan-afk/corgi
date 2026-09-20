@@ -11,8 +11,8 @@ const Provider = @import("agents.zig").Provider;
 /// The caller owns the result. Explicit overrides preserve execvp semantics.
 pub fn resolve(provider: Provider, cwd: ?[]const u8) ![]const u8 {
     switch (provider) {
-        .claude => return a.dupe(u8, os.env("WRANGLER_CLAUDE_BIN") orelse "claude"),
-        .codex => if (os.env("WRANGLER_CODEX_BIN")) |path| {
+        .claude => return a.dupe(u8, os.env("CORGI_CLAUDE_BIN") orelse "claude"),
+        .codex => if (os.env("CORGI_CODEX_BIN")) |path| {
             if (path.len > 0) return a.dupe(u8, path);
         },
         .other => return error.BadProvider,

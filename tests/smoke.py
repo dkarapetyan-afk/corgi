@@ -20,7 +20,7 @@ import unittest
 import unicodedata
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXE = str(ROOT / 'zig-out/bin/wrangler')
+EXE = str(ROOT / 'zig-out/bin/corgi')
 
 FAKE = r'''#!/usr/bin/env python3
 import sys, json
@@ -74,11 +74,11 @@ def screen_text(data, cols=80, rows=24):
 
 class Runtime(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='wrangler-test-')
+        self.temp = tempfile.TemporaryDirectory(prefix='corgi-test-')
         self.path = self.temp.name + '/control.sock'
         fake = pathlib.Path(self.temp.name, 'provider'); fake.write_text(FAKE); fake.chmod(0o700)
         # Provider settings must be isolated: startup now installs ordinary-CLI hooks.
-        self.env = {**os.environ, 'HOME':self.temp.name, 'CODEX_HOME':self.temp.name+'/.codex', 'CLAUDE_CONFIG_DIR':self.temp.name+'/.claude', 'WRANGLER_SOCKET':self.path, 'WRANGLER_BELL':'off', 'WRANGLER_CODEX_BIN':str(fake), 'WRANGLER_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
+        self.env = {**os.environ, 'HOME':self.temp.name, 'CODEX_HOME':self.temp.name+'/.codex', 'CLAUDE_CONFIG_DIR':self.temp.name+'/.claude', 'CORGI_SOCKET':self.path, 'CORGI_BELL':'off', 'CORGI_CODEX_BIN':str(fake), 'CORGI_CLAUDE_BIN':str(fake), 'SHELL':'/bin/sh'}
         self.env.pop('CODEX_THREAD_ID',None)
         self.client = None
         self.client_file = None
@@ -487,7 +487,7 @@ while True:
         self.attach();screen=self.frame_with('No agents yet')
         self.assertTrue(screen[0].startswith(' agents'))
         def hook(event,**extra):
-            p=subprocess.run([EXE,'hook','codex'],env={**self.env,'WRANGLER_PANE':str(one)},input=json.dumps({'hook_event_name':event,'session_id':'sidebar',**extra}),text=True,capture_output=True,timeout=3)
+            p=subprocess.run([EXE,'hook','codex'],env={**self.env,'CORGI_PANE':str(one)},input=json.dumps({'hook_event_name':event,'session_id':'sidebar',**extra}),text=True,capture_output=True,timeout=3)
             self.assertEqual((p.returncode,p.stdout,p.stderr),(0,'',''))
         hook('SessionStart');screen=self.agent_frame('codex','○',color='166;227;161')
         self.assertNotIn('SessionStart','\n'.join(screen))
@@ -554,7 +554,7 @@ while True:
         self.rpc(op='native.send',session=ident,message={'id':1,'method':'test/approval'})
         screen=self.agent_frame('codex','●',activity='🔧',color='243;139;168')
         self.click_text([row[:27] for row in screen],'codex')
-        self.frame_with(f'wrangler native events {ident}')
+        self.frame_with(f'corgi native events {ident}')
         session=self.rpc(op='native.list')['sessions'][0]
         self.assertEqual((session['pending_requests'],session['attention']),(1,'needs_input'))
         self.rpc(op='native.send',session=ident,message={'id':900,'result':{'decision':'decline'}})
@@ -605,7 +605,7 @@ while True:
     def test_hook_binary_silent_and_configuration_valid(self):
         pane=self.rpc(op='new',cwd=self.temp.name)['pane']
         payload=json.dumps({'hook_event_name':'UserPromptSubmit','session_id':'session'})
-        p=subprocess.run([EXE,'hook','claude'],env={**self.env,'WRANGLER_PANE':str(pane)},input=payload,text=True,capture_output=True,timeout=3)
+        p=subprocess.run([EXE,'hook','claude'],env={**self.env,'CORGI_PANE':str(pane)},input=payload,text=True,capture_output=True,timeout=3)
         self.assertEqual((p.returncode,p.stdout,p.stderr),(0,'',''))
         self.until(lambda:self.panes()[0]['state']=='working')
         for provider in ('claude','codex'):
@@ -622,13 +622,13 @@ while True:
         self.restart_runtime()
         contents=[]
         for path in paths:
-            self.until(lambda:'WRANGLER_BIN' in path.read_text())
+            self.until(lambda:'CORGI_BIN' in path.read_text())
             saved=json.loads(path.read_text());self.assertEqual(saved['theme'],'dark')
             self.assertEqual(saved['hooks']['Stop'][0],original['hooks']['Stop'][0])
-            self.assertEqual(json.loads(path.with_name(path.name+'.wrangler-backup').read_text()),original)
+            self.assertEqual(json.loads(path.with_name(path.name+'.corgi-backup').read_text()),original)
             contents.append((path.read_bytes(),path.stat().st_mtime_ns))
             command=saved['hooks']['Stop'][-1]['hooks'][0]['command']
-            outside={k:v for k,v in self.env.items() if not k.startswith('WRANGLER_')}
+            outside={k:v for k,v in self.env.items() if not k.startswith('CORGI_')}
             result=subprocess.run(['/bin/sh','-c',command],env=outside,input='{}',text=True,capture_output=True,timeout=3)
             self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
         self.restart_runtime()
@@ -752,7 +752,7 @@ event('SessionEnd')
         bin_dir=pathlib.Path(self.temp.name,'auto-bin');bin_dir.mkdir()
         binary=bin_dir/'codex'
         binary.write_text(FAKE.replace('#!/usr/bin/env python3',f'#!{sys.executable}',1));binary.chmod(0o700)
-        self.env.pop('WRANGLER_CODEX_BIN')
+        self.env.pop('CORGI_CODEX_BIN')
         self.env['PATH']=str(bin_dir)+os.pathsep+self.env.get('PATH','')
         ident=json.loads(self.run_cli('native','start','codex'))['session']
         self.until(lambda:any(s['id']==ident and s['ready'] for s in self.rpc(op='native.list')['sessions']))
@@ -779,8 +779,8 @@ event('SessionEnd')
         while time.monotonic()<end:
             ready,_,_=select.select([self.master],[],[],.1)
             if ready:collected.extend(os.read(self.master,65536))
-            if b'wrangler' in collected:break
-        self.assertIn(b'wrangler',collected)
+            if b'corgi' in collected:break
+        self.assertIn(b'corgi',collected)
         os.write(self.master,keys)
         end=time.monotonic()+4
         while self.proc.poll() is None and time.monotonic()<end:
@@ -796,10 +796,10 @@ event('SessionEnd')
 
 class Discovery(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='wrangler-discovery-')
+        self.temp=tempfile.TemporaryDirectory(prefix='corgi-discovery-')
         self.root=pathlib.Path(self.temp.name)
         self.env={**os.environ,'HOME':str(self.root),'PATH':''}
-        self.env.pop('WRANGLER_CODEX_BIN',None)
+        self.env.pop('CORGI_CODEX_BIN',None)
     def tearDown(self):self.temp.cleanup()
     def script(self,relative,body):
         path=self.root/relative;path.parent.mkdir(parents=True,exist_ok=True)
@@ -816,7 +816,7 @@ class Discovery(unittest.TestCase):
         self.env['PATH']=os.pathsep.join(str(p.parent) for p in (broken,unrelated,valid))
         self.assertEqual(self.which(),str(valid))
         # The interactive launcher must select the same binary, not the broken PATH entry.
-        p=subprocess.run([EXE,'agent','codex','--version'],env={**self.env,'WRANGLER_PANE':'1'},text=True,capture_output=True,timeout=5)
+        p=subprocess.run([EXE,'agent','codex','--version'],env={**self.env,'CORGI_PANE':'1'},text=True,capture_output=True,timeout=5)
         self.assertEqual((p.returncode,p.stdout.strip()),(0,'codex-cli 1.2.3'))
     def test_skip_hanging_candidate(self):
         hung=self.script('hung/codex','/bin/sleep 30')
@@ -841,7 +841,7 @@ class Discovery(unittest.TestCase):
         valid=self.script('Applications/Codex Beta.app/Contents/Resources/codex','echo "codex-cli 1.2.3"')
         self.assertEqual(self.which(),str(valid))
     def test_explicit_override_is_preserved(self):
-        self.env['WRANGLER_CODEX_BIN']='/custom/provider'
+        self.env['CORGI_CODEX_BIN']='/custom/provider'
         self.assertEqual(self.which(),'/custom/provider')
 
 if __name__=='__main__': unittest.main(verbosity=2)

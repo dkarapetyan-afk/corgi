@@ -1,4 +1,4 @@
-# Wrangler
+# Corgi
 
 A minimal terminal multiplexer for coding agents, written in Zig with Ghostty's terminal engine.
 
@@ -10,7 +10,7 @@ From this directory:
 ./go.sh
 ```
 
-This builds Wrangler and starts or attaches to its background runtime. No configuration required.
+This builds Corgi and starts or attaches to its background runtime. No configuration required.
 
 - **Ctrl-B** opens the clickable command menu and shows shortcuts.
 - Click **+** to create a tab; right-click a tab to rename or close it. Unnamed tabs show their current position; clear a name to return to automatic numbering.
@@ -26,9 +26,9 @@ codex
 claude
 ```
 
-Wrangler detects agents automatically, including Bun and Node launches, and sets up hooks in existing Codex/Claude settings directories. Existing settings are preserved, with a backup before editing. Codex may ask you to trust the hooks in `/hooks`.
+Corgi detects agents automatically, including Bun and Node launches, and sets up hooks in existing Codex/Claude settings directories. Existing settings are preserved, with a backup before editing. Codex may ask you to trust the hooks in `/hooks`.
 
-To load code changes, run `./go.sh --restart` from outside Wrangler. This ends the old runtime's shells and agents; sessions do not survive a runtime restart.
+To load code changes, run `./go.sh --restart` from outside Corgi. This ends the old runtime's shells and agents; sessions do not survive a runtime restart.
 
 Tests: `./scripts/zig build test` and `python3 tests/smoke.py` (after building).
 

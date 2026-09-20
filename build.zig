@@ -16,11 +16,11 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     mod.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
-    const exe = b.addExecutable(.{ .name = "wrangler", .root_module = mod });
+    const exe = b.addExecutable(.{ .name = "corgi", .root_module = mod });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     if (b.args) |args| run.addArgs(args);
-    b.step("run", "Run Wrangler").dependOn(&run.step);
+    b.step("run", "Run Corgi").dependOn(&run.step);
     const tests = b.addTest(.{ .root_module = mod });
     b.step("test", "Test layouts, hooks, signaling and terminal behavior").dependOn(&b.addRunArtifact(tests).step);
 }

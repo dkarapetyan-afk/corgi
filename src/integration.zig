@@ -3,7 +3,7 @@ const os = @import("os.zig");
 const a = os.allocator;
 const common = [_][]const u8{ "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd", "PreCompact" };
 pub fn hook(provider: []const u8, path: []const u8) !void {
-    const pane = os.env("WRANGLER_PANE") orelse return;
+    const pane = os.env("CORGI_PANE") orelse return;
     const id = std.fmt.parseInt(u32, pane, 10) catch return;
     var input: std.ArrayList(u8) = .empty;
     defer input.deinit(a);
@@ -76,10 +76,10 @@ fn hookCommand(provider: []const u8, executable: []const u8) ![]u8 {
     defer a.free(quoted);
     return std.fmt.allocPrint(a, "{s} hook {s}", .{ quoted, provider });
 }
-// A stable definition survives moving/rebuilding Wrangler and is a no-op in
-// ordinary terminals. The pane sets WRANGLER_BIN to its actual executable.
+// A stable definition survives moving/rebuilding Corgi and is a no-op in
+// ordinary terminals. The pane sets CORGI_BIN to its actual executable.
 fn installedCommand(provider: []const u8) ![]u8 {
-    return std.fmt.allocPrint(a, "if [ -n \"${{WRANGLER_PANE:-}}\" ] && [ -n \"${{WRANGLER_SOCKET:-}}\" ] && [ -x \"${{WRANGLER_BIN:-}}\" ]; then \"$WRANGLER_BIN\" hook {s}; fi", .{provider});
+    return std.fmt.allocPrint(a, "if [ -n \"${{CORGI_PANE:-}}\" ] && [ -n \"${{CORGI_SOCKET:-}}\" ] && [ -x \"${{CORGI_BIN:-}}\" ]; then \"$CORGI_BIN\" hook {s}; fi", .{provider});
 }
 
 /// Merge into the existing provider JSON; never replace other hook handlers.
@@ -133,7 +133,7 @@ pub fn install(provider: []const u8) !void {
         return err;
     };
     defer dir.close();
-    const lock = try dir.createFile(".wrangler-hooks.lock", .{ .truncate = false, .mode = 0o600 });
+    const lock = try dir.createFile(".corgi-hooks.lock", .{ .truncate = false, .mode = 0o600 });
     defer lock.close();
     if (!try lock.tryLock(.exclusive)) return error.HookSettingsBusy;
     defer lock.unlock();
@@ -151,7 +151,7 @@ pub fn install(provider: []const u8) !void {
     const after = try mergedConfig(a, provider, before) orelse return;
     defer a.free(after);
     if (exists) {
-        const backup_name = try std.fmt.allocPrint(a, "{s}.wrangler-backup", .{filename});
+        const backup_name = try std.fmt.allocPrint(a, "{s}.corgi-backup", .{filename});
         defer a.free(backup_name);
         if (dir.createFile(backup_name, .{ .exclusive = true, .mode = 0o600 })) |backup| {
             defer backup.close();
@@ -182,7 +182,7 @@ pub fn shellQuote(text: []const u8) ![]u8 {
 }
 pub fn launch(provider: []const u8, args: []const []const u8, executable: []const u8) !noreturn {
     _ = executable;
-    if (os.env("WRANGLER_PANE") == null) return error.LaunchInsideWrangler;
+    if (os.env("CORGI_PANE") == null) return error.LaunchInsideCorgi;
     var argv: std.ArrayList([]const u8) = .empty;
     const provider_kind = std.meta.stringToEnum(@import("agents.zig").Provider, provider) orelse return error.BadProvider;
     const binary = try @import("discovery.zig").resolve(provider_kind, null);
@@ -192,7 +192,7 @@ pub fn launch(provider: []const u8, args: []const []const u8, executable: []cons
     return os.exec(argv.items);
 }
 test "shell quoting protects binary paths containing shell syntax" {
-    const result = try shellQuote("/tmp/a'b$(echo bad)/wrangler");
+    const result = try shellQuote("/tmp/a'b$(echo bad)/corgi");
     defer a.free(result);
-    try std.testing.expectEqualStrings("'/tmp/a'\\''b$(echo bad)/wrangler'", result);
+    try std.testing.expectEqualStrings("'/tmp/a'\\''b$(echo bad)/corgi'", result);
 }

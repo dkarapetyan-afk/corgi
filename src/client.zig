@@ -81,7 +81,7 @@ pub fn attach(path: []const u8) !void {
                 const err = agents.str(v, "err");
                 if (err.len > 0) {
                     cleanup();
-                    std.debug.print("wrangler: {s}\n", .{err});
+                    std.debug.print("corgi: {s}\n", .{err});
                     return error.ServerRejected;
                 }
                 consumed = end + 1;
@@ -99,7 +99,7 @@ fn dimensions() c.struct_winsize {
     return size;
 }
 fn ding(kind: []const u8) !void {
-    if (os.env("WRANGLER_BELL")) |setting| {
+    if (os.env("CORGI_BELL")) |setting| {
         if (std.mem.eql(u8, setting, "off")) return;
         if (std.mem.eql(u8, setting, "terminal")) return os.writeAll(1, "\x07");
     }

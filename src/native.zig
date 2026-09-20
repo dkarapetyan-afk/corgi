@@ -49,7 +49,7 @@ pub const Session = struct {
         var child = std.process.Child.init(argv.items, a);
         var env = try std.process.getEnvMap(a);
         defer env.deinit();
-        env.remove("WRANGLER_PANE");
+        env.remove("CORGI_PANE");
         child.env_map = &env;
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
@@ -63,7 +63,7 @@ pub const Session = struct {
         os.cloexec(child.stdout.?.handle);
         os.cloexec(child.stdin.?.handle);
         var result: Session = .{ .id = id, .provider = provider, .cwd = directory, .child = child, .ready = provider == .claude, .state = if (provider == .claude) .idle else .initializing };
-        if (provider == .codex) try result.queue(.{ .id = "__wrangler_init", .method = "initialize", .params = .{ .clientInfo = .{ .name = "wrangler", .version = "0.1.0" } } });
+        if (provider == .codex) try result.queue(.{ .id = "__corgi_init", .method = "initialize", .params = .{ .clientInfo = .{ .name = "corgi", .version = "0.1.0" } } });
         return result;
     }
     pub fn destroy(s: *Session) void {
@@ -188,7 +188,7 @@ pub const Session = struct {
     pub fn send(s: *Session, v: std.json.Value) !void {
         if (s.exited) return error.NativeExited;
         if (v != .object) return error.InvalidMessage;
-        if (eq(agents.str(v, "id"), "__wrangler_init")) return error.ReservedRequestId;
+        if (eq(agents.str(v, "id"), "__corgi_init")) return error.ReservedRequestId;
         if (s.ready) try s.queue(v) else {
             const line = try std.json.Stringify.valueAlloc(a, v, .{});
             defer a.free(line);
@@ -244,7 +244,7 @@ pub const Session = struct {
                 };
                 defer parsed.deinit();
                 const v = parsed.value;
-                if (s.provider == .codex and eq(agents.str(v, "id"), "__wrangler_init")) {
+                if (s.provider == .codex and eq(agents.str(v, "id"), "__corgi_init")) {
                     if (v == .object and v.object.contains("error")) return error.NativeInitializeFailed;
                     try s.queue(.{ .method = "initialized" });
                     try s.output.appendSlice(a, s.deferred.items);

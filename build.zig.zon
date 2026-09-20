@@ -1,7 +1,7 @@
 .{
-    .name = .wrangler,
+    .name = .corgi,
     .version = "0.1.0",
-    .fingerprint = 0x1c57e13d2ead1195,
+    .fingerprint = 0x32528577fd5b0acf,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .ghostty = .{

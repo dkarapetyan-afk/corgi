@@ -66,8 +66,8 @@ pub fn exec(args: []const []const u8) !noreturn {
     return error.ExecFailed;
 }
 pub fn socketPath() ![]const u8 {
-    if (env("WRANGLER_SOCKET")) |p| return allocator.dupe(u8, p);
-    return std.fmt.allocPrint(allocator, "/tmp/wrangler-{d}/control.sock", .{c.getuid()});
+    if (env("CORGI_SOCKET")) |p| return allocator.dupe(u8, p);
+    return std.fmt.allocPrint(allocator, "/tmp/corgi-{d}/control.sock", .{c.getuid()});
 }
 pub fn connect(path: []const u8) !c_int {
     const addr = try std.net.Address.initUnix(path);

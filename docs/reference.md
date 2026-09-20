@@ -1,6 +1,6 @@
-# Wrangler reference
+# Corgi reference
 
-A small terminal multiplexer for agents, written in Zig, using **Ghostty's native Zig VT module**. Wrangler owns the PTYs and background runtime. No tmux, worktrees, or workspace model.
+A small terminal multiplexer for agents, written in Zig, using **Ghostty's native Zig VT module**. Corgi owns the PTYs and background runtime. No tmux, worktrees, or workspace model.
 
 ## Run
 
@@ -13,7 +13,7 @@ Requires **Zig 0.15.2**, pinned to the Ghostty revision in `build.zig.zon`. The 
 python3 tests/smoke.py          # real PTYs + socket tests; mock providers, no inference
 ```
 
-After building, the executable is `zig-out/bin/wrangler`. Its directory is added to each pane's PATH, so `wrangler` works inside the terminal. Ordinary `go.sh` preserves the running runtime. Use `go.sh --restart` from outside Wrangler to load a new build: it stops that runtime's shells and agents and discards its in-memory snapshots. The build completes before shutdown, so a failed build leaves the current runtime running. With no runtime running, `--restart` starts normally. Put the flag first; further arguments are passed through, e.g. `./go.sh --restart start` restarts detached.
+After building, the executable is `zig-out/bin/corgi`. Its directory is added to each pane's PATH, so `corgi` works inside the terminal. Ordinary `go.sh` preserves the running runtime. Use `go.sh --restart` from outside Corgi to load a new build: it stops that runtime's shells and agents and discards its in-memory snapshots. The build completes before shutdown, so a failed build leaves the current runtime running. With no runtime running, `--restart` starts normally. Put the flag first; further arguments are passed through, e.g. `./go.sh --restart start` restarts detached.
 
 One runtime has a flat list of tabs. Tabs contain binary split trees; pane IDs identify processes and stay stable when you move them. The runtime survives closing the client or losing SSH. **It does not restore sessions after the runtime itself exits or after reboot.**
 
@@ -52,9 +52,9 @@ Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Clo
 
 Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text to select and copy through OSC 52. Mouse-aware terminal applications receive translated mouse input through Ghostty; hold Shift to select text instead. Right-click opens the command menu when the terminal application is not handling the mouse. Wheel scrolling enters scroll mode. In scroll mode: `j/k`, Ctrl-U/D, PageUp/Down, `g/G`, `/` literal search, `n/N` repeat, `y` or Enter copies the selection (or viewport), `q` exits. Output keeps running while you scroll.
 
-`wrangler action move-tab left|right` reorders tabs. `wrangler action join N` moves the focused pane into tab N. New tabs and splits created from the UI inherit the shell's current directory.
+`corgi action move-tab left|right` reorders tabs. `corgi action join N` moves the focused pane into tab N. New tabs and splits created from the UI inherit the shell's current directory.
 
-Exiting a shell immediately removes its pane; an empty tab disappears too. Wrangler keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `wrangler action undo-close`) restores the most recent one into a new tab with a **fresh shell**, not the old process or agent session. Closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
+Exiting a shell immediately removes its pane; an empty tab disappears too. Corgi keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `corgi action undo-close`) restores the most recent one into a new tab with a **fresh shell**, not the old process or agent session. Closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
 
 This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. There is one interactive client per runtime; a second attach is rejected rather than stealing input ownership. Limits: 24 tabs, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
 
@@ -62,7 +62,7 @@ This is an initial implementation of Herdr's core tab/pane operations. Copy mode
 
 The left sidebar lists agents across all tabs in tab order. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
 
-The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Wrangler adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
+The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Corgi adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
 
 Terminal agents are discovered from each pane's foreground process group, including native binaries and CLI scripts launched with Bun, Node, or Python. Ordinary shells are omitted, and an agent disappears when its process returns to the shell. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden.
 
@@ -76,17 +76,17 @@ claude --remote-control
 codex resume SESSION_ID
 ```
 
-At runtime startup, Wrangler merges its hooks into `~/.codex/hooks.json` and `~/.claude/settings.json` when those provider directories exist. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected. It preserves other settings and hook handlers, saves the original file beside it as `.wrangler-backup`, and writes atomically. Repeated startup does not duplicate hooks or rewrite unchanged files. Malformed files and symlinks are left untouched, with a diagnostic in the status bar/server log. Restart Wrangler after first installing a provider. Hook setup applies to newly launched agent sessions.
+At runtime startup, Corgi merges its hooks into `~/.codex/hooks.json` and `~/.claude/settings.json` when those provider directories exist. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected. It preserves other settings and hook handlers, saves the original file beside it as `.corgi-backup`, and writes atomically. Repeated startup does not duplicate hooks or rewrite unchanged files. Malformed files and symlinks are left untouched, with a diagnostic in the status bar/server log. Restart Corgi after first installing a provider. Hook setup applies to newly launched agent sessions.
 
-The installed commands use the pane's `WRANGLER_BIN`, `WRANGLER_SOCKET`, and `WRANGLER_PANE`; they do nothing outside Wrangler. No aliases or executable shims are needed. Provider flags, login, model selection, inference, resume, and native remoting remain available. Permission policies and project configuration are unchanged.
+The installed commands use the pane's `CORGI_BIN`, `CORGI_SOCKET`, and `CORGI_PANE`; they do nothing outside Corgi. No aliases or executable shims are needed. Provider flags, login, model selection, inference, resume, and native remoting remain available. Permission policies and project configuration are unchanged.
 
-Codex requires trusting new hook definitions in its `/hooks` UI. Wrangler does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong visible prompt signals supply debounced working/waiting/idle status. New processes remain in initialization until their first recognized prompt or hook: title spinners alone never mean working, and fallback turn detection waits for the first stable idle prompt. Hook events take precedence once received; output activity alone never means a turn finished.
+Codex requires trusting new hook definitions in its `/hooks` UI. Corgi does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong visible prompt signals supply debounced working/waiting/idle status. New processes remain in initialization until their first recognized prompt or hook: title spinners alone never mean working, and fallback turn detection waits for the first stable idle prompt. Hook events take precedence once received; output activity alone never means a turn finished.
 
-`wrangler hooks claude|codex` prints hook configuration for inspection or your own integration. `wrangler agent claude|codex ...` remains an optional executable-discovery launcher; it no longer injects duplicate hooks.
+`corgi hooks claude|codex` prints hook configuration for inspection or your own integration. `corgi agent claude|codex ...` remains an optional executable-discovery launcher; it no longer injects duplicate hooks.
 
-The optional launcher and native App Server sessions find Codex automatically: working executables on PATH first, then common user/system installation locations, then macOS app bundles in `~/Applications` and `/Applications` (including Codex and ChatGPT). Candidates must successfully answer `--version`; broken package wrappers, missing binaries, and hung commands are skipped. Run `wrangler which codex` to see the selected executable. Plain `codex` uses your shell's usual command resolution.
+The optional launcher and native App Server sessions find Codex automatically: working executables on PATH first, then common user/system installation locations, then macOS app bundles in `~/Applications` and `/Applications` (including Codex and ChatGPT). Candidates must successfully answer `--version`; broken package wrappers, missing binaries, and hung commands are skipped. Run `corgi which codex` to see the selected executable. Plain `codex` uses your shell's usual command resolution.
 
-Optional explicit `WRANGLER_CODEX_BIN` / `WRANGLER_CLAUDE_BIN` overrides remain available for development, set before starting the runtime.
+Optional explicit `CORGI_CODEX_BIN` / `CORGI_CLAUDE_BIN` overrides remain available for development, set before starting the runtime.
 
 Hook evidence drives working, waiting, idle, and done. Session IDs and event timestamps reject late updates from a previous session; child-agent hooks cannot overwrite the parent's lifecycle. Permissions and explicit user questions are waiting states. Tool names provide bounded activity labels. No transcript scraping or background summarization inference.
 
@@ -99,56 +99,56 @@ Provider contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude
 - `prefix a` visits waiting panes first, oldest first, then completed panes. Visiting acknowledges the marker without changing the agent's actual state.
 - The focused pane stays quiet while the attached terminal has focus. Focus reporting depends on the outer terminal supporting it.
 - Duplicate hooks don't ring twice. Bursts are coalesced, with at least 1.5 seconds between sounds and waiting taking precedence.
-- Muting suppresses sounds while retaining the attention queue. `WRANGLER_BELL=terminal` selects BEL; `WRANGLER_BELL=off` disables client sounds. Other platforms use BEL.
+- Muting suppresses sounds while retaining the attention queue. `CORGI_BELL=terminal` selects BEL; `CORGI_BELL=off` disables client sounds. Other platforms use BEL.
 
 Sounds play on the attached machine. A detached runtime retains attention markers but does not send desktop notifications. Native protocol sessions also contribute to the attention count; `prefix a` identifies the session and command to inspect it.
 
 ## Native agent protocols
 
-For integrations that should not type into a terminal, Wrangler can own durable provider processes independently of panes:
+For integrations that should not type into a terminal, Corgi can own durable provider processes independently of panes:
 
 ```sh
-wrangler native start codex
+corgi native start codex
 # => {"ok":true,"session":1,"provider":"codex"}
-wrangler native send 1 '{"id":1,"method":"thread/start","params":{}}'
-wrangler native events 1
+corgi native send 1 '{"id":1,"method":"thread/start","params":{}}'
+corgi native events 1
 # Read the returned provider thread.id, then:
-wrangler native send 1 '{"id":2,"method":"turn/start","params":{"threadId":"THREAD_ID","input":[{"type":"text","text":"Explain this project"}]}}'
-wrangler native events 1 10    # events after Wrangler sequence 10
-wrangler native list
-wrangler native stop 1
+corgi native send 1 '{"id":2,"method":"turn/start","params":{"threadId":"THREAD_ID","input":[{"type":"text","text":"Explain this project"}]}}'
+corgi native events 1 10    # events after Corgi sequence 10
+corgi native list
+corgi native stop 1
 ```
 
-This path uses **Codex App Server**, not Exec Server. Wrangler performs the initialize/initialized handshake and queues requests until it completes. The provider's JSON-RPC messages remain intact: thread start/resume/fork, turn start/steer/interrupt, models, approvals, and supported remote-control methods are available through the same transport. See the [App Server protocol](https://developers.openai.com/codex/app-server).
+This path uses **Codex App Server**, not Exec Server. Corgi performs the initialize/initialized handshake and queues requests until it completes. The provider's JSON-RPC messages remain intact: thread start/resume/fork, turn start/steer/interrupt, models, approvals, and supported remote-control methods are available through the same transport. See the [App Server protocol](https://developers.openai.com/codex/app-server).
 
-For Claude, `wrangler native start claude` launches its bidirectional streaming CLI with the host permission channel. Send SDK-compatible control/user messages with `native send`, inspect stream events with `native events`. For example, initialize with:
+For Claude, `corgi native start claude` launches its bidirectional streaming CLI with the host permission channel. Send SDK-compatible control/user messages with `native send`, inspect stream events with `native events`. For example, initialize with:
 
 ```sh
-wrangler native send 2 '{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}'
-wrangler native send 2 '{"type":"user","message":{"role":"user","content":"Explain this project"}}'
+corgi native send 2 '{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}'
+corgi native send 2 '{"type":"user","message":{"role":"user","content":"Explain this project"}}'
 ```
 
 Native sessions expose protocol messages, not a custom chat UI. Approval/user-input requests remain in `pending_requests` until you send an explicit matching provider response. **Nothing auto-approves.** The event journal retains the latest 128 messages within 4 MiB and exposes `first_seq`/`next_seq` so consumers can detect eviction. Each event's `line` is the original JSON message, encoded as a string. Pending requests are stored separately, so event rotation cannot silently discard an unanswered approval. These are process-local buffers, not disk archives. Provider protocol/version compatibility remains the provider's responsibility; Claude's control channel is less stable than its documented terminal interface.
 
 ## Control API
 
-All operations use newline-delimited JSON on a private Unix socket. By default: `/tmp/wrangler-UID/control.sock`. Set `WRANGLER_SOCKET` to select another runtime in its own private directory. Direct `serve` runs the server in the foreground; ordinary startup handles locking and stale socket recovery.
+All operations use newline-delimited JSON on a private Unix socket. By default: `/tmp/corgi-UID/control.sock`. Set `CORGI_SOCKET` to select another runtime in its own private directory. Direct `serve` runs the server in the foreground; ordinary startup handles locking and stale socket recovery.
 
 ```sh
-wrangler new 'bun run dev'
-wrangler split right
-wrangler list
-wrangler send 3 'run the tests' --enter
-wrangler read 3
-wrangler focus 3
-wrangler action rename api
-wrangler action attention
-wrangler shutdown              # ends this runtime and all its processes
+corgi new 'bun run dev'
+corgi split right
+corgi list
+corgi send 3 'run the tests' --enter
+corgi read 3
+corgi focus 3
+corgi action rename api
+corgi action attention
+corgi shutdown              # ends this runtime and all its processes
 ```
 
 `send` writes literal terminal input; `--enter` explicitly submits it. It is not a semantic provider RPC. `rpc JSON` exposes the underlying operations used by the CLI: `new`, `split`, `list`, `focus`, `close`, `send`, `read`, `action`, `hook`, `native.start/list/send/events/stop`, `ping`, `shutdown`. Pane and native-session IDs are separate namespaces.
 
-For remote terminals, run Wrangler on the host through SSH (`ssh -t host wrangler`); the runtime persists there when the connection drops. Provider remoting can also be enabled through the native CLI/App Server interfaces. Wrangler itself does not expose an unauthenticated TCP listener.
+For remote terminals, run Corgi on the host through SSH (`ssh -t host corgi`); the runtime persists there when the connection drops. Provider remoting can also be enabled through the native CLI/App Server interfaces. Corgi itself does not expose an unauthenticated TCP listener.
 
 ## Layout
 

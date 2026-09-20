@@ -127,7 +127,7 @@ pub const Server = struct {
             .native => |id| for (s.sessions.items) |session| {
                 if (session.id != id) continue;
                 var msg: [180]u8 = undefined;
-                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: wrangler native events {d}", .{ @tagName(session.provider), id, @tagName(session.state), id }));
+                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: corgi native events {d}", .{ @tagName(session.provider), id, @tagName(session.state), id }));
                 s.native_notice = id;
                 break;
             },
@@ -347,7 +347,7 @@ pub const Server = struct {
         const id = try s.create(null, saved.cwd, null, saved.tab.title());
         const term = s.pane(id).?.terminal;
         term.feed(content);
-        term.feed("\x1b[0m\r\n[Wrangler: restored output; new shell]\r\n");
+        term.feed("\x1b[0m\r\n[Corgi: restored output; new shell]\r\n");
         _ = s.closed.pop();
         saved.deinit();
         s.copy_mode = false;
@@ -370,7 +370,7 @@ pub const Server = struct {
         for ([_]agents.Attention{ .needs_input, .finished }) |priority| {
             for (s.sessions.items) |session| if (session.attention == priority) {
                 var msg: [180]u8 = undefined;
-                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: wrangler native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
+                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: corgi native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
                 s.native_notice = session.id;
                 return;
             };
@@ -663,7 +663,7 @@ pub const Server = struct {
                 dialog.sequence(seq);
                 s.dirty = true;
             } else if (s.confirm != .none) {
-                // Dialog keys belong to Wrangler, never to the shell beneath it.
+                // Dialog keys belong to Corgi, never to the shell beneath it.
             } else if (s.copy_mode and eq(seq, "\x1b[5~")) s.scroll(-20) else if (s.copy_mode and eq(seq, "\x1b[6~")) s.scroll(20) else if (s.focused()) |p| try p.terminal.send(seq);
             used += len;
         }
@@ -1081,7 +1081,7 @@ pub const Server = struct {
                     s.bell = true;
                     if (s.bell_kind != .needs_input) s.bell_kind = session.attention;
                     var msg: [160]u8 = undefined;
-                    s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}  |  wrangler native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
+                    s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}  |  corgi native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
                     s.native_notice = session.id;
                 }
             }
