@@ -139,6 +139,34 @@ fn has(text: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, text, needle) != null;
 }
 
+// Unified exec keeps Codex's status at "Working" while the command runs.
+// Its live status row carries a count, sometimes clipped by a narrow pane.
+fn screenToolActive(provider: Provider, screen: []const u8) bool {
+    if (provider != .codex) return false;
+    const visible = std.mem.trimEnd(u8, screen, " \t\r\n");
+    var rows = std.mem.splitBackwardsScalar(u8, visible, '\n');
+    var count: usize = 0;
+    while (rows.next()) |row| {
+        if (count == 8) break;
+        count += 1;
+        const hint = std.mem.indexOf(u8, row, "esc to interrupt)") orelse continue;
+        if (has(row[0..hint], "Waiting for background terminal")) return true;
+        const suffix = std.mem.trim(u8, row[hint + "esc to interrupt)".len ..], " ");
+        if (!std.mem.startsWith(u8, suffix, "· ")) continue;
+        const value = suffix["· ".len..];
+        const end = std.mem.indexOfScalar(u8, value, ' ') orelse continue;
+        const running = std.fmt.parseInt(u32, value[0..end], 10) catch continue;
+        if (running == 0) continue;
+        const label = std.mem.trimEnd(u8, value[end + 1 ..], " ");
+        if (std.mem.startsWith(u8, label, "background terminal")) return true;
+        if (std.mem.endsWith(u8, label, "…")) {
+            const prefix = label[0 .. label.len - "…".len];
+            if (prefix.len >= "background t".len and std.mem.startsWith(u8, "background terminals running", prefix)) return true;
+        }
+    }
+    return false;
+}
+
 pub const Tracker = struct {
     pid: c_int = 0,
     missing: u8 = 0,
@@ -187,7 +215,9 @@ pub const Tracker = struct {
             t.confirmations = 0;
         }
         t.confirmations +|= 1;
-        if (t.confirmations < (if (next == .idle) @as(u8, 3) else 2) or agent.state == next) return false;
+        if (t.confirmations < (if (next == .idle) @as(u8, 3) else 2)) return false;
+        agent.tool_active = next == .working and screenToolActive(current.provider, screen);
+        if (agent.state == next) return false;
         if (next == .idle) t.ready = true;
         const old = agent.state;
         agent.state = next;
@@ -248,4 +278,36 @@ test "fallback debounces attention, yields to hooks, and clears exited agents" {
     _ = tracker.update(&agent, null, "", "", false);
     try std.testing.expectEqual(Provider.other, agent.provider);
     try std.testing.expectEqual(@as(i64, 0), agent.last_seq);
+}
+
+test "Codex fallback tracks tools without a lifecycle state transition" {
+    var tracker: Tracker = .{};
+    var agent: agents.Agent = .{};
+    const job: Job = .{ .pid = 123, .provider = .codex };
+    for (0..3) |_| _ = tracker.update(&agent, job, "", "› ", true);
+    const working = "• Working (20s • esc to interrupt)\n› Ask Codex to do anything";
+    for (0..2) |_| _ = tracker.update(&agent, job, "", working, true);
+    try std.testing.expectEqual(State.working, agent.state);
+    try std.testing.expect(!agent.tool_active);
+    for ([_][]const u8{
+        "• Working (20s • esc to interrupt) · 1 background terminal running\n› Ask Codex to do anything",
+        "• Working (20s • esc to interrupt) · 3 background t…\n› Ask Codex to do anything",
+        "• Waiting for background terminal (20s • esc to interrupt)\n› Ask Codex to do anything",
+    }) |screen| {
+        _ = tracker.update(&agent, job, "", screen, true);
+        try std.testing.expect(agent.tool_active);
+        _ = tracker.update(&agent, job, "", working, true);
+        try std.testing.expect(!agent.tool_active);
+    }
+    try std.testing.expect(!screenToolActive(.codex, "• Working (20s • esc to interrupt) · 0 background terminals running"));
+    try std.testing.expect(!screenToolActive(.claude, "• Working (20s • esc to interrupt) · 1 background terminal running"));
+    try std.testing.expect(!screenToolActive(.codex, "A response mentions 1 background terminal running\n" ++ working));
+    const tool = "• Working (20s • esc to interrupt) · 1 background t…";
+    _ = tracker.update(&agent, job, "", tool, true);
+    for (0..3) |_| _ = tracker.update(&agent, job, "", "› ", true);
+    try std.testing.expect(!agent.tool_active);
+    agent.last_seq = 1;
+    agent.state = .working;
+    for (0..3) |_| _ = tracker.update(&agent, job, "", tool, true);
+    try std.testing.expect(!agent.tool_active);
 }

@@ -838,6 +838,8 @@ for line in sys.stdin:
     if command=='exit':break
     if command=='work':
         event('UserPromptSubmit');print('\x1b[2J\x1b[H\x1b]2;⠋ Task\x07Working (esc to interrupt)',flush=True)
+    elif command=='tool':
+        print('\x1b[2J\x1b[H• Working (20s • esc to interrupt) · 1 background t…\n› Ask Codex to do anything',flush=True)
     elif command=='block':
         event('PermissionRequest');print('\x1b[2J\x1b[H\x1b]2;Action Required\x07enter to confirm or esc to cancel',flush=True)
     elif command=='stop':
@@ -870,6 +872,15 @@ event('SessionEnd')
             self.until(lambda:self.panes()[0]['state']==state)
         self.rpc(op='send',pane=pane,text='exit',enter=True)
         self.until(lambda:self.panes()[0]['provider']=='other')
+    def test_codex_fallback_tool_icon_without_hooks(self):
+        pane=self.ordinary_agent('codex')
+        self.until(lambda:self.panes()[0]['state']=='idle')
+        self.attach()
+        for command,icon in [('work','🧠'),('tool','🔧'),('work','🧠'),('tool','🔧')]:
+            self.rpc(op='send',pane=pane,text=command,enter=True)
+            self.agent_frame('codex','●',activity=icon)
+        self.rpc(op='send',pane=pane,text='stop',enter=True)
+        self.agent_frame('codex','○',activity='')
     def test_agent_startup_has_its_own_indicator_and_never_thinks(self):
         pane=self.ordinary_agent('codex',initializing=True)
         self.attach()
