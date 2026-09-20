@@ -326,3 +326,7 @@ test "terminal reports host colors and keeps application overrides" {
     try std.testing.expectEqual(theme.background.?, t.vt.colors.background.get().?);
     try std.testing.expectEqual(theme.palette[2].?, t.vt.colors.palette.current[2]);
 }
+
+test {
+    _ = @import("keyboard.zig");
+}

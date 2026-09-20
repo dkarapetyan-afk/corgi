@@ -418,6 +418,49 @@ time.sleep(30)
         self.viewer_frame(reader,'^B commands')
         self.input('\x1b[201~')
         self.tab_frame('Shared title')
+    def test_enhanced_keys_follow_pane_mode_and_preserve_corgi_controls(self):
+        fixture=pathlib.Path(self.temp.name,'keys.py')
+        fixture.write_text("""import os,sys,tty
+from pathlib import Path
+tty.setraw(0)
+log=Path(sys.argv[1]);log.write_bytes(b'')
+os.write(1,(sys.argv[2]+'\\x1b[?2004hKEYS_READY').encode())
+while True:
+    with log.open('ab') as output:output.write(os.read(0,1024))
+""")
+        logs=[pathlib.Path(self.temp.name,name) for name in ('legacy-keys','kitty-keys')]
+        panes=[self.rpc(op='new',cwd=self.temp.name,command=shlex.join([sys.executable,str(fixture),str(log),mode]))['pane']
+               for log,mode in zip(logs,('', '\x1b[>1u'))]
+        for pane in panes:self.until(lambda:'KEYS_READY' in self.run_cli('read',str(pane)))
+        self.attach();self.get_type('frame')
+        # Fragment the modified Return across messages, below the escape timeout.
+        self.input('\x1b[13;');self.input('9u\x1b[13;2u\x1b[106;5u')
+        expected=b'\x1b[13;9u\x1b[13;2u\x1b[106;5u'
+        self.until(lambda:logs[1].read_bytes()==expected)
+        # Encoded Ctrl-B must still open Corgi's menu, and ESC must close it.
+        self.input('\x1b[98;5u');self.frame_with('commands')
+        self.input('\x1b[27u');self.frame_with('KEYS_READY')
+        self.assertEqual(logs[1].read_bytes(),expected)
+        # Dialog Return is owned by Corgi, not the Kitty application underneath.
+        self.input('\x1b[98;5uTRenamed\x1b[13u');self.tab_frame('Renamed')
+        self.assertEqual(logs[1].read_bytes(),expected)
+        self.rpc(op='focus',pane=panes[0])
+        self.input('\x1b[106;')
+        time.sleep(.12)  # Beyond the lone-ESC timeout; still one encoded key.
+        self.assertEqual(logs[0].read_bytes(),b'')
+        self.input('5u\x1b[27u\x1b[13u')
+        self.until(lambda:logs[0].read_bytes()==b'\n\x1b\r')
+        self.input('\x1b[57352;5u')
+        self.until(lambda:logs[0].read_bytes()==b'\n\x1b\r\x1b[1;5A')
+        # A CSI-u-looking string inside a paste is literal data.
+        self.input('\x1b[200~\x1b[106;5u\x1b[201~')
+        self.until(lambda:logs[0].read_bytes()==b'\n\x1b\r\x1b[1;5A\x1b[200~\x1b[106;5u\x1b[201~')
+        before=logs[0].read_bytes()
+        self.input('\x1b[')
+        self.until(lambda:logs[0].read_bytes()==before+b'\x1b[')
+        self.input('x')
+        self.until(lambda:logs[0].read_bytes()==before+b'\x1b[x')
+
     def test_paste_stays_in_original_pane_when_another_viewer_changes_focus(self):
         fixture=pathlib.Path(self.temp.name,'paste.py')
         fixture.write_text("""import os,sys,tty
@@ -1181,6 +1224,9 @@ while True:time.sleep(1)
         self.proc.wait(timeout=1)
         self.assertEqual(self.proc.returncode,0)
         while select.select([self.master],[],[],0)[0]:collected.extend(os.read(self.master,65536))
+        self.assertIn(b'\x1b[>1u',collected)
+        self.assertIn(b'\x1b[<u',collected)
+        self.assertLess(collected.index(b'\x1b[<u'),collected.index(b'\x1b[?1049l'))
         self.assertIn(b'\x1b[?1049l',collected)
         self.assertEqual(termios.tcgetattr(slave),before)
         os.close(slave)

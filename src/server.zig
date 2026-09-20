@@ -1,4 +1,5 @@
 const std = @import("std");
+const keyboard = @import("keyboard.zig");
 const os = @import("os.zig");
 const c = os.c;
 const a = os.allocator;
@@ -771,7 +772,34 @@ pub const Server = struct {
                 if (len == rest.len) break;
                 len += 1;
             }
-            const seq = rest[0..len];
+            var seq = rest[0..len];
+            var encoded: std.Io.Writer.Allocating = .init(a);
+            defer encoded.deinit();
+            if (!cl.paste) {
+                if (keyboard.decode(seq)) |key_event| {
+                    // Resolve Corgi shortcuts before encoding for the child. A
+                    // Kitty Ctrl-B is otherwise invisible to the byte handlers.
+                    try key_event.encode(&encoded.writer, .{});
+                    const legacy = encoded.written();
+                    const owned = s.hasMenu() or s.name_dialog != null or s.confirm != .none or s.copy_mode or s.search_mode;
+                    if (owned or (legacy.len == 1 and legacy[0] == 2)) {
+                        seq = legacy;
+                    } else if (s.focused()) |p| {
+                        encoded.clearRetainingCapacity();
+                        try key_event.encode(&encoded.writer, @import("terminal.zig").vt.input.KeyEncodeOptions.fromTerminal(&p.terminal.vt));
+                        seq = encoded.written();
+                    }
+                    if (seq.len == 0) {
+                        used += len;
+                        continue;
+                    }
+                    if (seq.len == 1) {
+                        try s.key(cl, seq[0]);
+                        used += len;
+                        continue;
+                    }
+                }
+            }
             if (eq(seq, "\x1b[200~") or eq(seq, "\x1b[201~")) {
                 cl.paste = eq(seq, "\x1b[200~");
                 if (cl.paste) {
@@ -1416,7 +1444,10 @@ pub const Server = struct {
                 }
                 ci += 1;
             }
-            for (s.clients.items) |*cl| if (cl.attached and cl.keybuf.items.len > 0 and std.time.milliTimestamp() - cl.escape_at > 40) {
+            // Give fragmented CSI/SS3 keys time to complete, but eventually
+            // release incomplete prefixes (e.g. a legacy terminal's Alt-[).
+            // A lone ESC and literal paste fragments keep the short timeout.
+            for (s.clients.items) |*cl| if (cl.attached and cl.keybuf.items.len > 0 and std.time.milliTimestamp() - cl.escape_at > @as(i64, if (cl.paste or cl.keybuf.items.len == 1) 40 else 1000)) {
                 if (cl.paste) {
                     if (cl.paste_pane) |id| if (s.pane(id)) |p| try p.terminal.send(cl.keybuf.items);
                 } else if (cl.keybuf.items.len == 1 and cl.keybuf.items[0] == 27) try s.key(cl, 27) else if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) {

@@ -2,11 +2,17 @@ const std = @import("std");
 const os = @import("os.zig");
 const c = os.c;
 const a = os.allocator;
+const keyboard = @import("keyboard.zig");
 const agents = @import("agents.zig");
+var keyboard_enabled = false;
 var restore: ?c.struct_termios = null;
 fn cleanup() void {
     if (restore) |*term| {
         _ = c.tcsetattr(0, c.TCSAFLUSH, term);
+        if (keyboard_enabled) {
+            os.writeAll(1, keyboard.disable) catch {};
+            keyboard_enabled = false;
+        }
         os.writeAll(1, "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l") catch {};
         restore = null;
     }
@@ -33,7 +39,8 @@ pub fn attach(path: []const u8) !void {
     defer input.deinit(a);
     var probe: @import("theme.zig").Probe = .{};
     try probe.query(&input);
-    try os.writeAll(1, "\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h");
+    try os.writeAll(1, "\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h" ++ keyboard.enable);
+    keyboard_enabled = true;
     var size = dimensions();
     const cwd = try std.process.getCwdAlloc(a);
     defer a.free(cwd);
