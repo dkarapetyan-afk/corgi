@@ -30,7 +30,11 @@ pub const entries = [_]Entry{
     .{ .key = 'a', .label = "Jump to attention", .needs_pane = false },
     .{ .key = 'm', .label = "Mute / unmute", .needs_pane = false },
     .{ .key = 'q', .label = "Detach", .needs_pane = false },
-    .{ .key = 'b', .label = "Toggle agent sidebar", .needs_pane = false },
+    .{ .key = 'w', .label = "New workspace", .needs_pane = false },
+    .{ .key = 'W', .label = "Edit workspace", .needs_pane = false },
+    .{ .key = '}', .label = "Next workspace", .needs_pane = false },
+    .{ .key = '{', .label = "Previous workspace", .needs_pane = false },
+    .{ .key = 'b', .label = "Toggle sidebar", .needs_pane = false },
 };
 const resize_entries = [_]Entry{
     .{ .key = 'h', .label = "Resize left" },

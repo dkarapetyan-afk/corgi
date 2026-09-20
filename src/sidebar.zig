@@ -28,7 +28,8 @@ pub const Entry = struct {
     }
 };
 
-pub const Hit = union(enum) { none, toggle, previous, next, entry: usize };
+pub const WorkspaceEntry = struct { id: u32, name: []const u8, cwd: []const u8, active: bool };
+pub const Hit = union(enum) { none, toggle, previous, next, entry: usize, workspace_new, workspace_previous, workspace_next, workspace: usize };
 pub const View = struct {
     cols: u16,
     rows: u16,
@@ -36,13 +37,27 @@ pub const View = struct {
     count: usize,
     offset: usize,
     capacity: usize,
+    workspace_count: usize = 0,
+    workspace_offset: usize = 0,
+    pub fn middle(v: View) u16 {
+        return (v.rows -| 1) / 2;
+    }
+    pub fn workspaceCapacity(v: View) usize {
+        return @max(1, (v.middle() -| 3) / 2);
+    }
+    pub fn withWorkspaces(v: View, count: usize, offset: usize) View {
+        var result = v;
+        result.workspace_count = count;
+        result.workspace_offset = @min(offset, count -| v.workspaceCapacity());
+        return result;
+    }
 
     pub fn widthFor(cols: u16, open: bool) u16 {
         return if (open and cols >= 64) 28 else 0;
     }
     pub fn init(cols: u16, rows: u16, open: bool, offset: usize, count: usize) View {
-        const capacity = @max(1, (rows -| 4) / 2);
-        return .{ .cols = cols, .rows = rows, .width = if (rows >= 7) widthFor(cols, open) else 0, .count = count, .capacity = capacity, .offset = @min(offset, count -| capacity) };
+        const capacity = @max(1, (rows -| ((rows -| 1) / 2) -| 4) / 2);
+        return .{ .cols = cols, .rows = rows, .width = if (rows >= 11) widthFor(cols, open) else 0, .count = count, .capacity = capacity, .offset = @min(offset, count -| capacity) };
     }
     pub fn area(v: View) layout.Rect {
         return .{ .x = v.width, .y = 1, .w = v.cols - v.width, .h = v.rows -| 2 };
@@ -54,13 +69,20 @@ pub const View = struct {
         if (v.width == 0) return if (v.cols >= 64 and x < 3 and y == 0) .toggle else .none;
         if (x >= v.width - 1 or y >= v.rows - 1) return .none;
         if (y == 0 and x >= v.width - 5) return .toggle;
+        if (y == 0 and x >= v.width - 9) return .workspace_new;
+        if (y < v.middle()) {
+            if (y == v.middle() - 1 and v.workspace_count > v.workspaceCapacity()) return if (x < v.width / 2) .workspace_previous else .workspace_next;
+            if (y < 2 or y >= v.middle() - 1) return .none;
+            const index = (y - 2) / 2 + v.workspace_offset;
+            return if (index < v.workspace_count and (y - 2) / 2 < v.workspaceCapacity()) .{ .workspace = index } else .none;
+        }
         if (y == v.rows - 2 and v.count > v.capacity) return if (x < v.width / 2) .previous else .next;
-        if (y < 2 or y >= v.rows - 2) return .none;
-        const index = (y - 2) / 2;
+        if (y < v.middle() + 2 or y >= v.rows - 2) return .none;
+        const index = (y - v.middle() - 2) / 2;
         if (index >= v.capacity or v.offset + index >= v.count) return .none;
         return .{ .entry = v.offset + index };
     }
-    pub fn draw(v: View, w: *std.Io.Writer, entries: []const Entry) !void {
+    pub fn draw(v: View, w: *std.Io.Writer, entries: []const Entry, workspaces: []const WorkspaceEntry) !void {
         const panel = "\x1b[0;38;2;155;163;175;48;2;24;27;32m";
         if (v.width == 0) {
             if (v.cols >= 64) try w.writeAll("\x1b[1;1H\x1b[1;38;2;161;194;178m > \x1b[0m");
@@ -71,15 +93,31 @@ pub const View = struct {
             try w.splatByteAll(' ', v.width - 1);
             try w.writeAll("\x1b[38;2;55;61;70m│");
         }
-        try v.line(w, 0, "agents", "\x1b[1;38;2;226;230;233m");
+        try v.line(w, v.middle(), "agents", "\x1b[1;38;2;226;230;233m");
         try w.print("\x1b[1;{d}H{s} < ", .{ v.width - 4, panel });
+        try v.line(w, 0, "workspaces", "\x1b[1;38;2;226;230;233m");
+        try w.print("\x1b[1;{d}H{s} + ", .{ v.width - 8, panel });
+        for (workspaces[v.workspace_offset..@min(workspaces.len, v.workspace_offset + v.workspaceCapacity())], 0..) |ws, index| {
+            const y: u16 = @intCast(2 + index * 2);
+            const style = if (ws.active) "\x1b[1;38;2;161;194;178;48;2;35;40;47m" else panel;
+            try w.print("\x1b[{d};1H{s}", .{ y + 1, style });
+            try w.splatByteAll(' ', v.width - 1);
+            try v.line(w, y, ws.name, style);
+            var path: [std.fs.max_path_bytes + 1]u8 = undefined;
+            try v.line(w, y + 1, directoryLabel(&path, ws.cwd, os.env("HOME")), panel);
+        }
+        if (v.workspace_count > v.workspaceCapacity()) {
+            var text: [64]u8 = undefined;
+            const footer = try std.fmt.bufPrint(&text, "< {d}-{d}/{d} >", .{ v.workspace_offset + 1, @min(v.workspace_count, v.workspace_offset + v.workspaceCapacity()), v.workspace_count });
+            try v.line(w, v.middle() - 1, footer, panel);
+        }
         if (entries.len == 0) {
-            try v.line(w, 2, "No agents yet", panel);
-            try v.line(w, 4, "Launch inside a pane:", panel);
-            try v.line(w, 5, "codex  or  claude", panel);
+            try v.line(w, v.middle() + 2, "No agents yet", panel);
+            try v.line(w, v.middle() + 4, "Launch inside a pane:", panel);
+            try v.line(w, v.middle() + 5, "codex  or  claude", panel);
         }
         for (entries[v.offset..@min(entries.len, v.offset + v.capacity)], 0..) |e, index| {
-            const y: u16 = @intCast(2 + index * 2);
+            const y: u16 = @intCast(v.middle() + 2 + index * 2);
             const bg = if (e.focused) "\x1b[48;2;35;40;47m" else "\x1b[48;2;24;27;32m";
             for (0..2) |row| {
                 if (y + row >= v.rows - 2) break;

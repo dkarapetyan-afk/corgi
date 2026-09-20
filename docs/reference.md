@@ -1,6 +1,6 @@
 # Corgi reference
 
-A small terminal multiplexer for agents, written in Zig, using **Ghostty's native Zig VT module**. Corgi owns the PTYs and background runtime. No tmux, worktrees, or workspace model.
+A small terminal multiplexer for agents, written in Zig, using **Ghostty's native Zig VT module**. Corgi owns the PTYs and background runtime. Workspaces group tabs and panes with a default working folder. No tmux or Git worktrees.
 
 ## Run
 
@@ -23,13 +23,13 @@ Multiple viewers can attach at once. They share tabs, focus, menus, scrollback p
 
 `prefix` means press Ctrl-B, release, then the next key. **Ctrl-B immediately opens a compact command menu**: press a displayed shortcut or click its row. Escape, the menu's `x`, or a click outside dismisses it. Resize has its own clickable direction menu. In short terminals, use the menu's previous/next buttons, the wheel, or PageUp/PageDown to see more commands.
 
-Click **+** after the visible tabs, choose **New tab** from a menu, or press `prefix c` to open the **new tab** dialog. The empty name field previews the new tab's position as a number. Save (Enter) creates an unnamed tab in the current directory unless you type a custom name; Cancel (Escape or clicking outside) creates nothing. Unnamed tabs store no name: their displayed numbers are recomputed as tabs move or close. The + button remains visible when tabs overflow. The CLI/control API still creates tabs immediately, unnamed unless an explicit title is supplied.
+Click **+** after the visible tabs, choose **New tab** from a menu, or press `prefix c` to open the **new tab** dialog. The empty name field previews the new tab's position as a number. Save (Enter) creates an unnamed tab in the workspace default directory unless you type a custom name; Cancel (Escape or clicking outside) creates nothing. Unnamed tabs store no name: their displayed numbers are recomputed as tabs move or close. The + button remains visible when tabs overflow. The CLI/control API still creates tabs immediately, unnamed unless an explicit title is supplied.
 
 Headers show either the custom name or the automatic number, centered in a minimum width of 10 columns. Narrow terminals clip the active tab as needed while keeping **+** accessible.
 
 **Rename tab** uses the same bordered dialog. Type to replace the selection, or move the cursor with Left/Right, Home/End and edit with Backspace/Delete. Ctrl-C, Ctrl-U, or **Clear** empties the field; saving an empty field removes the custom name and restores automatic numbering. The number shown in an empty field is a preview, not saved text. A number you explicitly type is a custom name and stays fixed. Save, Clear, and Cancel are clickable. Cancel leaves the existing name unchanged.
 
-Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab inherits that tab's current directory and prompts for a name; Close confirms before ending all of that tab's panes.
+Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab uses the workspace default directory and prompts for a name; Close confirms before ending all of that tab's panes.
 
 | Action | Key |
 | --- | --- |
@@ -54,15 +54,15 @@ Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Clo
 
 Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text to select and copy through OSC 52. Mouse-aware terminal applications receive translated mouse input through Ghostty; hold Shift to select text instead. Right-click opens the command menu when the terminal application is not handling the mouse. Wheel scrolling enters scroll mode. In scroll mode: `j/k`, Ctrl-U/D, PageUp/Down, `g/G`, `/` literal search, `n/N` repeat, `y` or Enter copies the selection (or viewport), `q` exits. Output keeps running while you scroll.
 
-`corgi action move-tab left|right` reorders tabs. `corgi action join N` moves the focused pane into tab N. New tabs and splits created from the UI inherit the shell's current directory.
+`corgi action move-tab left|right` reorders tabs. `corgi action join N` moves the focused pane into tab N. New tabs and splits use the workspace default directory.
 
-Exiting a shell immediately removes its pane; an empty tab disappears too. Corgi keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `corgi action undo-close`) restores the most recent one into a new tab with a **fresh shell**, not the old process or agent session. Closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
+Exiting a shell immediately removes its pane; an empty tab disappears too. Corgi keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `corgi action undo-close`) restores the most recent one in its original workspace (or the current one if removed), into a new tab with a **fresh shell**, not the old process or agent session. With one workspace, closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
 
 This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. There is one interactive client per runtime; a second attach is rejected rather than stealing input ownership. Limits: 24 tabs, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
 
 ## Agent integration
 
-The left sidebar lists agents across all tabs in tab order. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
+The left sidebar is split 50/50: workspaces above, agents from the selected workspace below, in tab order. Click + beside workspaces to enter just a name (the current workspace’s default folder is inherited), click a workspace to switch, and right-click to rename it in one step. `prefix w` creates, `prefix W` edits, and `prefix {` / `prefix }` switch workspaces. Each workspace retains its tabs and focused pane; processes keep running while hidden. New tabs and splits use its default folder; explicit RPC `cwd` overrides it. Changing a default folder does not change existing shells. Workspace names, IDs, default folders, and selection are saved automatically across restarts; tabs and processes are not restored. State lives at `$XDG_STATE_HOME/corgi/workspaces.json` (default `~/.local/state/corgi/workspaces.json`), or beside an explicit `CORGI_SOCKET` as `<socket>.workspaces.json`. `corgi workspace list`, `new NAME [DIR]`, `switch ID`, `edit ID NAME DIR`, and `close ID` provide CLI access; close requires an empty workspace with no native sessions. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
 
 The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Corgi adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
 
@@ -162,7 +162,8 @@ For remote terminals, run Corgi on the host through SSH (`ssh -t host corgi`); t
 - `render.zig` / `client.zig`: terminal presentation, attach, clipboard, sound.
 - `commands.zig`: command menu layout, shortcut labels, and mouse targets.
 - `name_dialog.zig`: tab name editor and dialog rendering/mouse targets.
-- `sidebar.zig`: agent list presentation, scrolling, and mouse targets.
+- `workspace.zig`: workspace ownership, names, default folders, and pane lookup.
+- `sidebar.zig`: workspace and agent list presentation, scrolling, and mouse targets.
 - `agents.zig` / `integration.zig`: hook lifecycle evidence and provider launch configuration.
 - `discovery.zig`: automatic provider executable discovery and bounded version checks.
 - `native.zig`: durable App Server / Claude JSONL transports and retained approvals.

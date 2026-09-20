@@ -20,6 +20,8 @@ pub const Ui = struct {
     sidebar_open: bool = true,
     sidebar_offset: usize = 0,
     agents: []const sidebar.Entry = &.{},
+    workspaces: []const sidebar.WorkspaceEntry = &.{},
+    workspace_offset: usize = 0,
 };
 pub fn tabWidth(tab: layout.Tab, index: usize) usize {
     const digits: usize = if (index + 1 >= 10) 2 else 1;
@@ -68,7 +70,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     var out: Buffer = .init(a);
     defer out.deinit();
     const w = &out.writer;
-    const side = sidebar.View.init(width, height, ui.sidebar_open, ui.sidebar_offset, ui.agents.len);
+    const side = sidebar.View.init(width, height, ui.sidebar_open, ui.sidebar_offset, ui.agents.len).withWorkspaces(ui.workspaces.len, ui.workspace_offset);
     try w.writeAll("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
     try w.print("\x1b[1;{d}H", .{side.tabX() + 1});
     var x: usize = 0;
@@ -148,7 +150,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
             break;
         };
     }
-    try side.draw(w, ui.agents);
+    try side.draw(w, ui.agents, ui.workspaces);
     var blocked: usize = ui.native_blocked;
     var finished: usize = ui.native_finished;
     for (panes) |p| switch (p.agent.attention) {

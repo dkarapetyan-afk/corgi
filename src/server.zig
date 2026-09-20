@@ -8,6 +8,7 @@ const render = @import("render.zig");
 const commands = @import("commands.zig");
 const naming = @import("name_dialog.zig");
 const sidebar = @import("sidebar.zig");
+const workspace = @import("workspace.zig");
 const Terminal = @import("terminal.zig").Terminal;
 const native = @import("native.zig");
 const Theme = @import("theme.zig").Theme;
@@ -16,6 +17,7 @@ const ClosedPane = struct {
     terminal: *Terminal,
     cwd: []const u8,
     tab: layout.Tab,
+    workspace_id: u32,
     fn deinit(p: ClosedPane) void {
         p.terminal.destroy();
         a.free(p.cwd);
@@ -56,7 +58,9 @@ const Client = struct {
     }
 };
 pub const Server = struct {
-    model: layout.Model = .{},
+    workspaces: workspace.Store = .{},
+    workspace_offset: usize = 0,
+    default_folder_pending: bool = true,
     panes: std.ArrayList(render.Pane) = .empty,
     closed: std.ArrayList(ClosedPane) = .empty,
     clients: std.ArrayList(Client) = .empty,
@@ -96,22 +100,72 @@ pub const Server = struct {
     last_bell: i64 = 0,
     last_detection: i64 = 0,
 
+    fn model(s: *Server) *layout.Model {
+        return &s.workspaces.current().model;
+    }
+    fn saveWorkspaces(s: *Server) void {
+        const path = workspace.Store.statePath(s.socket) catch {
+            s.notice(" Could not save workspaces");
+            return;
+        };
+        defer a.free(path);
+        s.workspaces.save(path) catch |err| {
+            std.log.err("saving workspaces: {s}", .{@errorName(err)});
+            s.notice(" Could not save workspaces");
+        };
+    }
+    fn switchWorkspace(s: *Server, id: u32) !void {
+        const index = s.workspaces.index(id) orelse return error.NoWorkspace;
+        s.dismissName();
+        s.closeMenu();
+        s.workspaces.active = index;
+        s.revealWorkspace();
+        s.sidebar_offset = 0;
+        s.copy_mode = false;
+        s.search_mode = false;
+        s.selection = null;
+        s.divider = null;
+        s.confirm = .none;
+        s.confirm_tab = null;
+        s.message_len = 0;
+        s.native_notice = null;
+        s.acknowledge();
+        try s.resizePanes();
+        s.saveWorkspaces();
+        s.dirty = true;
+    }
+    fn revealWorkspace(s: *Server) void {
+        const capacity = s.sidebarView(0).workspaceCapacity();
+        const index = s.workspaces.active;
+        if (index < s.workspace_offset) s.workspace_offset = index else if (index >= s.workspace_offset + capacity) s.workspace_offset = index + 1 - capacity;
+    }
+    fn focusPane(s: *Server, id: u32) !void {
+        const owner = s.workspaces.owner(id) orelse return error.NoPane;
+        const workspace_id = owner.id;
+        if (workspace_id != s.workspaces.current().id) try s.switchWorkspace(workspace_id);
+        try s.model().focus(id);
+    }
     fn area(s: *Server) layout.Rect {
         return s.sidebarView(0).area();
     }
     fn sidebarView(s: *Server, count: usize) sidebar.View {
-        return sidebar.View.init(s.width, s.height, s.sidebar_open, s.sidebar_offset, count);
+        return sidebar.View.init(s.width, s.height, s.sidebar_open, s.sidebar_offset, count).withWorkspaces(s.workspaces.items.items.len, s.workspace_offset);
+    }
+    fn workspaceEntries(s: *Server, out: *[workspace.max_workspaces]sidebar.WorkspaceEntry) []sidebar.WorkspaceEntry {
+        for (s.workspaces.items.items, 0..) |*ws, i| out[i] = .{ .id = ws.id, .name = ws.name(), .cwd = ws.cwd, .active = i == s.workspaces.active };
+        return out[0..s.workspaces.items.items.len];
     }
     fn agentEntries(s: *Server, entries: *[sidebar.max_entries]sidebar.Entry) []sidebar.Entry {
         var count: usize = 0;
-        for (s.model.tabs[0..s.model.count], 0..) |_, tab_index| {
+        for (s.model().tabs[0..s.model().count], 0..) |_, tab_index| {
             for (s.panes.items) |*p| {
-                if (p.agent.provider == .other or s.model.tabForPane(p.id) != tab_index) continue;
-                entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model.tab().focus == p.id, .cwd = if (p.agent.cwd_len > 0) p.agent.directory() else p.cwd, .tool_active = p.agent.tool_active };
+                if (p.agent.provider == .other or s.model().tabForPane(p.id) != tab_index) continue;
+                entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model().tab().focus == p.id, .cwd = if (p.agent.cwd_len > 0) p.agent.directory() else p.cwd, .tool_active = p.agent.tool_active };
                 count += 1;
             }
         }
         for (s.sessions.items) |*session| {
+            if (session.workspace_id != s.workspaces.current().id) continue;
             entries[count] = .{ .target = .{ .native = session.id }, .provider = session.provider, .state = session.state, .attention = session.attention, .focused = s.native_notice == session.id, .cwd = session.cwd, .tool_active = session.toolActive() };
             count += 1;
         }
@@ -126,7 +180,7 @@ pub const Server = struct {
         s.native_notice = null;
         switch (target) {
             .pane => |id| {
-                try s.model.focus(id);
+                try s.focusPane(id);
                 s.acknowledge();
                 try s.resizePanes();
             },
@@ -145,7 +199,7 @@ pub const Server = struct {
         return null;
     }
     fn focused(s: *Server) ?*render.Pane {
-        return if (s.model.count == 0) null else s.pane(s.model.tab().focus);
+        return if (s.model().count == 0) null else s.pane(s.model().tab().focus);
     }
     fn notice(s: *Server, msg: []const u8) void {
         s.message_len = agents.clean(&s.message, msg);
@@ -157,13 +211,13 @@ pub const Server = struct {
     }
     fn menu(s: *Server) ?commands.View {
         if (!s.prefix and !s.resize_mode) return null;
-        return commands.View.init(s.width, s.height, s.resize_mode, s.menu_page, s.model.count > 0);
+        return commands.View.init(s.width, s.height, s.resize_mode, s.menu_page, s.model().count > 0);
     }
     fn hasMenu(s: *Server) bool {
         return s.prefix or s.resize_mode or s.tab_menu != null;
     }
     fn tabIndex(s: *Server, id: layout.Id) ?usize {
-        for (s.model.tabs[0..s.model.count], 0..) |tab, i| if (tab.id == id) return i;
+        for (s.model().tabs[0..s.model().count], 0..) |tab, i| if (tab.id == id) return i;
         return null;
     }
     fn openTabMenu(s: *Server, index: usize, x: u16) void {
@@ -171,12 +225,12 @@ pub const Server = struct {
         s.search_mode = false;
         s.divider = null;
         s.selection = null;
-        s.tab_menu = .{ .tab = s.model.tabs[index].id, .anchor_x = x };
+        s.tab_menu = .{ .tab = s.model().tabs[index].id, .anchor_x = x };
     }
     fn tabMenuAction(s: *Server, key_: u8) !void {
         const context = s.tab_menu orelse return;
         s.closeMenu();
-        s.model.active = s.tabIndex(context.tab) orelse return;
+        s.model().active = s.tabIndex(context.tab) orelse return;
         s.copy_mode = false;
         s.acknowledge();
         try s.resizePanes();
@@ -214,16 +268,28 @@ pub const Server = struct {
         s.menu_page = if (next) (view.page + 1) % view.pages else (view.page + view.pages - 1) % view.pages;
         s.dirty = true;
     }
+    fn beginWorkspace(s: *Server, id: ?u32) void {
+        s.dismissName();
+        const initial = if (id) |value| s.workspaces.items.items[s.workspaces.index(value) orelse return].name() else "";
+        s.name_dialog = naming.Dialog.init(.{ .workspace_name = id }, initial);
+        s.prepareName();
+    }
+    fn newWorkspace(s: *Server, name: []const u8, cwd: []const u8) !u32 {
+        if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
+        const id = try s.workspaces.add(name, cwd);
+        try s.switchWorkspace(id);
+        _ = try s.create(null, s.workspaces.current().cwd, null, "");
+        return id;
+    }
     fn beginRename(s: *Server) void {
-        if (s.model.count == 0) return;
-        const tab = s.model.tab();
+        if (s.model().count == 0) return;
+        const tab = s.model().tab();
         s.dismissName();
         s.name_dialog = naming.Dialog.init(.{ .rename = tab.id }, tab.title());
         s.prepareName();
     }
     fn beginNewTab(s: *Server) !void {
-        const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
-        const cwd = current orelse try a.dupe(u8, if (s.focused()) |p| p.cwd else ".");
+        const cwd = try a.dupe(u8, s.workspaces.current().cwd);
         s.dismissName();
         s.name_dialog = naming.Dialog.init(.{ .create = cwd }, "");
         s.prepareName();
@@ -237,15 +303,37 @@ pub const Server = struct {
         s.dirty = true;
     }
     fn dismissName(s: *Server) void {
-        if (s.name_dialog) |dialog| if (dialog.target == .create) a.free(dialog.target.create);
+        if (s.name_dialog) |dialog| switch (dialog.target) {
+            .create => |cwd| a.free(cwd),
+            else => {},
+        };
         s.name_dialog = null;
     }
     fn finishName(s: *Server, save: bool) void {
         s.dirty = true;
         if (save) if (s.name_dialog) |*dialog| {
             switch (dialog.target) {
+                .workspace_name => |id| {
+                    const name = a.dupe(u8, dialog.name()) catch {
+                        dialog.failed = true;
+                        return;
+                    };
+                    if (id == null) {
+                        defer a.free(name);
+                        _ = s.newWorkspace(name, s.workspaces.current().cwd) catch {
+                            s.notice(" Could not create workspace");
+                        };
+                        return;
+                    }
+                    defer a.free(name);
+                    s.workspaces.rename(id.?, name) catch {
+                        dialog.failed = true;
+                        return;
+                    };
+                    s.saveWorkspaces();
+                },
                 .rename => |id| {
-                    if (s.tabIndex(id)) |index| s.model.tabs[index].rename(dialog.name());
+                    if (s.tabIndex(id)) |index| s.model().tabs[index].rename(dialog.name());
                 },
                 .create => |cwd| {
                     var dir = std.fs.cwd().openDir(cwd, .{}) catch {
@@ -265,14 +353,21 @@ pub const Server = struct {
     }
     fn create(s: *Server, split: ?layout.Axis, cwd: []const u8, command: ?[]const u8, title: []const u8) !layout.Id {
         if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
+        const dir = try workspace.Store.directory(cwd);
+        errdefer a.free(dir);
+        if (s.default_folder_pending and s.workspaces.current().id == 1) {
+            try s.workspaces.edit(1, s.workspaces.current().name(), dir);
+            s.saveWorkspaces();
+        }
+        s.default_folder_pending = false;
         const t = try Terminal.create(s.area().w, s.area().h);
         errdefer t.destroy();
         s.theme.apply(&t.vt);
-        const dir = try a.dupe(u8, cwd);
-        errdefer a.free(dir);
-        const before = s.model;
-        const id = if (split) |axis| try s.model.split(axis) else try s.model.newTab(title);
-        errdefer s.model = before;
+        s.model().next_id = s.workspaces.next_pane_id;
+        const before = s.model().*;
+        const id = if (split) |axis| try s.model().split(axis) else try s.model().newTab(title);
+        errdefer s.model().* = before;
+        s.workspaces.next_pane_id = s.model().next_id;
         try s.panes.ensureUnusedCapacity(a, 1);
         try t.spawn(dir, s.socket, id, s.executable, command);
         s.panes.appendAssumeCapacity(.{ .id = id, .terminal = t, .cwd = dir });
@@ -282,22 +377,23 @@ pub const Server = struct {
     }
     fn resizePanes(s: *Server) !void {
         var locations: [layout.max_panes]layout.Placement = undefined;
-        for (s.model.placements(s.area(), &locations)) |place| if (s.pane(place.id)) |p| {
+        for (s.model().placements(s.area(), &locations)) |place| if (s.pane(place.id)) |p| {
             try p.terminal.resize(@max(1, place.rect.w), @max(1, place.rect.h));
         };
     }
     fn close(s: *Server, id: layout.Id) !void {
-        var previous = s.model;
+        const owner = s.workspaces.owner(id) orelse return error.NoPane;
+        var previous = owner.model;
         try previous.focus(id);
         try s.closed.ensureUnusedCapacity(a, 1);
-        const was_focused = s.model.count > 0 and s.model.tab().focus == id;
-        try s.model.close(id);
+        const was_focused = s.model().count > 0 and s.model().tab().focus == id;
+        try owner.model.close(id);
         for (s.panes.items, 0..) |*p, i| if (p.id == id) {
             refreshCwd(p);
             _ = p.terminal.read();
             p.terminal.stop();
             if (s.closed.items.len == max_closed) s.closed.orderedRemove(0).deinit();
-            s.closed.appendAssumeCapacity(.{ .terminal = p.terminal, .cwd = p.cwd, .tab = previous.tab().* });
+            s.closed.appendAssumeCapacity(.{ .terminal = p.terminal, .cwd = p.cwd, .tab = previous.tab().*, .workspace_id = owner.id });
             _ = s.panes.orderedRemove(i);
             break;
         };
@@ -325,7 +421,7 @@ pub const Server = struct {
         }
         s.dirty = true;
         try s.resizePanes();
-        if (s.model.count == 0) {
+        if (s.panes.items.len == 0 and s.workspaces.items.items.len == 1) {
             s.dismissName();
             for (s.clients.items) |*cl| if (cl.attached) {
                 try cl.queue(.{ .type = "detach" });
@@ -351,6 +447,7 @@ pub const Server = struct {
         // Validate before consuming history; a deleted directory is recoverable.
         var dir = try std.fs.cwd().openDir(saved.cwd, .{});
         dir.close();
+        if (s.workspaces.index(saved.workspace_id) != null) try s.switchWorkspace(saved.workspace_id);
         const id = try s.create(null, saved.cwd, null, saved.tab.title());
         const term = s.pane(id).?.terminal;
         term.feed(content);
@@ -367,7 +464,7 @@ pub const Server = struct {
                 if (best == null or p.agent.changed_at < best.?.agent.changed_at) best = p;
             };
             if (best) |p| {
-                try s.model.focus(p.id);
+                try s.focusPane(p.id);
                 s.acknowledge();
                 try s.resizePanes();
                 s.dirty = true;
@@ -376,6 +473,7 @@ pub const Server = struct {
         }
         for ([_]agents.Attention{ .needs_input, .finished }) |priority| {
             for (s.sessions.items) |session| if (session.attention == priority) {
+                if (session.workspace_id != s.workspaces.current().id) try s.switchWorkspace(session.workspace_id);
                 var msg: [180]u8 = undefined;
                 s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: corgi native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
                 s.native_notice = session.id;
@@ -386,11 +484,12 @@ pub const Server = struct {
     }
     fn action(s: *Server, name: []const u8, value: []const u8) !void {
         s.message_len = 0;
-        if (eq(name, "new")) {
-            const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
-            defer if (current) |dir| a.free(dir);
-            const cwd = current orelse if (s.focused()) |p| p.cwd else ".";
-            _ = try s.create(null, cwd, null, "");
+        if (eq(name, "workspace-next") or eq(name, "workspace-prev")) {
+            const count = s.workspaces.items.items.len;
+            const index = if (eq(name, "workspace-next")) (s.workspaces.active + 1) % count else (s.workspaces.active + count - 1) % count;
+            return s.switchWorkspace(s.workspaces.items.items[index].id);
+        } else if (eq(name, "new")) {
+            _ = try s.create(null, s.workspaces.current().cwd, null, "");
             s.copy_mode = false;
         } else if (eq(name, "sidebar")) {
             s.sidebar_open = !s.sidebar_open;
@@ -401,34 +500,35 @@ pub const Server = struct {
         } else if (eq(name, "mute")) {
             s.muted = !s.muted;
             s.notice(if (s.muted) " Dings muted; attention markers remain on" else " Dings enabled");
-        } else if (eq(name, "undo-close")) return s.undoClose() else if (eq(name, "attention")) return s.attention() else if (s.model.count == 0) return error.NoPane else if (eq(name, "split")) {
-            const p = s.focused().?;
-            const current = os.processCwd(p.terminal.pid);
-            defer if (current) |dir| a.free(dir);
-            _ = try s.create(if (eq(value, "down")) .vertical else .horizontal, current orelse p.cwd, null, "");
-        } else if (eq(name, "zoom")) s.model.tab().zoom = !s.model.tab().zoom else if (eq(name, "close")) try s.close(s.model.tab().focus) else if (eq(name, "close-tab")) {
-            const tab_id = s.model.tab().id;
-            while (s.model.count > 0 and s.model.tab().id == tab_id) try s.close(s.model.tab().focus);
+        } else if (eq(name, "undo-close")) return s.undoClose() else if (eq(name, "attention")) return s.attention() else if (s.model().count == 0) return error.NoPane else if (eq(name, "split")) {
+            _ = try s.create(if (eq(value, "down")) .vertical else .horizontal, s.workspaces.current().cwd, null, "");
+        } else if (eq(name, "zoom")) s.model().tab().zoom = !s.model().tab().zoom else if (eq(name, "close")) try s.close(s.model().tab().focus) else if (eq(name, "close-tab")) {
+            const tab_id = s.model().tab().id;
+            while (s.model().count > 0 and s.model().tab().id == tab_id) try s.close(s.model().tab().focus);
         } else if (eq(name, "next") or eq(name, "prev")) {
-            s.model.active = if (eq(name, "next")) (s.model.active + 1) % s.model.count else (s.model.active + s.model.count - 1) % s.model.count;
+            s.model().active = if (eq(name, "next")) (s.model().active + 1) % s.model().count else (s.model().active + s.model().count - 1) % s.model().count;
             s.copy_mode = false;
             s.acknowledge();
         } else if (eq(name, "tab")) {
             const index = try std.fmt.parseInt(usize, value, 10);
-            if (index == 0 or index > s.model.count) return error.NoTab;
-            s.model.active = index - 1;
+            if (index == 0 or index > s.model().count) return error.NoTab;
+            s.model().active = index - 1;
             s.copy_mode = false;
             s.acknowledge();
-        } else if (eq(name, "rename")) s.model.tab().rename(value) else if (eq(name, "focus") or eq(name, "swap") or eq(name, "resize")) {
+        } else if (eq(name, "rename")) s.model().tab().rename(value) else if (eq(name, "focus") or eq(name, "swap") or eq(name, "resize")) {
             const dir = std.meta.stringToEnum(layout.Direction, value) orelse return error.BadDirection;
-            if (eq(name, "resize")) s.model.resize(dir) else if (s.model.neighbor(dir, s.area())) |id| {
-                if (eq(name, "swap")) try s.model.swap(id) else try s.model.focus(id);
+            if (eq(name, "resize")) s.model().resize(dir) else if (s.model().neighbor(dir, s.area())) |id| {
+                if (eq(name, "swap")) try s.model().swap(id) else try s.focusPane(id);
                 s.acknowledge();
             }
-        } else if (eq(name, "move-tab")) s.model.reorder(if (eq(value, "left")) -1 else 1) else if (eq(name, "break")) try s.model.breakPane() else if (eq(name, "join")) {
+        } else if (eq(name, "move-tab")) s.model().reorder(if (eq(value, "left")) -1 else 1) else if (eq(name, "break")) {
+            s.model().next_id = s.workspaces.next_pane_id;
+            try s.model().breakPane();
+            s.workspaces.next_pane_id = s.model().next_id;
+        } else if (eq(name, "join")) {
             const dest = try std.fmt.parseInt(usize, value, 10);
             if (dest == 0) return error.NoTab;
-            try s.model.joinPane(dest - 1);
+            try s.model().joinPane(dest - 1);
         } else return error.UnknownAction;
         try s.resizePanes();
         s.dirty = true;
@@ -497,7 +597,7 @@ pub const Server = struct {
             s.confirm_tab = null;
             s.message_len = 0;
             if (byte == 'y' or byte == 'Y') {
-                if (target) |id| s.model.active = s.tabIndex(id) orelse return;
+                if (target) |id| s.model().active = s.tabIndex(id) orelse return;
                 try s.action(if (pending == .pane) "close" else "close-tab", "");
             }
             s.dirty = true;
@@ -519,11 +619,15 @@ pub const Server = struct {
         if (s.prefix) {
             s.prefix = false;
             s.dirty = true;
-            if (s.model.count == 0) {
+            if (s.model().count == 0) {
                 for (commands.entries) |entry| if (entry.key == byte and entry.needs_pane) return;
             }
             switch (byte) {
                 2 => if (s.focused()) |p| try p.terminal.send(&.{2}),
+                'w' => s.beginWorkspace(null),
+                'W' => s.beginWorkspace(s.workspaces.current().id),
+                '}' => try s.action("workspace-next", ""),
+                '{' => try s.action("workspace-prev", ""),
                 'c' => try s.beginNewTab(),
                 'u' => try s.action("undo-close", ""),
                 'v', '%' => try s.action("split", "right"),
@@ -697,7 +801,7 @@ pub const Server = struct {
             return;
         }
         if (!release and button == 2 and y == 0 and s.name_dialog == null and s.confirm == .none) {
-            if (x >= tabs_x) if (render.tabAt(&s.model, tabs_width, x - tabs_x)) |index| {
+            if (x >= tabs_x) if (render.tabAt(s.model(), tabs_width, x - tabs_x)) |index| {
                 s.ui_mouse_down = true;
                 s.openTabMenu(index, x);
                 return;
@@ -733,11 +837,12 @@ pub const Server = struct {
         if (s.name_dialog) |*dialog| {
             if (!release and button == 0) {
                 s.ui_mouse_down = true;
-                switch (naming.View.init(s.width, s.height, dialog.*).hit(x, y)) {
+                const view = naming.View.init(s.width, s.height, dialog.*);
+                switch (view.hit(x, y)) {
                     .save => s.finishName(true),
                     .cancel => s.finishName(false),
                     .clear => dialog.clear(),
-                    .field => |cursor| dialog.position(cursor),
+                    .field => |column| dialog.position(dialog.byteAtColumn(view.offset, column - view.offset)),
                     .none => {},
                 }
                 s.dirty = true;
@@ -756,7 +861,7 @@ pub const Server = struct {
             return;
         }
         if (button == 32 and s.divider != null) {
-            s.model.dragDivider(s.divider.?, x, y);
+            s.model().dragDivider(s.divider.?, x, y);
             try s.resizePanes();
             s.dirty = true;
             return;
@@ -766,15 +871,21 @@ pub const Server = struct {
         const side = s.sidebarView(entries.len);
         if ((side.width > 0 and x < side.width and y < s.height - 1) or (y == 0 and x < tabs_x)) {
             if (!release and (button == 64 or button == 65)) {
-                s.sidebar_offset = if (button == 64) side.offset -| 1 else @min(side.offset + 1, entries.len -| side.capacity);
+                if (y < side.middle()) {
+                    s.workspace_offset = if (button == 64) side.workspace_offset -| 1 else @min(side.workspace_offset + 1, s.workspaces.items.items.len -| side.workspaceCapacity());
+                } else s.sidebar_offset = if (button == 64) side.offset -| 1 else @min(side.offset + 1, entries.len -| side.capacity);
                 s.dirty = true;
-            } else if (!release and button == 0) {
+            } else if (!release and (button == 0 or button == 2)) {
                 s.ui_mouse_down = true;
                 switch (side.hit(x, y)) {
                     .toggle => try s.action("sidebar", ""),
                     .previous => s.sidebar_offset = side.offset -| side.capacity,
                     .next => s.sidebar_offset = @min(side.offset + side.capacity, entries.len -| side.capacity),
                     .entry => |index| try s.selectAgent(entries[index].target),
+                    .workspace_new => s.beginWorkspace(null),
+                    .workspace_previous => s.workspace_offset = side.workspace_offset -| side.workspaceCapacity(),
+                    .workspace_next => s.workspace_offset = @min(side.workspace_offset + side.workspaceCapacity(), s.workspaces.items.items.len -| side.workspaceCapacity()),
+                    .workspace => |index| if (button == 2) s.beginWorkspace(s.workspaces.items.items[index].id) else try s.switchWorkspace(s.workspaces.items.items[index].id),
                     .none => {},
                 }
                 s.dirty = true;
@@ -782,14 +893,14 @@ pub const Server = struct {
             return;
         }
         if (y == 0 and button == 0 and !release) {
-            const add_x = tabs_x + render.addTabX(&s.model, tabs_width);
+            const add_x = tabs_x + render.addTabX(s.model(), tabs_width);
             if (x >= add_x and x < add_x + 3) {
                 s.ui_mouse_down = true;
                 try s.beginNewTab();
                 return;
             }
-            if (x >= tabs_x) if (render.tabAt(&s.model, tabs_width, x - tabs_x)) |index| {
-                s.model.active = index;
+            if (x >= tabs_x) if (render.tabAt(s.model(), tabs_width, x - tabs_x)) |index| {
+                s.model().active = index;
                 s.acknowledge();
                 try s.resizePanes();
                 s.dirty = true;
@@ -797,8 +908,8 @@ pub const Server = struct {
             return;
         }
         var locations: [layout.max_panes]layout.Placement = undefined;
-        for (s.model.placements(s.area(), &locations)) |p| if (p.rect.contains(x, y)) {
-            try s.model.focus(p.id);
+        for (s.model().placements(s.area(), &locations)) |p| if (p.rect.contains(x, y)) {
+            try s.focusPane(p.id);
             s.acknowledge();
             s.dirty = true;
             const term = s.pane(p.id).?.terminal;
@@ -863,16 +974,48 @@ pub const Server = struct {
             s.selection = null;
             return;
         }
-        if (button == 0) s.divider = s.model.dividerAt(s.area(), x, y);
+        if (button == 0) s.divider = s.model().dividerAt(s.area(), x, y);
     }
     fn request(s: *Server, cl: *Client, v: std.json.Value) !void {
         const op = agents.str(v, "op");
-        if (eq(op, "native.start")) {
+        if (eq(op, "workspace.list")) {
+            const Info = struct { id: u32, name: []const u8, cwd: []const u8, active: bool, tabs: usize };
+            var info: [workspace.max_workspaces]Info = undefined;
+            for (s.workspaces.items.items, 0..) |*ws, i| info[i] = .{ .id = ws.id, .name = ws.name(), .cwd = ws.cwd, .active = i == s.workspaces.active, .tabs = ws.model.count };
+            try cl.queue(.{ .ok = true, .workspaces = info[0..s.workspaces.items.items.len] });
+        } else if (eq(op, "workspace.new")) {
+            const cwd = agents.str(v, "cwd");
+            // Store.add resolves the folder before appending to the store.
+            const id = try s.newWorkspace(agents.str(v, "name"), if (cwd.len == 0) s.workspaces.current().cwd else cwd);
+            try cl.queue(.{ .ok = true, .workspace = id });
+        } else if (eq(op, "workspace.switch") or eq(op, "workspace.edit") or eq(op, "workspace.close")) {
+            const id = std.math.cast(u32, number(v, "workspace", 0)) orelse return error.NoWorkspace;
+            const index = s.workspaces.index(id) orelse return error.NoWorkspace;
+            if (eq(op, "workspace.switch")) try s.switchWorkspace(id) else if (eq(op, "workspace.edit")) {
+                const ws = &s.workspaces.items.items[index];
+                const name = agents.str(v, "name");
+                const cwd = agents.str(v, "cwd");
+                try s.workspaces.edit(id, if (name.len == 0) ws.name() else name, if (cwd.len == 0) ws.cwd else cwd);
+                if (id == 1) s.default_folder_pending = false;
+                s.saveWorkspaces();
+                s.dirty = true;
+            } else {
+                if (s.workspaces.items.items.len == 1) return error.LastWorkspace;
+                if (s.workspaces.items.items[index].model.count > 0) return error.WorkspaceNotEmpty;
+                for (s.sessions.items) |session| if (session.workspace_id == id) return error.WorkspaceNotEmpty;
+                const removed = s.workspaces.items.orderedRemove(index);
+                a.free(removed.cwd);
+                if (s.workspaces.active > index) s.workspaces.active -= 1 else if (s.workspaces.active >= s.workspaces.items.items.len) s.workspaces.active -= 1;
+                try s.switchWorkspace(s.workspaces.current().id);
+            }
+            try cl.queue(.{ .ok = true });
+        } else if (eq(op, "native.start")) {
             if (s.sessions.items.len >= 16) return error.TooManyNativeSessions;
             const provider = std.meta.stringToEnum(agents.Provider, agents.str(v, "provider")) orelse return error.BadProvider;
             const cwd = agents.str(v, "cwd");
             try s.sessions.ensureUnusedCapacity(a, 1);
-            const session = try native.Session.start(s.next_session, provider, if (cwd.len > 0) cwd else ".");
+            var session = try native.Session.start(s.next_session, provider, if (cwd.len > 0) cwd else s.workspaces.current().cwd);
+            session.workspace_id = s.workspaces.current().id;
             s.sessions.appendAssumeCapacity(session);
             s.next_session += 1;
             s.dirty = true;
@@ -937,7 +1080,7 @@ pub const Server = struct {
                 s.updateTheme(v);
             }
             try s.resizeViewers();
-            if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "");
+            if (s.model().count == 0) _ = try s.create(null, if (s.default_folder_pending) agents.str(v, "cwd") else s.workspaces.current().cwd, null, "");
             s.acknowledge();
             cl.needs_frame = true;
             try cl.queue(.{ .type = "attached" });
@@ -956,23 +1099,24 @@ pub const Server = struct {
         } else if (eq(op, "new") or eq(op, "split")) {
             const cwd = agents.str(v, "cwd");
             const cmd = agents.str(v, "command");
-            const id = try s.create(if (eq(op, "new")) null else if (eq(agents.str(v, "axis"), "down")) .vertical else .horizontal, if (cwd.len == 0) "." else cwd, if (cmd.len == 0) null else cmd, agents.str(v, "title"));
+            const id = try s.create(if (eq(op, "new")) null else if (eq(agents.str(v, "axis"), "down")) .vertical else .horizontal, if (cwd.len == 0) s.workspaces.current().cwd else cwd, if (cmd.len == 0) null else cmd, agents.str(v, "title"));
             try cl.queue(.{ .ok = true, .pane = id });
         } else if (eq(op, "list")) {
-            const Info = struct { id: u32, tab: u32, focused: bool, provider: agents.Provider, state: agents.State, attention: agents.Attention, session: []const u8, activity: []const u8, cwd: []const u8, exited: bool };
+            const Info = struct { id: u32, workspace: u32, tab: u32, focused: bool, provider: agents.Provider, state: agents.State, attention: agents.Attention, session: []const u8, activity: []const u8, cwd: []const u8, exited: bool };
             var items: std.ArrayList(Info) = .empty;
             defer items.deinit(a);
             for (s.panes.items) |p| {
-                var copy = s.model;
+                const owner = s.workspaces.owner(p.id) orelse continue;
+                var copy = owner.model;
                 try copy.focus(p.id);
-                try items.append(a, .{ .id = p.id, .tab = copy.tab().id, .focused = s.model.count > 0 and s.model.tab().focus == p.id, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .session = p.agent.sessionId(), .activity = p.agent.label(), .cwd = p.cwd, .exited = p.terminal.exited });
+                try items.append(a, .{ .id = p.id, .workspace = owner.id, .tab = copy.tab().id, .focused = s.model().count > 0 and s.model().tab().focus == p.id, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .session = p.agent.sessionId(), .activity = p.agent.label(), .cwd = p.cwd, .exited = p.terminal.exited });
             }
-            try cl.queue(.{ .ok = true, .panes = items.items, .tabs = s.model.count, .closed_panes = s.closed.items.len, .muted = s.muted });
+            try cl.queue(.{ .ok = true, .panes = items.items, .tabs = s.model().count, .closed_panes = s.closed.items.len, .muted = s.muted });
         } else if (eq(op, "focus") or eq(op, "close") or eq(op, "read") or eq(op, "send") or eq(op, "hook")) {
             const id = std.math.cast(u32, number(v, "pane", 0)) orelse return error.NoPane;
             const p = s.pane(id) orelse return error.NoPane;
             if (eq(op, "focus")) {
-                try s.model.focus(id);
+                try s.focusPane(id);
                 s.acknowledge();
                 try s.resizePanes();
                 s.dirty = true;
@@ -990,7 +1134,7 @@ pub const Server = struct {
                 // Bind a newly launched foreground process before applying its
                 // first hook, including back-to-back launches in the same pane.
                 s.detectPane(p);
-                const viewed = s.isWatched() and s.model.count > 0 and s.model.tab().focus == id and s.hasClient();
+                const viewed = s.isWatched() and s.model().count > 0 and s.model().tab().focus == id and s.hasClient();
                 const ding = p.agent.apply(provider, event, number(v, "seq", std.time.microTimestamp()), viewed);
                 if (ding) {
                     s.bell = true;
@@ -1022,6 +1166,7 @@ pub const Server = struct {
         if (!found or (width == s.width and height == s.height)) return;
         s.width = width;
         s.height = height;
+        s.revealWorkspace();
         try s.resizePanes();
         s.dirty = true;
     }
@@ -1044,7 +1189,7 @@ pub const Server = struct {
         const live_screen = p.terminal.vt.screens.active.pages.viewport == .active;
         const text = if (job != null and p.agent.last_seq == 0 and live_screen) p.terminal.text() catch null else null;
         defer if (text) |bytes| a.free(bytes);
-        const watched = s.isWatched() and s.model.count > 0 and s.model.tab().focus == p.id and s.hasClient();
+        const watched = s.isWatched() and s.model().count > 0 and s.model().tab().focus == p.id and s.hasClient();
         const ding = p.detection.update(&p.agent, job, p.terminal.vt.getTitle() orelse "", text orelse "", watched);
         // A quiet agent can change directory without writing to the PTY.
         const previous_cwd = std.hash.Wyhash.hash(0, p.cwd);
@@ -1059,16 +1204,25 @@ pub const Server = struct {
     pub fn run(s: *Server) !void {
         _ = c.signal(c.SIGPIPE, os.sig_ignore);
         const fd = try os.listen(s.socket);
+        defer {
+            _ = c.close(fd);
+            std.fs.cwd().deleteFile(s.socket) catch {};
+        }
+        defer s.workspaces.deinit();
+        const state_path = try workspace.Store.statePath(s.socket);
+        defer a.free(state_path);
+        if (try s.workspaces.load(state_path)) {
+            s.default_folder_pending = false;
+        } else {
+            _ = try s.workspaces.add("Default", ".");
+            try s.workspaces.save(state_path);
+        }
         for ([_][]const u8{ "codex", "claude" }) |provider| {
             @import("integration.zig").install(provider) catch |err| {
                 std.log.warn("{s} hook setup: {s}; using automatic detection", .{ provider, @errorName(err) });
                 var msg: [180]u8 = undefined;
                 s.notice(std.fmt.bufPrint(&msg, "{s} hooks: {s}; automatic detection is active", .{ provider, @errorName(err) }) catch "Hook setup failed; automatic detection is active");
             };
-        }
-        defer {
-            _ = c.close(fd);
-            std.fs.cwd().deleteFile(s.socket) catch {};
         }
         defer {
             for (s.panes.items) |p| {
@@ -1102,9 +1256,9 @@ pub const Server = struct {
                 if (polls[i + 1].revents != 0) refreshCwd(p);
                 p.terminal.flush();
                 if (p.terminal.read()) {
-                    var copy = s.model;
+                    var copy = s.model().*;
                     copy.focus(p.id) catch continue;
-                    if (copy.active == s.model.active and (!s.model.tab().zoom or s.model.tab().focus == p.id)) s.dirty = true;
+                    if (copy.active == s.model().active and (!s.model().tab().zoom or s.model().tab().focus == p.id)) s.dirty = true;
                 }
             }
             const now = std.time.milliTimestamp();
@@ -1215,7 +1369,8 @@ pub const Server = struct {
                 };
                 var agent_storage: [sidebar.max_entries]sidebar.Entry = undefined;
                 const entries = s.agentEntries(&agent_storage);
-                const bytes = try render.frame(&s.model, s.panes.items, s.width, s.height, .{
+                var workspace_storage: [workspace.max_workspaces]sidebar.WorkspaceEntry = undefined;
+                const bytes = try render.frame(s.model(), s.panes.items, s.width, s.height, .{
                     .message = s.message[0..s.message_len],
                     .copy_mode = s.copy_mode,
                     .native_blocked = native_blocked,
@@ -1227,6 +1382,8 @@ pub const Server = struct {
                     .sidebar_open = s.sidebar_open,
                     .sidebar_offset = s.sidebar_offset,
                     .agents = entries,
+                    .workspaces = s.workspaceEntries(&workspace_storage),
+                    .workspace_offset = s.workspace_offset,
                 });
                 defer a.free(bytes);
                 for (s.clients.items) |*cl| if (cl.attached and !cl.dead and cl.needs_frame and cl.output.items.len == 0) {

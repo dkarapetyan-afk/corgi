@@ -1,11 +1,12 @@
 const std = @import("std");
+const unicode = @import("ghostty-vt").unicode;
 
-pub const Target = union(enum) { rename: u32, create: []const u8 }; // The server owns create's cwd.
+pub const Target = union(enum) { rename: u32, create: []const u8, workspace_name: ?u32 }; // The server owns create's cwd.
 pub const Result = enum { none, save, cancel };
 pub const Hit = union(enum) { none, save, clear, cancel, field: usize };
 pub const Dialog = struct {
     target: Target,
-    text: [80]u8 = .{0} ** 80,
+    text: [std.fs.max_path_bytes]u8 = .{0} ** std.fs.max_path_bytes,
     len: usize = 0,
     cursor: usize = 0,
     selected: bool = true,
@@ -13,8 +14,9 @@ pub const Dialog = struct {
 
     pub fn init(target: Target, initial: []const u8) Dialog {
         var d: Dialog = .{ .target = target };
-        d.len = @min(initial.len, d.text.len);
+        d.len = @min(initial.len, 80);
         for (initial[0..d.len], 0..) |ch, i| d.text[i] = if (ch >= 32 and ch < 127) ch else '_';
+        while (d.len > 0 and !std.unicode.utf8ValidateSlice(d.text[0..d.len])) d.len -= 1;
         d.cursor = d.len;
         return d;
     }
@@ -29,12 +31,16 @@ pub const Dialog = struct {
     }
     pub fn typeByte(d: *Dialog, byte: u8) void {
         if (byte < 32 or byte >= 127) return;
+        d.insert(&.{byte});
+    }
+    fn insert(d: *Dialog, bytes: []const u8) void {
         if (d.selected) d.clear();
-        if (d.len == d.text.len) return;
-        std.mem.copyBackwards(u8, d.text[d.cursor + 1 .. d.len + 1], d.text[d.cursor..d.len]);
-        d.text[d.cursor] = byte;
-        d.len += 1;
-        d.cursor += 1;
+        const limit = 80;
+        if (d.len + bytes.len > limit) return;
+        std.mem.copyBackwards(u8, d.text[d.cursor + bytes.len .. d.len + bytes.len], d.text[d.cursor..d.len]);
+        @memcpy(d.text[d.cursor..][0..bytes.len], bytes);
+        d.len += bytes.len;
+        d.cursor += bytes.len;
         d.failed = false;
     }
     pub fn key(d: *Dialog, byte: u8) Result {
@@ -46,9 +52,11 @@ pub const Dialog = struct {
             5 => d.position(d.len),
             8, 127 => {
                 if (d.selected) d.clear() else if (d.cursor > 0) {
-                    std.mem.copyForwards(u8, d.text[d.cursor - 1 .. d.len - 1], d.text[d.cursor..d.len]);
-                    d.cursor -= 1;
-                    d.len -= 1;
+                    const previous_pos = d.previous();
+                    const count = d.cursor - previous_pos;
+                    std.mem.copyForwards(u8, d.text[previous_pos .. d.len - count], d.text[d.cursor..d.len]);
+                    d.cursor = previous_pos;
+                    d.len -= count;
                 }
             },
             else => d.typeByte(byte),
@@ -57,13 +65,38 @@ pub const Dialog = struct {
     }
     pub fn position(d: *Dialog, cursor: usize) void {
         d.cursor = @min(cursor, d.len);
+        while (d.cursor > 0 and d.cursor < d.len and d.text[d.cursor] & 0xc0 == 0x80) d.cursor -= 1;
         d.selected = false;
     }
+    fn previous(d: *const Dialog) usize {
+        var pos = d.cursor -| 1;
+        while (pos > 0 and d.text[pos] & 0xc0 == 0x80) pos -= 1;
+        return pos;
+    }
+    fn next(d: *const Dialog) usize {
+        if (d.cursor >= d.len) return d.len;
+        return @min(d.len, d.cursor + (std.unicode.utf8ByteSequenceLength(d.text[d.cursor]) catch 1));
+    }
+    pub fn byteAtColumn(d: *const Dialog, start: usize, columns: usize) usize {
+        var pos = start;
+        var used: usize = 0;
+        while (pos < d.len) {
+            const n = std.unicode.utf8ByteSequenceLength(d.text[pos]) catch 1;
+            if (pos + n > d.len) break;
+            const cp = std.unicode.utf8Decode(d.text[pos..][0..n]) catch break;
+            used += unicode.codepointWidth(cp);
+            if (used > columns) break;
+            pos += n;
+        }
+        return pos;
+    }
     pub fn sequence(d: *Dialog, seq: []const u8) void {
-        if (eq(seq, "\x1b[D") or eq(seq, "\x1bOD")) d.position(if (d.selected) 0 else d.cursor -| 1) else if (eq(seq, "\x1b[C") or eq(seq, "\x1bOC")) d.position(if (d.selected) d.len else d.cursor + 1) else if (eq(seq, "\x1b[H") or eq(seq, "\x1bOH") or eq(seq, "\x1b[1~")) d.position(0) else if (eq(seq, "\x1b[F") or eq(seq, "\x1bOF") or eq(seq, "\x1b[4~")) d.position(d.len) else if (eq(seq, "\x1b[3~")) {
+        if (eq(seq, "\x1b[D") or eq(seq, "\x1bOD")) d.position(if (d.selected) 0 else d.previous()) else if (eq(seq, "\x1b[C") or eq(seq, "\x1bOC")) d.position(if (d.selected) d.len else d.next()) else if (eq(seq, "\x1b[H") or eq(seq, "\x1bOH") or eq(seq, "\x1b[1~")) d.position(0) else if (eq(seq, "\x1b[F") or eq(seq, "\x1bOF") or eq(seq, "\x1b[4~")) d.position(d.len) else if (eq(seq, "\x1b[3~")) {
             if (d.selected) d.clear() else if (d.cursor < d.len) {
-                std.mem.copyForwards(u8, d.text[d.cursor .. d.len - 1], d.text[d.cursor + 1 .. d.len]);
-                d.len -= 1;
+                const next_pos = d.next();
+                const count = next_pos - d.cursor;
+                std.mem.copyForwards(u8, d.text[d.cursor .. d.len - count], d.text[next_pos..d.len]);
+                d.len -= count;
             }
         }
     }
@@ -84,7 +117,9 @@ pub const View = struct {
         const h = @min(height, 7);
         const y = (height - h) / 2;
         const field_y = y + @as(u16, if (h >= 7) 3 else if (h >= 5) 2 else 1);
-        return .{ .x = (width - w) / 2, .y = y, .width = w, .height = h, .title_y = y + @as(u16, if (h >= 5) 1 else 0), .field_y = field_y, .buttons_y = field_y + 1, .offset = d.cursor -| (w - 3) };
+        var offset = d.cursor -| (w - 3);
+        while (offset < d.cursor and d.text[offset] & 0xc0 == 0x80) offset += 1;
+        return .{ .x = (width - w) / 2, .y = y, .width = w, .height = h, .title_y = y + @as(u16, if (h >= 5) 1 else 0), .field_y = field_y, .buttons_y = field_y + 1, .offset = offset };
     }
     fn buttons(v: View) [3]Button {
         const inner = v.width - 2;
@@ -129,10 +164,14 @@ pub const View = struct {
                 try w.writeAll("│");
             }
         }
-        const title = if (d.target == .create) "new tab" else "rename tab";
+        const title = switch (d.target) {
+            .create => "new tab",
+            .rename => "rename tab",
+            .workspace_name => |id| if (id == null) "new workspace: name" else "edit workspace: name",
+        };
         try w.print("\x1b[{d};{d}H{s}\x1b[1m{s}", .{ v.title_y + 1, v.x + 2, panel, title[0..@min(title.len, v.width - 2)] });
         if (d.failed and v.height >= 7) {
-            const msg = "Could not save. Check the directory or tab limit.";
+            const msg = "Could not save. Check folder or capacity.";
             try w.print("\x1b[{d};{d}H{s}\x1b[38;2;243;139;168m{s}", .{ v.title_y + 2, v.x + 2, panel, msg[0..@min(msg.len, v.width - 2)] });
         }
         try w.print("\x1b[{d};{d}H\x1b[0;38;2;205;214;244;48;2;49;50;68m", .{ v.field_y + 1, v.x + 2 });
@@ -143,7 +182,7 @@ pub const View = struct {
             try w.print("\x1b[38;2;125;132;143m{d}", .{number});
         } else {
             if (d.selected) try w.writeAll("\x1b[38;2;24;27;32;48;2;137;180;250m");
-            const end = @min(d.len, v.offset + v.width - 2);
+            const end = d.byteAtColumn(v.offset, v.width - 2);
             try w.writeAll(d.text[v.offset..end]);
         }
         for (v.buttons(), 0..) |b, i| {
@@ -152,7 +191,10 @@ pub const View = struct {
             try w.writeAll(b.label);
             if (b.padded) try w.writeByte(' ');
         }
-        try w.print("\x1b[0m\x1b[{d};{d}H\x1b[?25h", .{ v.field_y + 1, v.x + 2 + d.cursor - v.offset });
+        var cursor_width: usize = 0;
+        var it = (try std.unicode.Utf8View.init(d.text[v.offset..d.cursor])).iterator();
+        while (it.nextCodepoint()) |cp| cursor_width += unicode.codepointWidth(cp);
+        try w.print("\x1b[0m\x1b[{d};{d}H\x1b[?25h", .{ v.field_y + 1, v.x + 2 + cursor_width });
     }
 };
 fn eq(a: []const u8, b: []const u8) bool {

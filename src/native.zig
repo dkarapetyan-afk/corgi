@@ -22,6 +22,7 @@ pub const Session = struct {
     cwd: []const u8,
     child: std.process.Child,
     ready: bool = false,
+    workspace_id: u32 = 0,
     exited: bool = false,
     state: agents.State = .initializing,
     attention: agents.Attention = .none,

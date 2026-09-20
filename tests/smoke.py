@@ -129,6 +129,126 @@ class Runtime(unittest.TestCase):
             if m.get('type')==kind:return m
         self.fail('missing message '+kind)
     def input(self,text): self.write(op='input',data=text)
+    def workspaces(self): return self.rpc(op='workspace.list')['workspaces']
+    def test_workspaces_isolate_tabs_preserve_focus_and_default_folders(self):
+        one=pathlib.Path(self.temp.name,'one');one.mkdir()
+        two=pathlib.Path(self.temp.name,'two');two.mkdir()
+        first=self.rpc(op='new',cwd=str(one),command='sleep 30')['pane']
+        default=self.workspaces()[0]['id']
+        self.attach();self.frame_with('workspaces')
+        second_ws=self.rpc(op='workspace.new',name='Second',cwd=str(two))['workspace']
+        second=next(p['id'] for p in self.panes() if p['focused'])
+        self.assertNotEqual(first,second)
+        self.assertEqual({p['workspace'] for p in self.panes()},{default,second_ws})
+        self.assertEqual(next(p['cwd'] for p in self.panes() if p['id']==second),str(two.resolve()))
+        self.rpc(op='action',name='new')
+        third=next(p['id'] for p in self.panes() if p['focused'])
+        self.rpc(op='action',name='split',value='right')
+        fourth=next(p['id'] for p in self.panes() if p['focused'])
+        self.assertEqual(len({first,second,third,fourth}),4)
+        self.assertEqual(self.rpc(op='list')['tabs'],2)
+        self.rpc(op='workspace.switch',workspace=default)
+        self.assertEqual(self.rpc(op='list')['tabs'],1)
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),first)
+        self.rpc(op='workspace.switch',workspace=second_ws)
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),fourth)
+        self.rpc(op='workspace.edit',workspace=second_ws,name='Renamed',cwd=str(one))
+        self.rpc(op='new',command='sleep 30')
+        self.assertEqual(next(p['cwd'] for p in self.panes() if p['focused']),str(one.resolve()))
+        self.assertEqual(next(p['cwd'] for p in self.panes() if p['id']==second),str(two.resolve()))
+        self.rpc(op='focus',pane=first)
+        self.assertEqual(next(w['id'] for w in self.workspaces() if w['active']),default)
+    def test_workspace_metadata_survives_restart(self):
+        folder=pathlib.Path(self.temp.name,'项目 café');folder.mkdir()
+        default=self.workspaces()[0]['id']
+        ws=self.rpc(op='workspace.new',name='Project',cwd=str(folder))['workspace']
+        self.rpc(op='workspace.edit',workspace=ws,name='Renamed')
+        self.rpc(op='workspace.switch',workspace=default)
+        before=self.workspaces()
+        self.restart_runtime()
+        self.assertEqual(self.workspaces(),[{**w,'tabs':0} for w in before])
+        self.rpc(op='workspace.switch',workspace=ws)
+        self.attach();self.frame_with('Renamed')
+        self.assertEqual(self.panes()[0]['cwd'],str(folder.resolve()))
+        self.client_file.close();self.client.close();self.client_file=None;self.client=None
+        self.rpc(op='workspace.switch',workspace=default)
+        self.rpc(op='workspace.close',workspace=default)
+        self.restart_runtime()
+        self.assertEqual([w['id'] for w in self.workspaces()],[ws])
+        self.assertTrue(self.workspaces()[0]['active'])
+        newer=self.rpc(op='workspace.new',name='New')['workspace']
+        self.assertGreater(newer,ws)
+
+    def test_hidden_workspace_exit_and_undo_do_not_disturb_active_pane(self):
+        pane=self.rpc(op='new',cwd=self.temp.name,command='exec /bin/sh')['pane']
+        default=self.workspaces()[0]['id']
+        ws=self.rpc(op='workspace.new',name='Other',cwd=self.temp.name)['workspace']
+        active=next(p['id'] for p in self.panes() if p['focused'])
+        self.attach();self.frame_with('Other')
+        self.rpc(op='send',pane=pane,text='exit',enter=True)
+        self.until(lambda:all(p['id']!=pane for p in self.panes()))
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),active)
+        self.assertEqual(next(w['id'] for w in self.workspaces() if w['active']),ws)
+        self.rpc(op='action',name='undo-close')
+        self.assertEqual(next(w['id'] for w in self.workspaces() if w['active']),default)
+        self.frame_with('restored output')
+    def test_workspace_sidebar_create_edit_switch_and_agents(self):
+        folder=pathlib.Path(self.temp.name,'项目 café');folder.mkdir()
+        first=self.rpc(op='new',cwd=self.temp.name,command='sleep 30')['pane']
+        self.rpc(op='hook',pane=first,provider='claude',seq=1,event={'hook_event_name':'SessionStart','session_id':'first'})
+        self.attach();screen=self.agent_frame('claude','○')
+        self.assertTrue(screen[0].startswith(' workspaces'))
+        self.assertTrue(screen[11].startswith(' agents'))
+        self.click(21,1);self.frame_with('new workspace: name')
+        self.input('Project\r');screen=self.frame_with('No agents yet')
+        ws=next(w for w in self.workspaces() if w['active'])
+        self.assertEqual((ws['name'],ws['cwd']),('Project',str(pathlib.Path(self.temp.name).resolve())))
+        self.click(4,3);self.agent_frame('claude','○')
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),first)
+        self.input('\x1b[<2;4;5M\x1b[<2;4;5m');self.frame_with('edit workspace: name')
+        self.input('Edited\r');screen=self.frame_with('Edited')
+        self.assertNotIn('workspace: default folder', '\n'.join(screen))
+        self.assertNotIn('edit workspace: name', '\n'.join(screen))
+        edited=next(w for w in self.workspaces() if w['id']==ws['id'])
+        self.assertEqual((edited['name'],edited['cwd']),('Edited',str(pathlib.Path(self.temp.name).resolve())))
+        self.input('\x02}');self.frame_with('No agents yet')
+        self.assertEqual(next(w['id'] for w in self.workspaces() if w['active']),ws['id'])
+    def test_workspace_and_agent_lists_scroll_independently(self):
+        self.rpc(op='new',cwd=self.temp.name,command='sleep 30')
+        for i in range(6): self.rpc(op='workspace.new',name=f'Group-{i}',cwd=self.temp.name)
+        for i in range(6):
+            pane=self.rpc(op='new',cwd=self.temp.name,command='sleep 30')['pane']
+            self.rpc(op='hook',pane=pane,provider='claude',seq=1,event={'hook_event_name':'SessionStart','session_id':str(i)})
+        self.attach();screen=self.frame_with('< 4-7/7 >')
+        self.assertIn('< 1-4/6 >',screen[22])
+        self.input('\x1b[<65;5;15M');screen=self.frame_with('< 2-5/6 >')
+        self.assertIn('< 4-7/7 >',screen[10])
+        self.input('\x1b[<64;5;5M');screen=self.frame_with('< 3-6/7 >')
+        self.assertIn('< 2-5/6 >',screen[22])
+        self.click_text([r[:27] for r in screen],'Group-1')
+        self.assertEqual(next(w['name'] for w in self.workspaces() if w['active']),'Group-1')
+        self.frame_with('No agents yet')
+    def test_native_sessions_belong_to_their_workspace(self):
+        self.rpc(op='new',cwd=self.temp.name,command='sleep 30')
+        original=self.workspaces()[0]['id']
+        self.rpc(op='native.start',provider='codex',cwd=self.temp.name)
+        self.attach();self.agent_frame('codex','○')
+        self.rpc(op='workspace.new',name='Other',cwd=self.temp.name)
+        self.frame_with('No agents yet')
+        self.rpc(op='workspace.switch',workspace=original)
+        self.agent_frame('codex','○')
+    def test_workspace_invalid_folder_and_empty_close(self):
+        first=self.rpc(op='new',cwd=self.temp.name,command='sleep 30')['pane']
+        before=self.workspaces()
+        result=subprocess.run([EXE,'workspace','new','Bad',self.temp.name+'/missing'],env=self.env,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(self.workspaces(),before)
+        ws=self.rpc(op='workspace.new',name='Empty',cwd=self.temp.name)['workspace']
+        pane=next(p['id'] for p in self.panes() if p['focused'])
+        self.rpc(op='close',pane=pane)
+        self.rpc(op='workspace.close',workspace=ws)
+        self.assertEqual(len(self.workspaces()),1)
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),first)
     def test_synchronized_redraw_keeps_completed_frame_and_cursor(self):
         fixture=pathlib.Path(self.temp.name,'sync.py')
         begin=pathlib.Path(self.temp.name,'begin')
@@ -180,7 +300,7 @@ time.sleep(30)
         for _ in range(100):
             data=self.get_type('frame')['data'];screen=screen_text(data)
             if color and f'\x1b[38;2;{color}m{icon}' not in data:continue
-            for y in range(2,21,2):
+            for y in range(13,21,2):
                 if not screen[y][:27].startswith(' '+icon+' '):continue
                 if directory is not None and directory not in screen[y][4:27]:continue
                 if screen[y+1][1:4].strip()!=activity:continue
@@ -194,7 +314,7 @@ time.sleep(30)
     def click_text(self,screen,text):
         for y,row in enumerate(screen):
             if text in row:
-                self.click(row.index(text)+1,y+1);return
+                self.click((row.rindex(text) if text==' + ' else row.index(text))+1,y+1);return
         self.fail('missing mouse target '+text)
     def right_click_tab(self,screen,title):
         x=screen[0].index(title)+1
@@ -386,7 +506,7 @@ while True:
         self.until(lambda:'MENU_CLOSED' in self.run_cli('read',str(pane)))
     def test_plus_creates_tab_and_previews_automatic_number(self):
         self.attach();initial=self.frame_with(' + ')
-        self.assertEqual(initial[0].index(' + ')-28,10)
+        self.assertEqual(initial[0].rindex(' + ')-28,10)
         self.click_text(initial[:1],' + ')
         prompt=self.frame_with('new tab')
         self.assertEqual(self.rpc(op='list')['tabs'],1)
@@ -395,7 +515,7 @@ while True:
         self.input('My work\r')
         screen=self.tab_frame('My work')
         self.assertNotIn('2:My work',screen[0])
-        self.assertEqual(screen[0].index(' + ')-28,20)
+        self.assertEqual(screen[0].rindex(' + ')-28,20)
         self.assertNotIn('new tab','\n'.join(screen))
         pane=next(p for p in self.panes() if p['focused'])
         self.assertTrue(pathlib.Path(pane['cwd']).samefile(self.temp.name))
@@ -446,7 +566,7 @@ while True:
         self.click_text(menu,'Next >');menu=self.frame_with('Split right',30,8)
         self.click_text(menu,'Split right');self.until(lambda:len(self.panes())==2)
         for i in range(4):self.rpc(op='new',cwd=self.temp.name,title='Long tab name '+str(i))
-        screen=self.tab_frame('Long tab',30,8)
+        screen=self.tab_frame('Long tab name 3',30,8)
         self.click_text(screen[:1],' + ')
         self.frame_with('new tab',30,8);self.input('\r')
         self.until(lambda:self.rpc(op='list')['tabs']==6)
@@ -477,6 +597,7 @@ while True:
         self.assertEqual(self.rpc(op='list')['tabs'],2)
         folder=pathlib.Path(self.temp.name,'removed');folder.mkdir()
         self.rpc(op='new',cwd=str(folder),title='Removed')
+        self.rpc(op='workspace.edit',workspace=self.workspaces()[0]['id'],cwd=str(folder))
         self.input('\x02c');self.frame_with('new tab');folder.rmdir()
         self.input('\r');dialog=self.frame_with('Could not save.')
         self.assertEqual(self.rpc(op='list')['tabs'],3)
@@ -619,7 +740,7 @@ while True:
         one=self.rpc(op='new',cwd=self.temp.name,title='Alpha',command='sleep 30')['pane']
         self.rpc(op='new',cwd=self.temp.name,title='Beta',command='sleep 30')
         self.attach();screen=self.frame_with('No agents yet')
-        self.assertTrue(screen[0].startswith(' agents'))
+        self.assertTrue(screen[0].startswith(' workspaces'))
         def hook(event,**extra):
             p=subprocess.run([EXE,'hook','codex'],env={**self.env,'CORGI_PANE':str(one)},input=json.dumps({'hook_event_name':event,'session_id':'sidebar',**extra}),text=True,capture_output=True,timeout=3)
             self.assertEqual((p.returncode,p.stdout,p.stderr),(0,'',''))
@@ -653,20 +774,20 @@ while True:
             directory=pathlib.Path(self.temp.name,f'Agent-{index}');directory.mkdir()
             pane=self.rpc(op='new',cwd=str(directory),title=f'Tab-{index}',command='sleep 30')['pane'];panes.append(pane)
             self.rpc(op='hook',pane=pane,provider='claude',seq=1,event={'hook_event_name':'SessionStart','session_id':str(index)})
-        self.attach();screen=self.frame_with('< 1-10/12 >')
+        self.attach();screen=self.frame_with('< 1-4/12 >')
         self.assertNotIn('Agent-11','\n'.join(row[:27] for row in screen))
-        self.input('\x1b[<65;5;12M');screen=self.frame_with('< 2-11/12 >')
-        self.click(20,23);screen=self.frame_with('< 3-12/12 >')
+        self.input('\x1b[<65;5;15M');screen=self.frame_with('< 2-5/12 >')
+        self.click(20,23);screen=self.frame_with('< 6-9/12 >')
         self.click_text([row[:27] for row in screen],'Agent-8')
         self.until(lambda:next(p['id'] for p in self.panes() if p['focused'])==panes[8])
         self.rpc(op='action',name='move-tab',value='left')
-        self.rpc(op='close',pane=panes[11]);screen=self.frame_with('< 2-11/11 >')
+        self.rpc(op='close',pane=panes[11]);screen=self.frame_with('< 6-9/11 >')
         self.click_text([row[:27] for row in screen],'Agent-8')
         self.until(lambda:next(p['id'] for p in self.panes() if p['focused'])==panes[8])
         self.write(op='size',cols=30,rows=8)
         screen=self.frame_with(' + ',30,8)
         self.assertNotIn('agents',screen[0])
-        self.write(op='size',cols=80,rows=24);self.frame_with('< 2-11/11 >')
+        self.write(op='size',cols=80,rows=24);self.frame_with('< 6-9/11 >')
     def test_sidebar_uses_live_directory_then_hook_directory_without_tab_labels(self):
         project=pathlib.Path(self.temp.name,'frontend');project.mkdir()
         pane=self.rpc(op='new',cwd=self.temp.name,title='Unrelated tab name')['pane']
@@ -677,7 +798,7 @@ while True:
         self.assertNotIn('Unrelated','\n'.join(row[:27] for row in screen))
         self.rpc(op='hook',pane=pane,provider='claude',seq=2,event={'hook_event_name':'PreToolUse','session_id':'directory','cwd':'/a/very/long/working/directory/backend','tool_name':'Read'})
         screen=self.agent_frame('claude','●',directory='backend',activity='🔧')
-        self.assertTrue(screen[2].startswith(' ●  …'))
+        self.assertTrue(screen[13].startswith(' ●  …'))
         self.rpc(op='hook',pane=pane,provider='claude',seq=3,event={'hook_event_name':'PostToolUse','session_id':'directory','tool_name':'Read'})
         self.agent_frame('claude','●',directory='backend',activity='🧠')
     def test_sidebar_native_updates_and_selection_keep_approvals_pending(self):

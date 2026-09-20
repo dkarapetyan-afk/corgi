@@ -48,6 +48,27 @@ fn run() !void {
         if (args.len < 3) return error.Usage;
         try integration.launch(args[2], args[3..], exe);
     }
+    if (eq(cmd, "workspace")) {
+        if (args.len < 3) return error.Usage;
+        try ensureServer(path, exe);
+        if (eq(args[2], "list")) return request(path, .{ .op = "workspace.list" }, false);
+        if (eq(args[2], "new")) {
+            if (args.len < 4 or args.len > 5) return error.Usage;
+            const cwd = if (args.len == 5) try @import("workspace.zig").Store.directory(args[4]) else try a.dupe(u8, "");
+            defer a.free(cwd);
+            return request(path, .{ .op = "workspace.new", .name = args[3], .cwd = cwd }, false);
+        }
+        if (args.len < 4) return error.Usage;
+        const id = try std.fmt.parseInt(u32, args[3], 10);
+        if (eq(args[2], "switch")) return request(path, .{ .op = "workspace.switch", .workspace = id }, false);
+        if (eq(args[2], "close")) return request(path, .{ .op = "workspace.close", .workspace = id }, false);
+        if (eq(args[2], "edit") and args.len == 6) {
+            const cwd = try @import("workspace.zig").Store.directory(args[5]);
+            defer a.free(cwd);
+            return request(path, .{ .op = "workspace.edit", .workspace = id, .name = args[4], .cwd = cwd }, false);
+        }
+        return error.Usage;
+    }
     if (eq(cmd, "native")) {
         if (args.len < 3) return error.Usage;
         if (eq(args[2], "start")) {
@@ -74,12 +95,10 @@ fn run() !void {
     if (eq(cmd, "start")) return;
     if (eq(cmd, "list") or eq(cmd, "ping") or eq(cmd, "shutdown")) return request(path, .{ .op = cmd }, false);
     if (eq(cmd, "new") or eq(cmd, "split")) {
-        const cwd = try std.process.getCwdAlloc(a);
-        defer a.free(cwd);
         const split = eq(cmd, "split");
         const command_index: usize = if (split) 3 else 2;
         const command = if (args.len > command_index) args[command_index] else "";
-        return request(path, .{ .op = cmd, .cwd = cwd, .axis = if (split and args.len > 2) args[2] else "right", .command = command }, false);
+        return request(path, .{ .op = cmd, .axis = if (split and args.len > 2) args[2] else "right", .command = command }, false);
     }
     if (eq(cmd, "focus") or eq(cmd, "close") or eq(cmd, "read") or eq(cmd, "send")) {
         if (args.len < 3) return error.Usage;
@@ -176,6 +195,8 @@ const help =
     \\  corgi list                    JSON pane and agent inventory
     \\  corgi focus|close|read ID      manage / capture pane
     \\  corgi send ID TEXT [--enter]   literal input
+    \\  corgi workspace list|new NAME [DIR]|switch ID
+    \\  corgi workspace edit ID NAME DIR|close ID (empty only)
     \\  corgi action NAME [VALUE]     zoom, rename, next, prev, tab,
     \\                                   focus, swap, resize, move-tab,
     \\                                   attention, mute, close-tab, undo-close
@@ -195,7 +216,7 @@ const help =
     \\r resize, T rename, n/p tabs, 1–9 jump, x close, X close tab,
     \\u undo close, [ scroll/copy, a attention, b agent sidebar, m mute, q detach, ? help.
     \\
-    \\CORGI_SOCKET selects a runtime. No worktrees or workspaces.
+    \\CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.
     \\
 ;
 test {
