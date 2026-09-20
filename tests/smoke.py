@@ -159,6 +159,100 @@ class Runtime(unittest.TestCase):
     def right_click_tab(self,screen,title):
         x=screen[0].index(title)+1
         self.input(f'\x1b[<2;{x};1M\x1b[<2;{x};1m')
+    def viewer(self,cols=80,rows=24):
+        client=socket.socket(socket.AF_UNIX)
+        client.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024)
+        client.settimeout(3);client.connect(self.path)
+        reader=client.makefile('rb')
+        self.addCleanup(client.close);self.addCleanup(reader.close)
+        client.sendall(json.dumps(dict(op='attach',cols=cols,rows=rows,cwd=self.temp.name)).encode()+b'\n')
+        self.assertEqual(json.loads(reader.readline())['type'],'attached')
+        return client,reader
+    def viewer_frame(self,reader,text,cols=80,rows=24):
+        for _ in range(25000):
+            message=json.loads(reader.readline())
+            self.assertNotIn('err',message)
+            if message.get('type')=='frame':
+                screen=screen_text(message['data'],cols,rows)
+                if any(text in row for row in screen):return screen
+        self.fail('missing viewer frame '+text)
+    def test_multiple_viewers_share_input_resize_and_detach_independently(self):
+        self.attach();self.get_type('frame')
+        self.rpc(op='action',name='sidebar')
+        pane=self.panes()[0]['id']
+        checks=[]
+        def check_size(cols,rows):
+            result=pathlib.Path(self.temp.name,f'size-check-{len(checks)}')
+            checks.append(result)
+            self.rpc(op='send',pane=pane,text=f'stty size > {shlex.quote(str(result))}',enter=True)
+            self.until(lambda:result.exists() and result.read_text().strip()==f'{rows} {cols}')
+        check_size(80,22)
+        other,reader=self.viewer(60,18)
+        self.viewer_frame(reader,'^B commands',60,18)
+        check_size(60,16)
+        self.input("printf 'FIRST_VIEWER\\n'\r")
+        self.viewer_frame(reader,'FIRST_VIEWER',60,18)
+        other.sendall(json.dumps(dict(op='input',data="printf 'SECOND_VIEWER\\n'\r")).encode()+b'\n')
+        self.frame_with('SECOND_VIEWER',60,18)
+        self.write(op='size',cols=100,rows=30)
+        check_size(60,16)
+        other.sendall(json.dumps(dict(op='input',data='\x02q')).encode()+b'\n')
+        while json.loads(reader.readline()).get('type')!='detach':pass
+        check_size(100,28)
+        self.input("printf 'STILL_CONNECTED\\n'\r")
+        self.frame_with('STILL_CONNECTED',100,30)
+        third,third_reader=self.viewer(50,12)
+        self.viewer_frame(third_reader,'^B commands',50,12)
+        check_size(50,10)
+        third_reader.close();third.close()
+        check_size(100,28)
+    def test_new_viewer_preserves_dialog_and_paste_state_is_per_client(self):
+        self.attach();self.get_type('frame')
+        self.input('\x02T');self.frame_with('rename tab')
+        other,reader=self.viewer()
+        self.viewer_frame(reader,'rename tab')
+        # One viewer's open bracketed paste must not consume another's Enter.
+        self.input('\x1b[200~Shared title')
+        self.frame_with('Shared title')
+        other.sendall(json.dumps(dict(op='input',data='\r')).encode()+b'\n')
+        self.viewer_frame(reader,'^B commands')
+        self.input('\x1b[201~')
+        self.tab_frame('Shared title')
+    def test_paste_stays_in_original_pane_when_another_viewer_changes_focus(self):
+        fixture=pathlib.Path(self.temp.name,'paste.py')
+        fixture.write_text("""import os,sys,tty
+from pathlib import Path
+tty.setraw(0)
+log=Path(sys.argv[1]);log.write_bytes(b'')
+os.write(1,b'\\x1b[?2004hPASTE_READY')
+while True:
+    with log.open('ab') as output:output.write(os.read(0,1024))
+""")
+        logs=[pathlib.Path(self.temp.name,name) for name in ('first-input','second-input')]
+        panes=[self.rpc(op='new',cwd=self.temp.name,command=shlex.join([sys.executable,str(fixture),str(log)]))['pane'] for log in logs]
+        for pane in panes:self.until(lambda:'PASTE_READY' in self.run_cli('read',str(pane)))
+        self.rpc(op='focus',pane=panes[0])
+        self.attach();self.get_type('frame')
+        other,reader=self.viewer();self.viewer_frame(reader,'PASTE_READY')
+        self.input('\x1b[200~')
+        self.until(lambda:logs[0].read_bytes()==b'\x1b[200~')
+        other.sendall(json.dumps(dict(op='input',data='\x02n')).encode()+b'\n')
+        self.until(lambda:next(p['id'] for p in self.panes() if p['focused'])==panes[1])
+        self.input('\x1b[')
+        self.until(lambda:logs[0].read_bytes()==b'\x1b[200~\x1b[')
+        self.input('PASTED_TEXT\x1b[201~')
+        self.until(lambda:logs[0].read_bytes()==b'\x1b[200~\x1b[PASTED_TEXT\x1b[201~')
+        self.assertEqual(logs[1].read_bytes(),b'')
+    def test_slow_viewer_receives_latest_frame_after_backlog_drains(self):
+        self.attach();self.get_type('frame')
+        other,reader=self.viewer()
+        self.viewer_frame(reader,'^B commands')
+        # Fill its response queue while the first viewer continues reading.
+        other.sendall(b'{"op":"ping"}\n'*20000)
+        time.sleep(.2)
+        self.rpc(op='action',name='rename',value='Latest frame')
+        self.tab_frame('Latest frame')
+        self.viewer_frame(reader,'Latest frame')
     def test_tab_context_menu_targets_clicked_tab_for_rename_and_new(self):
         one=pathlib.Path(self.temp.name,'one');one.mkdir()
         two=pathlib.Path(self.temp.name,'two');two.mkdir()

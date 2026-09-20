@@ -27,6 +27,15 @@ const Client = struct {
     output: std.ArrayList(u8) = .empty,
     sent: usize = 0,
     attached: bool = false,
+    width: u16 = 100,
+    height: u16 = 30,
+    needs_frame: bool = true,
+    watched: bool = true,
+    paste: bool = false,
+    paste_pane: ?layout.Id = null,
+    paste_to_name: bool = false,
+    keybuf: std.ArrayList(u8) = .empty,
+    escape_at: i64 = 0,
     dead: bool = false,
     touched: i64 = 0,
     fn queue(cl: *Client, value: anytype) !void {
@@ -42,6 +51,7 @@ const Client = struct {
     fn deinit(cl: *Client) void {
         _ = c.close(cl.fd);
         cl.input.deinit(a);
+        cl.keybuf.deinit(a);
         cl.output.deinit(a);
     }
 };
@@ -59,7 +69,6 @@ pub const Server = struct {
     theme: Theme = .{},
     dirty: bool = true,
     quit: bool = false,
-    watched: bool = true,
     prefix: bool = false,
     menu_page: usize = 0,
     sidebar_open: bool = true,
@@ -68,17 +77,12 @@ pub const Server = struct {
     ui_mouse_down: bool = false,
     resize_mode: bool = false,
     copy_mode: bool = false,
-    paste: bool = false,
-    paste_to_pane: bool = false,
-    paste_to_name: bool = false,
     name_dialog: ?naming.Dialog = null,
     confirm: enum { none, pane, tab } = .none,
     confirm_tab: ?layout.Id = null,
     message: [512]u8 = .{0} ** 512,
     message_len: usize = 0,
     native_notice: ?u32 = null,
-    keybuf: std.ArrayList(u8) = .empty,
-    escape_at: i64 = 0,
     bell: bool = false,
     bell_kind: agents.Attention = .none,
     muted: bool = false,
@@ -554,6 +558,7 @@ pub const Server = struct {
                 'q', 'd' => {
                     try cl.queue(.{ .type = "detach" });
                     cl.attached = false;
+                    try s.resizeViewers();
                 },
                 '?' => s.openMenu(),
                 else => {},
@@ -610,27 +615,27 @@ pub const Server = struct {
         }
     }
     fn input(s: *Server, cl: *Client, data: []const u8) !void {
-        try s.keybuf.appendSlice(a, data);
+        try cl.keybuf.appendSlice(a, data);
         var used: usize = 0;
-        while (used < s.keybuf.items.len) {
+        while (used < cl.keybuf.items.len) {
             if (!cl.attached) {
-                s.keybuf.clearRetainingCapacity();
+                cl.keybuf.clearRetainingCapacity();
                 return;
             }
-            const rest = s.keybuf.items[used..];
+            const rest = cl.keybuf.items[used..];
             if (rest[0] != 27) {
-                if (s.paste) {
-                    if (s.paste_to_name and s.name_dialog != null) {
+                if (cl.paste) {
+                    if (cl.paste_to_name and s.name_dialog != null) {
                         if (rest[0] >= 32 and rest[0] < 127) try s.key(cl, rest[0]);
-                    } else if (s.paste_to_pane) {
-                        if (s.focused()) |p| try p.terminal.send(rest[0..1]);
+                    } else if (cl.paste_pane) |id| {
+                        if (s.pane(id)) |p| try p.terminal.send(rest[0..1]);
                     }
                 } else try s.key(cl, rest[0]);
                 used += 1;
                 continue;
             }
             if (rest.len < 2) break;
-            if (!s.paste and rest[1] != '[' and rest[1] != 'O' and (s.hasMenu() or s.name_dialog != null or s.confirm != .none)) {
+            if (!cl.paste and rest[1] != '[' and rest[1] != 'O' and (s.hasMenu() or s.name_dialog != null or s.confirm != .none)) {
                 try s.key(cl, 27);
                 used += 1;
                 continue;
@@ -643,22 +648,22 @@ pub const Server = struct {
             }
             const seq = rest[0..len];
             if (eq(seq, "\x1b[200~") or eq(seq, "\x1b[201~")) {
-                s.paste = eq(seq, "\x1b[200~");
-                if (s.paste) {
-                    s.paste_to_pane = !s.hasMenu() and s.name_dialog == null and s.confirm == .none;
-                    s.paste_to_name = s.name_dialog != null;
+                cl.paste = eq(seq, "\x1b[200~");
+                if (cl.paste) {
+                    cl.paste_pane = if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) (if (s.focused()) |p| p.id else null) else null;
+                    cl.paste_to_name = s.name_dialog != null;
                 }
-                if (s.paste_to_pane) {
-                    if (s.focused()) |p| if (p.terminal.vt.modes.get(.bracketed_paste)) try p.terminal.send(seq);
+                if (cl.paste_pane) |id| {
+                    if (s.pane(id)) |p| if (p.terminal.vt.modes.get(.bracketed_paste)) try p.terminal.send(seq);
                 }
-            } else if (s.paste) {
-                if (s.paste_to_pane) {
-                    if (s.focused()) |p| try p.terminal.send(seq);
+            } else if (cl.paste) {
+                if (cl.paste_pane) |id| {
+                    if (s.pane(id)) |p| try p.terminal.send(seq);
                 }
             } else if (eq(seq, "\x1b[I")) {
-                s.watched = true;
+                cl.watched = true;
                 s.acknowledge();
-            } else if (eq(seq, "\x1b[O")) s.watched = false else if (std.mem.startsWith(u8, seq, "\x1b[<")) try s.mouse(cl, seq) else if (s.tab_menu != null) {
+            } else if (eq(seq, "\x1b[O")) cl.watched = false else if (std.mem.startsWith(u8, seq, "\x1b[<")) try s.mouse(cl, seq) else if (s.tab_menu != null) {
                 if (eq(seq, "\x1b[A") or eq(seq, "\x1bOA")) s.moveTabMenu(false) else if (eq(seq, "\x1b[B") or eq(seq, "\x1bOB")) s.moveTabMenu(true);
             } else if (s.menu() != null) {
                 if (eq(seq, "\x1b[5~")) s.pageMenu(false) else if (eq(seq, "\x1b[6~")) s.pageMenu(true);
@@ -670,11 +675,11 @@ pub const Server = struct {
             } else if (s.copy_mode and eq(seq, "\x1b[5~")) s.scroll(-20) else if (s.copy_mode and eq(seq, "\x1b[6~")) s.scroll(20) else if (s.focused()) |p| try p.terminal.send(seq);
             used += len;
         }
-        std.mem.copyForwards(u8, s.keybuf.items[0 .. s.keybuf.items.len - used], s.keybuf.items[used..]);
-        s.keybuf.items.len -= used;
-        s.escape_at = std.time.milliTimestamp();
-        if (s.keybuf.items.len > 256) {
-            s.keybuf.clearRetainingCapacity();
+        std.mem.copyForwards(u8, cl.keybuf.items[0 .. cl.keybuf.items.len - used], cl.keybuf.items[used..]);
+        cl.keybuf.items.len -= used;
+        cl.escape_at = std.time.milliTimestamp();
+        if (cl.keybuf.items.len > 256) {
+            cl.keybuf.clearRetainingCapacity();
             return error.InvalidInput;
         }
     }
@@ -684,6 +689,7 @@ pub const Server = struct {
         const x = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const y = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const release = seq[seq.len - 1] == 'm';
+        if (!release and (x >= s.width or y >= s.height)) return;
         const tabs_x = s.sidebarView(0).tabX();
         const tabs_width = s.width - tabs_x;
         if (s.ui_mouse_down) {
@@ -905,37 +911,42 @@ pub const Server = struct {
             return error.NoNativeSession;
         } else if (eq(op, "theme")) {
             if (!cl.attached) return error.NotAttached;
-            s.updateTheme(v);
+            for (s.clients.items) |viewer| if (viewer.attached and !viewer.dead) {
+                if (viewer.fd == cl.fd) s.updateTheme(v);
+                break;
+            };
         } else if (eq(op, "attach")) {
-            for (s.clients.items) |other| if (other.attached and other.fd != cl.fd) return error.AlreadyAttached;
+            const first = !s.hasClient();
             cl.attached = true;
-            s.watched = true;
-            s.prefix = false;
-            s.tab_menu = null;
-            s.ui_mouse_down = false;
-            s.copy_mode = false;
-            s.dismissName();
-            s.paste = false;
-            s.paste_to_pane = false;
-            s.paste_to_name = false;
-            s.resize_mode = false;
-            s.confirm = .none;
-            s.confirm_tab = null;
-            s.keybuf.clearRetainingCapacity();
-            s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
-            s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
-            s.updateTheme(v);
+            cl.watched = true;
+            cl.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
+            cl.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
+            cl.keybuf.clearRetainingCapacity();
+            cl.paste = false;
+            cl.paste_pane = null;
+            cl.paste_to_name = false;
+            if (first) {
+                s.prefix = false;
+                s.tab_menu = null;
+                s.ui_mouse_down = false;
+                s.copy_mode = false;
+                s.dismissName();
+                s.resize_mode = false;
+                s.confirm = .none;
+                s.confirm_tab = null;
+                s.updateTheme(v);
+            }
+            try s.resizeViewers();
             if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "");
-            try s.resizePanes();
             s.acknowledge();
-            s.dirty = true;
+            cl.needs_frame = true;
             try cl.queue(.{ .type = "attached" });
         } else if (eq(op, "size")) {
             if (!cl.attached) return error.NotAttached;
-            s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
-            s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
-            try s.resizePanes();
-            s.dirty = true;
+            cl.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
+            cl.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
+            try s.resizeViewers();
+            cl.needs_frame = true;
         } else if (eq(op, "input")) {
             if (!cl.attached) return error.NotAttached;
             try s.input(cl, agents.str(v, "data"));
@@ -979,7 +990,7 @@ pub const Server = struct {
                 // Bind a newly launched foreground process before applying its
                 // first hook, including back-to-back launches in the same pane.
                 s.detectPane(p);
-                const viewed = s.watched and s.model.count > 0 and s.model.tab().focus == id and s.hasClient();
+                const viewed = s.isWatched() and s.model.count > 0 and s.model.tab().focus == id and s.hasClient();
                 const ding = p.agent.apply(provider, event, number(v, "seq", std.time.microTimestamp()), viewed);
                 if (ding) {
                     s.bell = true;
@@ -999,6 +1010,29 @@ pub const Server = struct {
         for (s.panes.items) |p| s.theme.apply(&p.terminal.vt);
         s.dirty = true;
     }
+    fn resizeViewers(s: *Server) !void {
+        var width: u16 = 500;
+        var height: u16 = 200;
+        var found = false;
+        for (s.clients.items) |cl| if (cl.attached and !cl.dead) {
+            width = @min(width, cl.width);
+            height = @min(height, cl.height);
+            found = true;
+        };
+        if (!found or (width == s.width and height == s.height)) return;
+        s.width = width;
+        s.height = height;
+        try s.resizePanes();
+        s.dirty = true;
+    }
+    fn isWatched(s: *Server) bool {
+        for (s.clients.items) |cl| if (cl.attached and !cl.dead and cl.watched) return true;
+        return false;
+    }
+    fn framePending(s: *Server) bool {
+        for (s.clients.items) |cl| if (cl.attached and !cl.dead and cl.needs_frame and cl.output.items.len == 0) return true;
+        return false;
+    }
     fn hasClient(s: *Server) bool {
         for (s.clients.items) |cl| if (cl.attached and !cl.dead) return true;
         return false;
@@ -1010,7 +1044,7 @@ pub const Server = struct {
         const live_screen = p.terminal.vt.screens.active.pages.viewport == .active;
         const text = if (job != null and p.agent.last_seq == 0 and live_screen) p.terminal.text() catch null else null;
         defer if (text) |bytes| a.free(bytes);
-        const watched = s.watched and s.model.count > 0 and s.model.tab().focus == p.id and s.hasClient();
+        const watched = s.isWatched() and s.model.count > 0 and s.model.tab().focus == p.id and s.hasClient();
         const ding = p.detection.update(&p.agent, job, p.terminal.vt.getTitle() orelse "", text orelse "", watched);
         // A quiet agent can change directory without writing to the PTY.
         const previous_cwd = std.hash.Wyhash.hash(0, p.cwd);
@@ -1046,7 +1080,6 @@ pub const Server = struct {
             s.closed.deinit(a);
             for (s.clients.items) |*cl| cl.deinit();
             s.clients.deinit(a);
-            s.keybuf.deinit(a);
             for (s.sessions.items) |*session| session.destroy();
             s.sessions.deinit(a);
             s.dismissName();
@@ -1153,20 +1186,26 @@ pub const Server = struct {
                 if (cl.dead) {
                     cl.deinit();
                     _ = s.clients.orderedRemove(ci);
+                    try s.resizeViewers();
                     continue;
                 }
                 ci += 1;
             }
-            if (s.keybuf.items.len > 0 and std.time.milliTimestamp() - s.escape_at > 40) {
+            for (s.clients.items) |*cl| if (cl.attached and cl.keybuf.items.len > 0 and std.time.milliTimestamp() - cl.escape_at > 40) {
+                if (cl.paste) {
+                    if (cl.paste_pane) |id| if (s.pane(id)) |p| try p.terminal.send(cl.keybuf.items);
+                } else if (cl.keybuf.items.len == 1 and cl.keybuf.items[0] == 27) try s.key(cl, 27) else if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) {
+                    if (s.focused()) |p| try p.terminal.send(cl.keybuf.items);
+                }
+                cl.keybuf.clearRetainingCapacity();
+            };
+            if (s.dirty) {
                 for (s.clients.items) |*cl| if (cl.attached) {
-                    if (s.keybuf.items.len == 1 and s.keybuf.items[0] == 27) try s.key(cl, 27) else if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) {
-                        if (s.focused()) |p| try p.terminal.send(s.keybuf.items);
-                    }
-                    break;
+                    cl.needs_frame = true;
                 };
-                s.keybuf.clearRetainingCapacity();
+                s.dirty = false;
             }
-            if (s.dirty and s.hasClient() and std.time.milliTimestamp() - s.last_frame >= 30) {
+            if (s.framePending() and std.time.milliTimestamp() - s.last_frame >= 30) {
                 var native_blocked: usize = 0;
                 var native_finished: usize = 0;
                 for (s.sessions.items) |session| switch (session.attention) {
@@ -1190,9 +1229,9 @@ pub const Server = struct {
                     .agents = entries,
                 });
                 defer a.free(bytes);
-                for (s.clients.items) |*cl| if (cl.attached and cl.output.items.len == 0) {
+                for (s.clients.items) |*cl| if (cl.attached and !cl.dead and cl.needs_frame and cl.output.items.len == 0) {
                     try cl.queue(.{ .type = "frame", .data = bytes });
-                    s.dirty = false;
+                    cl.needs_frame = false;
                 };
                 s.last_frame = std.time.milliTimestamp();
             }

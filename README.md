@@ -15,6 +15,8 @@ From this directory:
 
 This builds Corgi and starts or attaches to its background runtime.
 
+Multiple terminals can attach to the same runtime. They share the current view and controls; the layout fits the smallest attached terminal. Detaching one viewer leaves the others connected.
+
 - **Ctrl-B** opens the clickable command menu and shows shortcuts.
 - Click **+** to create a tab; right-click a tab to rename or close it. Unnamed tabs show their current position; clear a name to return to automatic numbering.
 - **Ctrl-B**, then **v** or **-** splits right or down.

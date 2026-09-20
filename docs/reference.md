@@ -17,6 +17,8 @@ After building, the executable is `zig-out/bin/corgi`. Its directory is added to
 
 One runtime has a flat list of tabs. Tabs contain binary split trees; pane IDs identify processes and stay stable when you move them. The runtime survives closing the client or losing SSH. **It does not restore sessions after the runtime itself exits or after reboot.**
 
+Multiple viewers can attach at once. They share tabs, focus, menus, scrollback position, and keyboard/mouse control. The shared layout uses the smallest attached width and height, and expands when a smaller viewer detaches or disconnects. `prefix q` detaches only the viewer that typed it. Closing the last pane detaches everyone. Additional viewers preserve the current view and terminal theme; color updates come from the earliest connected viewer that is still attached.
+
 ## Tabs and panes
 
 `prefix` means press Ctrl-B, release, then the next key. **Ctrl-B immediately opens a compact command menu**: press a displayed shortcut or click its row. Escape, the menu's `x`, or a click outside dismisses it. Resize has its own clickable direction menu. In short terminals, use the menu's previous/next buttons, the wheel, or PageUp/PageDown to see more commands.
