@@ -3,11 +3,11 @@
 The work is split into three commits/milestones. Stop after each milestone for a
 manual restart and user check before continuing.
 
-1. **Runtime interface (this milestone).** Session resources live in
+1. **Runtime interface (complete).** Session resources live in
    `runtime.zig`; protocol 1 exposes session data and terminal surfaces separately
    from presentation. The existing daemon-rendered UI and legacy commands still
    work. This milestone does not change viewer focus behavior or enable handoff.
-2. **Viewer-owned UI.** Move composition, menus, dialogs, and interaction into
+2. **Viewer-owned UI (this milestone).** Composition, menus, dialogs, and interaction run in
    the viewer. Workspace/tab order and split arrangement remain shared. Selected
    workspace, selected tab, focused pane, and transient presentation state belong
    to each viewer. Keep selection by ID and reconcile it when another viewer
@@ -64,7 +64,7 @@ of retained closed panes. A split tree contains either `{"pane":ID}` or
 `{"split":{"axis":"horizontal"|"vertical","ratio":500,"first":NODE,"second":NODE}}`.
 Ratios are thousandths. No selected workspace/tab/pane or zoom state appears in
 this shared snapshot. The legacy UI still stores its selection in layout models
-internally until milestone 2 moves it out.
+internally for legacy socket attachments; normal viewers keep their own models.
 
 Snapshots carry `server_pid` and a runtime `revision`. Revisions can skip and
 include output/presentation invalidations; clients replace the snapshot rather
@@ -81,8 +81,8 @@ contains SGR-styled terminal text, starts with its own style, and ends in SGR
 reset. It contains no cursor movement or surrounding Corgi UI. The viewer places
 these lines and controls cursor visibility. The surface is the latest completed
 Ghostty render (possibly empty before the first completed synchronized redraw).
-It currently uses the legacy shared scroll viewport; per-viewer scrolling is
-part of milestone 2. Reading a surface does not select or acknowledge the pane.
+This original operation uses the legacy shared scroll viewport. Normal viewers
+use `viewer.sync`, which captures their independently requested viewport. Reading a surface does not select or acknowledge the pane.
 
 ## Terminal restoration findings
 
@@ -115,3 +115,60 @@ restart and ends the existing runtime's panes. Check tabs/splits, tab dragging
 and rename, workspace switching, enhanced keyboard input, paste, wheel scroll,
 mouse selection, agent indicators, and detach/reattach. Multiple viewers still
 share selection in this milestone. The new independent selections arrive in 2.
+
+
+## Milestone 2: local viewers
+
+After the one-time daemon upgrade, rebuild and open `./go.sh` to pick up UI changes.
+The daemon PID and all existing pane processes stay the same. Viewer-only changes
+include menus, dialogs, key bindings, sidebar composition, and presentation. A
+feature needing a new runtime capability still requires a daemon update until
+milestone 3 provides handoff.
+
+`controller.zig` shares interaction behavior between normal local viewers and the
+legacy socket adapter. The viewer instantiates it with a private `mirror.zig`
+projection. That projection creates Ghostty framebuffers, never processes or
+PTYs. Session snapshots rebuild shared arrangement while retaining selected IDs
+and zoom locally. A removed selection falls back to a surviving pane/tab or the
+first remaining workspace. Menus targeting removed tabs and stale divider drags
+are cancelled. Shared layout versions exclude focus, zoom, and terminal output.
+
+The additive protocol capabilities are:
+
+- `viewer.open`: establish a viewer on a persistent negotiated connection.
+- `viewer.sync`: report visible pane IDs, requested sizes, scroll offsets, focus,
+  workspace, and watch state; receive session data, pane surfaces/input modes,
+  pending sequenced CLI controls, and sound events. Controls remain pending until
+  the viewer acknowledges applying them; back-to-back focus/split commands retain
+  their intended target. Creation returns `ViewerBusy` when a queued local action
+  must resolve the target first. No composed Corgi frame crosses the wire.
+- `layout.apply`: apply shared tab names/order, swaps, and split ratios against an
+  expected structural token. Pane/tab identity sets must remain unchanged.
+  Conflicts refresh the viewer and ask it to repeat the edit.
+- `pane.transfer`, `pane.restore`, `pane.acknowledge`, `workspace.create`: explicit
+  shared operations needed by the UI. These never set another viewer's selection.
+- `viewer.search`: locate text in retained terminal history without changing a
+  shared viewport. Selection and clipboard formatting remain local.
+- `viewer.list`: inspect IDs and last reported selections for targeting CLI actions.
+
+A pane is sized only by viewers showing it; hidden panes retain their last size.
+Views of the same pane use the minimum requested dimensions. Scroll offsets,
+selections, and paste targets are local. Input batching keeps a bracketed paste
+bound to its starting pane even if navigation changes; closing that pane discards
+its remaining input. Renderer captures restore the legacy viewport after sampling.
+The compatibility `attach` path still renders its original shared UI in the daemon.
+
+### Manual check
+
+Save work, then run `./go.sh --restart` from outside Corgi once to install this
+protocol. Open two outer terminals with `./go.sh`. Navigate different tabs and
+workspaces; open a menu/dialog and scroll in one while using the other. Rename,
+reorder, split, and close panes and verify both see the same arrangement while
+keeping their own selections. Resize one viewer while viewing different panes,
+then the same pane. Detach and reopen one viewer: the other and its running
+processes should continue. Check enhanced keyboard input, paste, mouse selection,
+search/copy, agent attention, and sounds.
+
+Validation uses the existing real-PTY smoke suite plus `tests/viewers.py`, which
+runs the same controller/transport through a deterministic stdio harness enabled
+only by `-Dviewer-test-driver=true`. Normal builds exclude the harness entry point.

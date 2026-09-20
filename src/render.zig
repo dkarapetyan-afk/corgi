@@ -84,7 +84,7 @@ pub fn tabDrop(model: *const layout.Model, width: u16, x: u16) ?TabDrop {
     }
     return last;
 }
-pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16, ui: Ui) ![]u8 {
+pub fn frame(model: *layout.Model, panes: anytype, width: u16, height: u16, ui: Ui) ![]u8 {
     var out: Buffer = .init(a);
     defer out.deinit();
     const w = &out.writer;
@@ -128,7 +128,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
         for (panes) |p| if (p.id == place.id) {
             const r = place.rect;
             try p.terminal.updateRender();
-            const state = &p.terminal.render;
+            const state = p.terminal.renderState();
             for (0..@min(state.rows, r.h)) |row| {
                 try w.print("\x1b[{d};{d}H", .{ r.y + row + 1, r.x + 1 });
                 try @import("surface.zig").writeRow(w, state, row, r.w, ui.dialog != null);
@@ -166,7 +166,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     if (model.count > 0 and !ui.copy_mode and ui.menu == null and ui.tab_menu == null and ui.dialog == null and !ui.confirm) for (model.placements(area, &locations)) |place| {
         if (place.id != model.tab().focus or place.rect.h == 0) continue;
         for (panes) |p| if (p.id == place.id) {
-            if (p.terminal.render.cursor.visible) if (p.terminal.render.cursor.viewport) |cursor| {
+            if (p.terminal.renderState().cursor.visible) if (p.terminal.renderState().cursor.viewport) |cursor| {
                 if (cursor.x < place.rect.w and cursor.y < place.rect.h) {
                     try w.print("\x1b[{d};{d}H\x1b[?25h", .{ place.rect.y + cursor.y + 1, place.rect.x + cursor.x + 1 });
                 }

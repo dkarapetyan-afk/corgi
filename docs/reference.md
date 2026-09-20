@@ -13,11 +13,13 @@ Requires **Zig 0.15.2**, pinned to the Ghostty revision in `build.zig.zon`. The 
 python3 tests/smoke.py          # real PTYs + socket tests; mock providers, no inference
 ```
 
-After building, the executable is `zig-out/bin/corgi`. Its directory is added to each pane's PATH, so `corgi` works inside the terminal. Ordinary `go.sh` preserves the running runtime. Use `go.sh --restart` from outside Corgi to load a new build: it stops that runtime's shells and agents and discards its in-memory snapshots. The build completes before shutdown, so a failed build leaves the current runtime running. With no runtime running, `--restart` starts normally. Put the flag first; further arguments are passed through, e.g. `./go.sh --restart start` restarts detached.
+After building, the executable is `zig-out/bin/corgi`. Its directory is added to each pane's PATH, so `corgi` works inside the terminal. Ordinary `go.sh` preserves the running runtime. UI-only changes load in a newly opened viewer. Use `go.sh --restart` from outside Corgi to load runtime/protocol changes: it stops that runtime's shells and agents and discards its in-memory snapshots. The build completes before shutdown, so a failed build leaves the current runtime running. With no runtime running, `--restart` starts normally. Put the flag first; further arguments are passed through, e.g. `./go.sh --restart start` restarts detached.
 
 One runtime has a flat list of tabs. Tabs contain binary split trees; pane IDs identify processes and stay stable when you move them. The runtime survives closing the client or losing SSH. **It does not restore sessions after the runtime itself exits or after reboot.**
 
-Multiple viewers can attach at once. They share tabs, focus, menus, scrollback position, and keyboard/mouse control. The shared layout uses the smallest attached width and height, and expands when a smaller viewer detaches or disconnects. `prefix q` detaches only the viewer that typed it. Closing the last pane detaches everyone. Additional viewers preserve the current view and terminal theme; color updates come from the earliest connected viewer that is still attached.
+Multiple viewers can attach at once. They share workspace/tab order, split ratios, names, and running processes. Each owns its selected workspace/tab/pane, zoom, menus, dialogs, scroll/copy state, and mute setting. Shared edits appear in every viewer; closing a selected pane chooses a surviving pane locally. Pane sizes use the minimum dimensions among the viewers actually displaying that pane. Hidden panes keep their last size; detaching a smaller viewer allows others to grow. `prefix q` detaches only that viewer. Closing the last pane in the only workspace detaches everyone. The earliest live viewer supplies terminal theme defaults.
+
+Normal attachments compose their UI locally from session snapshots and terminal surfaces. The old socket `attach` operation remains available as a compatibility adapter, with its original shared-view semantics. New viewers check daemon capabilities and report when an older daemon needs an update; they never restart it automatically.
 
 ## Tabs and panes
 
@@ -29,7 +31,7 @@ Headers show either the custom name or the automatic number, centered in a minim
 
 **Rename tab** uses the same bordered dialog. Type to replace the selection, or move the cursor with Left/Right, Home/End and edit with Backspace/Delete. Ctrl-C, Ctrl-U, or **Clear** empties the field; saving an empty field removes the custom name and restores automatic numbering. The number shown in an empty field is a preview, not saved text. A number you explicitly type is a custom name and stays fixed. Save, Clear, and Cancel are clickable. Cancel leaves the existing name unchanged.
 
-Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab uses the workspace default directory and prompts for a name; Close confirms before ending all of that tab's panes.
+Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab uses the workspace default directory and prompts for a name; Close immediately ends all of that tab's panes.
 
 | Action | Key |
 | --- | --- |
@@ -42,7 +44,7 @@ Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Clo
 | Next / previous tab | `prefix n/p` |
 | Jump to tab | `prefix 1–9` |
 | Rename tab | `prefix T` |
-| Close pane / tab (confirmation) | `prefix x` / `prefix X` |
+| Close pane / tab | `prefix x` / `prefix X` |
 | Reopen last closed pane | `prefix u` |
 | Break pane into its own tab | `prefix !` |
 | Scroll/copy mode | `prefix [` |
@@ -58,15 +60,15 @@ Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text
 
 Exiting a shell immediately removes its pane; an empty tab disappears too. Corgi keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `corgi action undo-close`) restores the most recent one in its original workspace (or the current one if removed), into a new tab with a **fresh shell**, not the old process or agent session. With one workspace, closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
 
-This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. Multiple viewers can attach and currently share the selected view; the layout fits the smallest attached terminal. Limits: 24 tabs per workspace, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
+This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. Multiple viewers share arrangement and independently select what to view. Limits: 24 tabs per workspace, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
 
 The additive [runtime protocol](development-reloads.md#protocol-1) exposes shared
 session snapshots, pane surfaces, and operations with explicit targets for the
-upcoming viewer-owned UI. Legacy CLI and viewer operations retain their behavior.
+viewer-owned UI. The legacy socket attachment path remains supported.
 
 ## Agent integration
 
-The left sidebar is split 50/50: workspaces above, agents from the selected workspace below, in tab order. Click + beside workspaces to enter just a name (the current workspace’s default folder is inherited), click a workspace to switch, and right-click to rename it in one step. `prefix w` creates, `prefix W` edits, and `prefix {` / `prefix }` switch workspaces. Each workspace retains its tabs and focused pane; processes keep running while hidden. New tabs and splits use its default folder; explicit RPC `cwd` overrides it. Changing a default folder does not change existing shells. Workspace names, IDs, default folders, and selection are saved automatically across restarts; tabs and processes are not restored. State lives at `$XDG_STATE_HOME/corgi/workspaces.json` (default `~/.local/state/corgi/workspaces.json`), or beside an explicit `CORGI_SOCKET` as `<socket>.workspaces.json`. `corgi workspace list`, `new NAME [DIR]`, `switch ID`, `edit ID NAME DIR`, and `close ID` provide CLI access; close requires an empty workspace with no native sessions. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
+The left sidebar is split 50/50: workspaces above, agents from the selected workspace below, in tab order. Click + beside workspaces to enter just a name (the current workspace’s default folder is inherited), click a workspace to switch, and right-click to rename it in one step. `prefix w` creates, `prefix W` edits, and `prefix {` / `prefix }` switch workspaces. Each workspace retains its tabs; each viewer remembers its focused pane within them. Processes keep running while hidden. New tabs and splits use its default folder; explicit RPC `cwd` overrides it. Changing a default folder does not change existing shells. Workspace names, IDs, and default folders are saved automatically across restarts. Each viewer owns its selection; tabs and processes are not restored after a daemon restart. State lives at `$XDG_STATE_HOME/corgi/workspaces.json` (default `~/.local/state/corgi/workspaces.json`), or beside an explicit `CORGI_SOCKET` as `<socket>.workspaces.json`. `corgi workspace list`, `new NAME [DIR]`, `switch ID`, `edit ID NAME DIR`, and `close ID` provide CLI access; close requires an empty workspace with no native sessions. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
 
 The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Corgi adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
 
@@ -103,7 +105,7 @@ Provider contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude
 - **Needs you:** Herdr's request sound, including in the focused pane; unseen requests retain a sticky `! needs you` marker.
 - **Turn finished:** Herdr's completion sound; sticky `+ done` marker.
 - `prefix a` visits waiting panes first, oldest first, then completed panes. Visiting acknowledges the marker without changing the agent's actual state.
-- Completion sounds stay quiet for the focused pane while an attached terminal has focus. Input requests still ding. Focus reporting depends on the outer terminal supporting it.
+- Completion sounds stay quiet for a pane focused in any watching viewer. Input requests still ding. Focus reporting depends on the outer terminal supporting it.
 - Duplicate hooks don't ring twice. Bursts are coalesced, with at least 1.5 seconds between sounds and waiting taking precedence.
 - Muting suppresses sounds while retaining the attention queue. `CORGI_BELL=terminal` selects BEL; `CORGI_BELL=off` disables client sounds.
 
@@ -156,13 +158,27 @@ corgi shutdown              # ends this runtime and all its processes
 
 `send` writes literal terminal input; `--enter` explicitly submits it. It is not a semantic provider RPC. `rpc JSON` exposes the underlying operations used by the CLI: `new`, `split`, `list`, `focus`, `close`, `send`, `read`, `action`, `hook`, `native.start/list/send/events/stop`, `ping`, `shutdown`. Pane and native-session IDs are separate namespaces.
 
+With normal viewers, CLI navigation and actions target the oldest live viewer by default. They are queued and applied on its next update, then acknowledged. A subsequent split honors a queued explicit focus. If a pending local action makes the target uncertain, creation returns `ViewerBusy` until that action is acknowledged. To choose another viewer explicitly:
+
+```sh
+corgi rpc '{"op":"viewer.list"}'
+corgi rpc '{"op":"focus","viewer":2,"pane":3}'
+corgi rpc '{"op":"action","viewer":2,"name":"next","value":""}'
+```
+
+`viewer.list` reports each viewer's ID and last reported workspace/pane. When legacy socket viewers are attached, unqualified CLI controls retain their legacy behavior; an explicit `viewer` always selects one normal viewer. `list` and `workspace.list` retain legacy selection fields; use `viewer.list` for actual local-viewer selection. Explicit pane operations such as `send`, `read`, and `close` always address the pane ID.
+
 For remote terminals, run Corgi on the host through SSH (`ssh -t host corgi`); the runtime persists there when the connection drops. Provider remoting can also be enabled through the native CLI/App Server interfaces. Corgi itself does not expose an unauthenticated TCP listener.
 
 ## Layout
 
 - `layout.zig`: pure split tree, tab and pane identity, geometry, navigation.
 - `terminal.zig`: PTYs, Ghostty parser/render state, selections and search.
-- `server.zig`: runtime, input routing, bounded Unix-socket clients.
+- `server.zig` / `controller.zig`: shared interaction controller and legacy daemon adapter.
+- `viewer.zig` / `client.zig`: viewer event loop and outer-terminal setup/cleanup.
+- `mirror.zig`: local session projection and terminal framebuffers; no PTYs.
+- `viewer_protocol.zig` / `protocol.zig`: runtime operations, snapshots, sizing interests, and conflict-checked shared edits.
+- `runtime.zig`: shared workspaces, PTYs, native sessions, and closed panes.
 - `render.zig` / `client.zig`: terminal presentation, attach, clipboard, sound.
 - `commands.zig`: command menu layout, shortcut labels, and mouse targets.
 - `name_dialog.zig`: tab name editor and dialog rendering/mouse targets.
@@ -173,4 +189,4 @@ For remote terminals, run Corgi on the host through SSH (`ssh -t host corgi`); t
 - `native.zig`: durable App Server / Claude JSONL transports and retained approvals.
 - `os.zig`: Unix/macOS boundary.
 
-macOS arm64 is the exercised platform. Cross-compilation to x86_64 Linux passed; Linux runtime behavior still needs validation. Windows, graphics-protocol rendering, daemon restart recovery, and multi-client terminal views are not implemented.
+macOS arm64 is the exercised platform. Cross-compilation to x86_64 Linux passed; Linux runtime behavior still needs validation. Windows, graphics-protocol rendering, and daemon restart recovery are not implemented.

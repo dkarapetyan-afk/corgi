@@ -7,8 +7,8 @@ const agents = @import("agents.zig");
 
 pub const version: u32 = 1;
 pub const capabilities = [_][]const u8{
-    "session.snapshot", "session.subscribe", "pane.surface", "pane.input",
-    "pane.create",      "pane.split",        "pane.close",   "tab.rename",
+    "viewer.open",      "viewer.sync",       "viewer.search", "layout.apply", "pane.transfer", "pane.restore", "pane.acknowledge", "workspace.create",
+    "session.snapshot", "session.subscribe", "pane.surface",  "pane.input",   "pane.create",   "pane.split",   "pane.close",       "tab.rename",
     "split.resize",
 };
 
@@ -34,8 +34,9 @@ pub const Node = union(enum) {
     split: struct { axis: layout.Axis, ratio: u16, first: *const Node, second: *const Node },
 };
 pub const Tab = struct { id: u32, title: []const u8, layout: *const Node };
-pub const Workspace = struct { id: u32, name: []const u8, cwd: []const u8, tabs: []const Tab };
+pub const Workspace = struct { token: u64 = 0, id: u32, name: []const u8, cwd: []const u8, tabs: []const Tab };
 pub const Agent = struct {
+    changed_at: i64 = 0,
     provider: agents.Provider,
     state: agents.State,
     attention: agents.Attention,
@@ -87,7 +88,7 @@ pub fn snapshot(allocator: std.mem.Allocator, r: *runtime.Runtime) !Snapshot {
         for (ws.model.tabs[0..ws.model.count], tabs) |*tab, *item| {
             item.* = .{ .id = tab.id, .title = tab.title(), .layout = try tree(allocator, &ws.model, tab.root) };
         }
-        out.* = .{ .id = ws.id, .name = ws.name(), .cwd = ws.cwd, .tabs = tabs };
+        out.* = .{ .token = try layoutToken(&ws.model), .id = ws.id, .name = ws.name(), .cwd = ws.cwd, .tabs = tabs };
     }
     const panes = try allocator.alloc(Pane, r.panes.items.len);
     for (r.panes.items, panes) |*p, *out| {
@@ -103,6 +104,7 @@ pub fn snapshot(allocator: std.mem.Allocator, r: *runtime.Runtime) !Snapshot {
             .rows = p.terminal.vt.rows,
             .exited = p.terminal.exited,
             .agent = .{
+                .changed_at = p.agent.changed_at,
                 .provider = p.agent.provider,
                 .state = p.agent.state,
                 .attention = p.agent.attention,
@@ -147,4 +149,94 @@ fn tree(allocator: std.mem.Allocator, model: *const layout.Model, index: u8) std
         } },
     };
     return node;
+}
+
+/// Structural token deliberately excludes presentation state and terminal output.
+pub fn encodeTabs(allocator: std.mem.Allocator, model: *const layout.Model) ![]const Tab {
+    const result = try allocator.alloc(Tab, model.count);
+    for (model.tabs[0..model.count], result) |*tab, *out| out.* = .{
+        .id = tab.id,
+        .title = tab.title(),
+        .layout = try tree(allocator, model, tab.root),
+    };
+    return result;
+}
+pub fn layoutToken(model: *const layout.Model) !u64 {
+    var arena = std.heap.ArenaAllocator.init(@import("os.zig").allocator);
+    defer arena.deinit();
+    const bytes = try std.json.Stringify.valueAlloc(arena.allocator(), try encodeTabs(arena.allocator(), model), .{});
+    return std.hash.Wyhash.hash(0, bytes) & std.math.maxInt(i64);
+}
+
+/// Decode shared organization while preserving the caller's selection by ID.
+pub fn modelFromTabs(items: []const Tab, previous: *const layout.Model) !layout.Model {
+    if (items.len > layout.max_tabs) return error.TooManyTabs;
+    var result: layout.Model = .{ .next_id = previous.next_id };
+    var used: usize = 0;
+    for (items, 0..) |tab, index| {
+        if (tab.id == 0) return error.InvalidLayout;
+        for (items[0..index]) |other| if (other.id == tab.id) return error.InvalidLayout;
+        const root = try loadNode(&result, tab.layout, &used);
+        result.tabs[index] = .{ .id = tab.id, .root = root, .focus = firstPane(&result, root) };
+        result.tabs[index].rename(tab.title);
+        result.count += 1;
+        for (previous.tabs[0..previous.count], 0..) |old, old_index| if (old.id == tab.id) {
+            if (result.tabForPane(old.focus) == index) {
+                result.tabs[index].focus = old.focus;
+                result.tabs[index].zoom = old.zoom;
+            }
+            if (old_index == previous.active) result.active = index;
+        };
+    }
+    return result;
+}
+fn firstPane(model: *const layout.Model, index: u8) u32 {
+    return switch (model.nodes[index].?) {
+        .pane => |id_| id_,
+        .split => |s| firstPane(model, s.first),
+    };
+}
+fn loadNode(model: *layout.Model, node: *const Node, used: *usize) !u8 {
+    if (used.* >= model.nodes.len) return error.TooManyPanes;
+    const index: u8 = @intCast(used.*);
+    used.* += 1;
+    switch (node.*) {
+        .pane => |pane| {
+            if (pane == 0) return error.InvalidLayout;
+            for (model.nodes) |existing| if (existing) |n| if (n == .pane and n.pane == pane) return error.InvalidLayout;
+            model.nodes[index] = .{ .pane = pane };
+        },
+        .split => |s| {
+            if (s.ratio < 100 or s.ratio > 900) return error.InvalidLayout;
+            const first = try loadNode(model, s.first, used);
+            const second = try loadNode(model, s.second, used);
+            model.nodes[index] = .{ .split = .{ .axis = s.axis, .ratio = s.ratio, .first = first, .second = second } };
+        },
+    }
+    return index;
+}
+
+test "shared arrangement round trip retains viewer selection by IDs" {
+    const a = std.testing.allocator;
+    var original: layout.Model = .{};
+    const first = try original.newTab("first");
+    const split = try original.split(.horizontal);
+    const second = try original.newTab("second");
+    const token = try layoutToken(&original);
+    var viewer = original;
+    try viewer.focus(first);
+    viewer.tab().zoom = true;
+    try std.testing.expectEqual(token, try layoutToken(&viewer));
+    var shared = original;
+    shared.moveTab(shared.tabs[1].id, 0);
+    try shared.close(split);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var restored = try modelFromTabs(try encodeTabs(arena.allocator(), &shared), &viewer);
+    try std.testing.expectEqual(first, restored.tab().focus);
+    try std.testing.expectEqual(@as(usize, 1), restored.active);
+    try std.testing.expect(restored.tab().zoom);
+    var other = try modelFromTabs(try encodeTabs(arena.allocator(), &shared), &original);
+    try std.testing.expectEqual(second, other.tab().focus);
+    try std.testing.expectEqual(@as(usize, 0), other.active);
 }

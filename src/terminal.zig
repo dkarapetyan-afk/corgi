@@ -15,6 +15,22 @@ pub const Terminal = struct {
     synchronized_since: ?i64 = null,
     const synchronized_timeout_ms = 1000;
 
+    pub fn emulator(t: *Terminal) *vt.Terminal {
+        return &t.vt;
+    }
+    pub fn renderState(t: *Terminal) *vt.RenderState {
+        return &t.render;
+    }
+    pub fn scrollViewport(t: *Terminal, scroll: vt.Terminal.ScrollViewport) void {
+        t.vt.scrollViewport(scroll);
+    }
+    pub fn clearSelection(t: *Terminal) !void {
+        try t.vt.screens.active.select(null);
+    }
+    pub fn atBottom(t: *Terminal) bool {
+        return t.vt.screens.active.pages.viewport == .active;
+    }
+
     pub fn create(cols: u16, rows: u16) !*Terminal {
         const t = try a.create(Terminal);
         errdefer a.destroy(t);

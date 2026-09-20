@@ -80,3 +80,60 @@ pub fn writeRow(w: *std.Io.Writer, state: *const vt.RenderState, row: usize, col
 fn dim(color: vt.color.RGB) vt.color.RGB {
     return .{ .r = color.r / 2, .g = color.g / 2, .b = color.b / 2 };
 }
+
+pub const Modes = struct {
+    bracketed_paste: bool,
+    cursor_keys: bool,
+    keypad_keys: bool,
+    backarrow: bool,
+    numlock: bool,
+    alt_escape: bool,
+    modify_other: bool,
+    kitty: u5,
+    mouse_event: @FieldType(vt.input.MouseEncodeOptions, "event"),
+    mouse_format: @FieldType(vt.input.MouseEncodeOptions, "format"),
+};
+pub const View = struct { surface: Surface, bottom: usize, offset: usize, modes: Modes };
+
+/// Borrow a viewport for a synchronous capture; never change another viewer's
+/// scroll or selection. A pending synchronized redraw keeps its completed frame.
+pub fn captureView(allocator: std.mem.Allocator, id: u32, t: *terminal.Terminal, offset: ?usize) !View {
+    const screen = t.vt.screens.active;
+    const pages = &screen.pages;
+    const bottom = pages.total_rows -| t.vt.rows;
+    const old_viewport = pages.viewport;
+    const old_pin = pages.viewport_pin.*;
+    const old_offset = pages.viewport_pin_row_offset;
+    const old_selection = screen.selection;
+    const synchronized = t.vt.modes.get(.synchronized_output);
+    defer if (!synchronized) {
+        pages.viewport = old_viewport;
+        pages.viewport_pin.* = old_pin;
+        pages.viewport_pin_row_offset = old_offset;
+        screen.selection = old_selection;
+        t.vt.flags.dirty.clear = true;
+        t.updateRender() catch {};
+    };
+    if (!synchronized) {
+        screen.selection = null;
+        if (offset) |row| t.vt.scrollViewport(.{ .row = row }) else t.vt.scrollViewport(.bottom);
+        t.vt.flags.dirty.clear = true;
+    }
+    return .{
+        .surface = try capture(allocator, id, t),
+        .bottom = bottom,
+        .offset = @min(offset orelse bottom, bottom),
+        .modes = .{
+            .bracketed_paste = t.vt.modes.get(.bracketed_paste),
+            .cursor_keys = t.vt.modes.get(.cursor_keys),
+            .keypad_keys = t.vt.modes.get(.keypad_keys),
+            .backarrow = t.vt.modes.get(.backarrow_key_mode),
+            .numlock = t.vt.modes.get(.ignore_keypad_with_numlock),
+            .alt_escape = t.vt.modes.get(.alt_esc_prefix),
+            .modify_other = t.vt.flags.modify_other_keys_2,
+            .kitty = t.vt.screens.active.kitty_keyboard.current().int(),
+            .mouse_event = t.vt.flags.mouse_event,
+            .mouse_format = t.vt.flags.mouse_format,
+        },
+    };
+}

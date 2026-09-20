@@ -16,6 +16,9 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     mod.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+    const options = b.addOptions();
+    options.addOption(bool, "viewer_test_driver", b.option(bool, "viewer-test-driver", "Enable stdio viewer integration harness") orelse false);
+    mod.addOptions("corgi_options", options);
     const exe = b.addExecutable(.{ .name = "corgi", .root_module = mod });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);

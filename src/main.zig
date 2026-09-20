@@ -6,7 +6,9 @@ const agents = @import("agents.zig");
 const integration = @import("integration.zig");
 pub fn main() void {
     run() catch |err| {
-        if (err == error.NestedCorgi) {
+        if (err == error.ViewerProtocolUnavailable) {
+            std.debug.print("corgi: this daemon needs one update to support local viewers. Save work and restart it from outside Corgi; later UI changes only need a new viewer.\n", .{});
+        } else if (err == error.NestedCorgi) {
             std.debug.print("corgi: cannot attach inside a Corgi pane; detach first or use another terminal.\n", .{});
         } else {
             std.debug.print("corgi: {s}\n", .{@errorName(err)});
@@ -33,6 +35,7 @@ fn run() !void {
         try os.writeAll(1, binary);
         return os.writeAll(1, "\n");
     }
+    if (@import("corgi_options").viewer_test_driver and eq(cmd, "__viewer-test")) return @import("viewer_test.zig").run(path);
     if (eq(cmd, "serve")) {
         var server: @import("server.zig").Server = .{ .socket = path, .executable = exe };
         return server.run();

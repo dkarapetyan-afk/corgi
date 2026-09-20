@@ -627,10 +627,9 @@ while True:
         second=self.rpc(op='new',cwd=self.temp.name,title='Second')['pane']
         self.attach();screen=self.tab_frame('Second')
         self.right_click_tab(screen,'First');menu=self.frame_with('|New tab')
-        self.click_text(menu,'Close');confirm=self.frame_with('[ Close ]')
         self.rpc(op='focus',pane=second)
         self.rpc(op='action',name='move-tab',value='left')
-        self.click_text(confirm,'[ Close ]')
+        self.click_text(menu,'Close')
         self.until(lambda:[p['id'] for p in self.panes()]==[second])
         self.assertEqual(self.rpc(op='list')['closed_panes'],2)
         gone=self.rpc(op='new',cwd=self.temp.name,title='Gone')['pane']
@@ -738,9 +737,7 @@ while True:
         self.frame_with('Resize panes')
         self.input('\x1b');self.frame_with('^B commands')
         self.input('\x02');menu=self.frame_with('Commands')
-        self.click_text(menu,'Close pane...')
-        confirm=self.frame_with('[ Close ]')
-        self.click_text(confirm,'[ Close ]')
+        self.click_text(menu,'Close pane')
         self.until(lambda:len(self.panes())==2)
         self.input('\x02?');self.frame_with('Commands')
         self.click(1,23);self.frame_with('^B commands')
@@ -1116,7 +1113,11 @@ with open({str(played)!r},'a') as log:
         hook('PermissionRequest',4);hook('UserPromptSubmit',5);hook('Stop',6)
         time.sleep(1.6);self.assertEqual(len(records()),1)
         # A background completion uses the distinct embedded completion sound.
-        self.rpc(op='new',cwd=self.temp.name)
+        background=self.rpc(op='new',cwd=self.temp.name)['pane']
+        def switched():
+            records() # Drain the PTY while the queued viewer control is applied.
+            return any(v['pane']==background for v in self.rpc(op='viewer.list')['viewers'])
+        self.until(switched)
         hook('UserPromptSubmit',7);hook('Stop',8)
         self.until(lambda:len(records())==2)
         self.assertEqual(records()[1]['hash'],hashlib.sha256((ROOT/'src/sounds/done.mp3').read_bytes()).hexdigest())
@@ -1367,8 +1368,8 @@ while True:time.sleep(1)
         self.rpc(op='new',cwd=self.temp.name)
         self.rpc(op='split',cwd=self.temp.name,axis='right')
         ident=self.rpc(op='native.start',provider='codex',cwd=self.temp.name)['session']
-        # Input following confirmation must not recreate tabs after detaching.
-        self.check_real_client_exit(b'\x02Xy\x02c\r',0)
+        # Input following close must not recreate tabs after detaching.
+        self.check_real_client_exit(b'\x02X\x02c\r',0)
         self.assertEqual(self.rpc(op='list')['closed_panes'],2)
         self.assertEqual(self.rpc(op='native.list')['sessions'][0]['id'],ident)
     def check_real_client_exit(self,keys,remaining_panes):
