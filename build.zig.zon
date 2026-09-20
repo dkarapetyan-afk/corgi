@@ -1,0 +1,13 @@
+.{
+    .name = .wrangler,
+    .version = "0.1.0",
+    .fingerprint = 0x1c57e13d2ead1195,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBCxTuIAWi1Hry8Kc2k-4LlAj9vpDC8F5d1CvRB6pe",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "docs", "scripts", "tests", "go.sh", ".zigversion" },
+}

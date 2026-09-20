@@ -1,0 +1,209 @@
+const std = @import("std");
+const os = @import("os.zig");
+const a = os.allocator;
+const c = os.c;
+const agents = @import("agents.zig");
+const integration = @import("integration.zig");
+pub fn main() void {
+    run() catch |err| {
+        std.debug.print("wrangler: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+}
+fn run() !void {
+    const args = try std.process.argsAlloc(a);
+    defer std.process.argsFree(a, args);
+    const path = try os.socketPath();
+    defer a.free(path);
+    const exe = try std.fs.selfExePathAlloc(a);
+    defer a.free(exe);
+    const cmd = if (args.len > 1) args[1] else "attach";
+    if (eq(cmd, "--help") or eq(cmd, "help")) return os.writeAll(1, help);
+    if (eq(cmd, "--version")) return os.writeAll(1, "wrangler 0.1.0 (Ghostty VT; Zig 0.15.2)\n");
+    if (eq(cmd, "which")) {
+        if (args.len != 3) return error.Usage;
+        const provider = std.meta.stringToEnum(agents.Provider, args[2]) orelse return error.BadProvider;
+        const binary = try @import("discovery.zig").resolve(provider, null);
+        defer a.free(binary);
+        try os.writeAll(1, binary);
+        return os.writeAll(1, "\n");
+    }
+    if (eq(cmd, "serve")) {
+        var server: @import("server.zig").Server = .{ .socket = path, .executable = exe };
+        return server.run();
+    }
+    if (eq(cmd, "hook")) {
+        if (args.len != 3) return error.Usage;
+        integration.hook(args[2], path) catch {};
+        return;
+    }
+    if (eq(cmd, "hooks")) {
+        if (args.len != 3) return error.Usage;
+        const config = try integration.config(args[2], exe);
+        defer a.free(config);
+        try os.writeAll(1, config);
+        return os.writeAll(1, "\n");
+    }
+    if (eq(cmd, "agent")) {
+        if (args.len < 3) return error.Usage;
+        try integration.launch(args[2], args[3..], exe);
+    }
+    if (eq(cmd, "native")) {
+        if (args.len < 3) return error.Usage;
+        if (eq(args[2], "start")) {
+            if (args.len != 4) return error.Usage;
+            try ensureServer(path, exe);
+            const cwd = try std.process.getCwdAlloc(a);
+            defer a.free(cwd);
+            return request(path, .{ .op = "native.start", .provider = args[3], .cwd = cwd }, false);
+        }
+        if (eq(args[2], "list")) return request(path, .{ .op = "native.list" }, false);
+        if (args.len < 4) return error.Usage;
+        const id = try std.fmt.parseInt(u32, args[3], 10);
+        if (eq(args[2], "events")) return request(path, .{ .op = "native.events", .session = id, .after = if (args.len > 4) try std.fmt.parseInt(u64, args[4], 10) else 0 }, false);
+        if (eq(args[2], "stop")) return request(path, .{ .op = "native.stop", .session = id }, false);
+        if (eq(args[2], "send") and args.len == 5) {
+            const msg = try std.json.parseFromSlice(std.json.Value, a, args[4], .{});
+            defer msg.deinit();
+            return request(path, .{ .op = "native.send", .session = id, .message = msg.value }, false);
+        }
+        return error.Usage;
+    }
+    if (eq(cmd, "attach") or eq(cmd, "start") or eq(cmd, "new") or eq(cmd, "split")) try ensureServer(path, exe);
+    if (eq(cmd, "attach")) return @import("client.zig").attach(path);
+    if (eq(cmd, "start")) return;
+    if (eq(cmd, "list") or eq(cmd, "ping") or eq(cmd, "shutdown")) return request(path, .{ .op = cmd }, false);
+    if (eq(cmd, "new") or eq(cmd, "split")) {
+        const cwd = try std.process.getCwdAlloc(a);
+        defer a.free(cwd);
+        const split = eq(cmd, "split");
+        const command_index: usize = if (split) 3 else 2;
+        const command = if (args.len > command_index) args[command_index] else "";
+        return request(path, .{ .op = cmd, .cwd = cwd, .axis = if (split and args.len > 2) args[2] else "right", .command = command, .title = "shell" }, false);
+    }
+    if (eq(cmd, "focus") or eq(cmd, "close") or eq(cmd, "read") or eq(cmd, "send")) {
+        if (args.len < 3) return error.Usage;
+        const id = try std.fmt.parseInt(u32, args[2], 10);
+        if (eq(cmd, "send") and args.len < 4) return error.Usage;
+        return request(path, .{ .op = cmd, .pane = id, .text = if (args.len > 3) args[3] else "", .enter = args.len > 4 and eq(args[4], "--enter") }, eq(cmd, "read"));
+    }
+    if (eq(cmd, "action")) {
+        if (args.len < 3) return error.Usage;
+        return request(path, .{ .op = "action", .name = args[2], .value = if (args.len > 3) args[3] else "" }, false);
+    }
+    if (eq(cmd, "rpc")) {
+        if (args.len != 3) return error.Usage;
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, args[2], .{});
+        defer parsed.deinit();
+        return request(path, parsed.value, false);
+    }
+    return error.UnknownCommand;
+}
+fn request(path: []const u8, value: anytype, plain: bool) !void {
+    const fd = try os.connect(path);
+    defer _ = c.close(fd);
+    try os.sendJson(fd, value);
+    const line = try os.readLine(fd, 4 * 1024 * 1024);
+    defer a.free(line);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, line, .{});
+    defer parsed.deinit();
+    const err = agents.str(parsed.value, "err");
+    if (err.len > 0) {
+        std.debug.print("{s}\n", .{err});
+        return error.ServerRejected;
+    }
+    try os.writeAll(1, if (plain) agents.str(parsed.value, "text") else line);
+    if (!plain) try os.writeAll(1, "\n");
+}
+fn ensureServer(path: []const u8, exe: []const u8) !void {
+    if (os.connect(path)) |fd| {
+        _ = c.close(fd);
+        return;
+    } else |_| {}
+    const parent = std.fs.path.dirname(path) orelse return error.BadSocketPath;
+    try os.privateDirectory(parent);
+    const lock_path = try std.fmt.allocPrint(a, "{s}/start.lock", .{parent});
+    defer a.free(lock_path);
+    const lock = try std.fs.cwd().createFile(lock_path, .{ .truncate = false, .mode = 0o600 });
+    defer lock.close();
+    try lock.lock(.exclusive);
+    defer lock.unlock();
+    if (os.connect(path)) |fd| {
+        _ = c.close(fd);
+        return;
+    } else |_| {}
+    std.fs.cwd().deleteFile(path) catch |err| if (err != error.FileNotFound) return err;
+    const pid = c.fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        _ = c.setsid();
+        const grandchild = c.fork();
+        if (grandchild < 0) c._exit(127);
+        if (grandchild > 0) c._exit(0);
+        const log_path = std.fmt.allocPrintSentinel(a, "{s}/server.log", .{parent}, 0) catch c._exit(127);
+        const log = c.open(log_path, c.O_WRONLY | c.O_CREAT | c.O_APPEND, @as(c_uint, 0o600));
+        const devnull = c.open("/dev/null", c.O_RDONLY);
+        _ = c.dup2(devnull, 0);
+        _ = c.dup2(log, 1);
+        _ = c.dup2(log, 2);
+        if (log > 2) _ = c.close(log);
+        if (devnull > 2) _ = c.close(devnull);
+        _ = c.close(lock.handle);
+        os.setenv("WRANGLER_SOCKET", path) catch c._exit(127);
+        os.exec(&.{ exe, "serve" }) catch c._exit(127);
+    }
+    var status: c_int = 0;
+    _ = c.waitpid(pid, &status, 0);
+    for (0..100) |_| {
+        if (os.connect(path)) |fd| {
+            _ = c.close(fd);
+            return;
+        } else |_| {}
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+    return error.ServerStartFailed;
+}
+fn eq(x: []const u8, y: []const u8) bool {
+    return std.mem.eql(u8, x, y);
+}
+const help =
+    \\wrangler — a small Ghostty-powered agent terminal
+    \\
+    \\  wrangler                         start / attach
+    \\  wrangler start                   start detached runtime
+    \\  wrangler new [shell-command]     create tab
+    \\  wrangler split right|down [cmd]  split focused pane
+    \\  wrangler list                    JSON pane and agent inventory
+    \\  wrangler focus|close|read ID      manage / capture pane
+    \\  wrangler send ID TEXT [--enter]   literal input
+    \\  wrangler action NAME [VALUE]     zoom, rename, next, prev, tab,
+    \\                                   focus, swap, resize, move-tab,
+    \\                                   attention, mute, close-tab, undo-close
+    \\  wrangler agent claude|codex ...   launch with session-local hooks
+    \\  wrangler hooks claude|codex       print hook configuration
+    \\  wrangler which codex             show automatically selected executable
+    \\  wrangler native start PROVIDER    durable native JSONL session
+    \\  wrangler native list              list native sessions
+    \\  wrangler native send ID JSON      provider request / approval response
+    \\  wrangler native events ID [SEQ]   bounded journal + pending requests
+    \\  wrangler native stop ID           stop native session
+    \\  wrangler rpc JSON                local JSON control protocol
+    \\  wrangler shutdown                terminate runtime and its panes
+    \\
+    \\Keys: Ctrl-B opens a clickable command menu; then c tab, v/- split,
+    \\hjkl focus, HJKL swap, z zoom,
+    \\r resize, T rename, n/p tabs, 1–9 jump, x close, X close tab,
+    \\u undo close, [ scroll/copy, a attention, m mute, q detach, ? help.
+    \\
+    \\WRANGLER_SOCKET selects a runtime. No worktrees or workspaces.
+    \\
+;
+test {
+    _ = @import("name_dialog.zig");
+    _ = @import("commands.zig");
+    _ = @import("discovery.zig");
+    _ = @import("layout.zig");
+    _ = @import("agents.zig");
+    _ = @import("terminal.zig");
+    _ = @import("integration.zig");
+}

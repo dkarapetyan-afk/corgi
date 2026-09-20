@@ -1,0 +1,173 @@
+//! Find an installed provider without requiring configuration. Codex package
+//! wrappers can be executable even when their native binary is missing, so
+//! automatic candidates must successfully identify themselves via --version.
+const std = @import("std");
+const builtin = @import("builtin");
+const os = @import("os.zig");
+const a = os.allocator;
+const c = os.c;
+const Provider = @import("agents.zig").Provider;
+
+/// The caller owns the result. Explicit overrides preserve execvp semantics.
+pub fn resolve(provider: Provider, cwd: ?[]const u8) ![]const u8 {
+    switch (provider) {
+        .claude => return a.dupe(u8, os.env("WRANGLER_CLAUDE_BIN") orelse "claude"),
+        .codex => if (os.env("WRANGLER_CODEX_BIN")) |path| {
+            if (path.len > 0) return a.dupe(u8, path);
+        },
+        .other => return error.BadProvider,
+    }
+    const current = try std.process.getCwdAlloc(a);
+    defer a.free(current);
+    const base = try std.fs.path.resolve(a, &.{ current, cwd orelse current });
+    defer a.free(base);
+    var finder: Finder = .{ .timer = try std.time.Timer.start() };
+    defer finder.deinit();
+
+    if (os.env("PATH")) |path| {
+        var dirs = std.mem.splitScalar(u8, path, ':');
+        while (dirs.next()) |dir| {
+            const candidate = try std.fs.path.resolve(a, &.{ base, dir, "codex" });
+            defer a.free(candidate);
+            if (try finder.candidate(candidate)) |found| return found;
+        }
+    }
+    const user_home = os.env("HOME");
+    if (user_home) |home_dir| {
+        for ([_][]const u8{ ".local/bin/codex", ".bun/bin/codex", ".npm-global/bin/codex", ".volta/bin/codex", ".cargo/bin/codex" }) |relative| {
+            const candidate = try std.fs.path.join(a, &.{ home_dir, relative });
+            defer a.free(candidate);
+            if (try finder.candidate(candidate)) |found| return found;
+        }
+        if (builtin.os.tag == .macos) {
+            const apps = try std.fs.path.join(a, &.{ home_dir, "Applications" });
+            defer a.free(apps);
+            if (try finder.applications(apps)) |found| return found;
+        }
+    }
+    for ([_][]const u8{ "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex" }) |candidate| {
+        if (try finder.candidate(candidate)) |found| return found;
+    }
+    if (builtin.os.tag == .macos) {
+        if (try finder.applications("/Applications")) |found| return found;
+    }
+    return error.CodexNotFound;
+}
+
+const Finder = struct {
+    seen: std.StringHashMapUnmanaged(void) = .empty,
+    timer: std.time.Timer,
+    // Stay below the control client's three-second request timeout.
+    const budget = 2 * std.time.ns_per_s;
+
+    fn deinit(f: *Finder) void {
+        var keys = f.seen.keyIterator();
+        while (keys.next()) |key| a.free(key.*);
+        f.seen.deinit(a);
+    }
+    fn candidate(f: *Finder, path: []const u8) !?[]const u8 {
+        // Preserve symlink paths: package-manager shims may dispatch using argv[0].
+        if (f.seen.contains(path)) return null;
+        const owned = try a.dupe(u8, path);
+        f.seen.put(a, owned, {}) catch |err| {
+            a.free(owned);
+            return err;
+        };
+        const z = try a.dupeZ(u8, path);
+        defer a.free(z);
+        var stat: c.struct_stat = undefined;
+        if (c.stat(z, &stat) != 0 or (stat.st_mode & c.S_IFMT) != c.S_IFREG or c.access(z, c.X_OK) != 0) return null;
+        const remaining = budget -| f.timer.read();
+        if (remaining == 0) return null;
+        if (probe(path, @min(remaining, 750 * std.time.ns_per_ms))) return try a.dupe(u8, path);
+        return null;
+    }
+    fn applications(f: *Finder, root: []const u8) !?[]const u8 {
+        // Prefer stable app names, then allow renamed/beta app bundles too.
+        for ([_][]const u8{ "Codex.app", "ChatGPT.app" }) |name| {
+            if (try f.bundle(root, name)) |found| return found;
+        }
+        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return null;
+        defer dir.close();
+        var names: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (names.items) |name| a.free(name);
+            names.deinit(a);
+        }
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            if (!std.mem.endsWith(u8, entry.name, ".app")) continue;
+            try names.append(a, try a.dupe(u8, entry.name));
+        }
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn less(_: void, x: []const u8, y: []const u8) bool {
+                return std.mem.lessThan(u8, x, y);
+            }
+        }.less);
+        for (names.items) |name| if (try f.bundle(root, name)) |found| return found;
+        return null;
+    }
+    fn bundle(f: *Finder, root: []const u8, name: []const u8) !?[]const u8 {
+        const path = try std.fs.path.join(a, &.{ root, name, "Contents/Resources/codex" });
+        defer a.free(path);
+        return f.candidate(path);
+    }
+};
+
+fn probe(path: []const u8, timeout_ns: u64) bool {
+    var child = std.process.Child.init(&.{ path, "--version" }, a);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    child.pgid = 0;
+    child.spawn() catch return false;
+    var reaped = false;
+    defer {
+        // Kill the process group as well: a hanging wrapper may have children.
+        _ = c.kill(-child.id, c.SIGKILL);
+        if (!reaped) {
+            var status: c_int = 0;
+            _ = c.waitpid(child.id, &status, 0);
+        }
+        if (child.stdout) |file| file.close();
+    }
+    child.waitForSpawn() catch return false;
+    const fd = child.stdout.?.handle;
+    os.nonblock(fd);
+    var output: [4096]u8 = undefined;
+    var len: usize = 0;
+    var timer = std.time.Timer.start() catch return false;
+    while (timer.read() < timeout_ns) {
+        // Bounded output and bounded work even for a noisy or broken wrapper.
+        for (0..8) |_| {
+            if (len == output.len) return false;
+            const n = c.read(fd, output[len..].ptr, output.len - len);
+            if (n <= 0) break;
+            len += @intCast(n);
+        }
+        var status: c_int = 0;
+        if (c.waitpid(child.id, &status, c.WNOHANG) == child.id) {
+            reaped = true;
+            // The child may have written between the last read and waitpid.
+            if (len < output.len) {
+                const n = c.read(fd, output[len..].ptr, output.len - len);
+                if (n > 0) len += @intCast(n);
+            }
+            return status == 0 and isVersion(output[0..len]);
+        }
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+    return false;
+}
+fn isVersion(output: []const u8) bool {
+    const line = std.mem.trim(u8, output, " \t\r\n");
+    const prefix = "codex-cli ";
+    return std.mem.startsWith(u8, line, prefix) and line.len > prefix.len and std.ascii.isDigit(line[prefix.len]);
+}
+test "Codex version validation rejects successful non-Codex programs" {
+    try std.testing.expect(isVersion("codex-cli 0.155.0-alpha.2.6\n"));
+    try std.testing.expect(!isVersion(""));
+    try std.testing.expect(!isVersion("codex-cli "));
+    try std.testing.expect(!isVersion("unrelated tool 1.0.0\n"));
+    try std.testing.expect(!isVersion("codex-cli missing native binary"));
+}

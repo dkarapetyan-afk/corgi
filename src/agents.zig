@@ -1,0 +1,103 @@
+const std = @import("std");
+pub const State = enum { unknown, idle, working, blocked, done };
+pub const Attention = enum { none, finished, needs_input };
+pub const Provider = enum { claude, codex, other };
+pub const Agent = struct {
+    provider: Provider = .other,
+    state: State = .unknown,
+    attention: Attention = .none,
+    session: [160]u8 = .{0} ** 160,
+    session_len: usize = 0,
+    activity: [160]u8 = .{0} ** 160,
+    activity_len: usize = 0,
+    last_seq: i64 = 0,
+    changed_at: i64 = 0,
+    pub fn sessionId(a: *const Agent) []const u8 {
+        return a.session[0..a.session_len];
+    }
+    pub fn label(a: *const Agent) []const u8 {
+        return a.activity[0..a.activity_len];
+    }
+    pub fn acknowledge(a: *Agent) void {
+        a.attention = .none;
+    }
+    pub fn apply(a: *Agent, provider: Provider, value: std.json.Value, seq: i64, watched: bool) bool {
+        if (value != .object or seq <= a.last_seq) return false;
+        // A child agent must not overwrite its parent's lifecycle or identity.
+        if (str(value, "agent_id").len != 0) return false;
+        const event = str(value, "hook_event_name");
+        if (std.mem.startsWith(u8, event, "Subagent")) return false;
+        const session = str(value, "session_id");
+        const start = std.mem.eql(u8, event, "SessionStart");
+        if (!start and a.session_len > 0 and session.len > 0 and !std.mem.eql(u8, a.sessionId(), session)) return false;
+        const asking = eq(event, "PreToolUse") and (eq(str(value, "tool_name"), "AskUserQuestion") or eq(str(value, "tool_name"), "request_user_input"));
+        const next: State = if (start) .idle else if (asking) .blocked else if (eq(event, "UserPromptSubmit") or eq(event, "PreToolUse") or eq(event, "PostToolUse") or eq(event, "PostToolUseFailure") or eq(event, "PreCompact") or eq(event, "PostCompact")) .working else if (eq(event, "PermissionRequest")) .blocked else if (eq(event, "Notification")) blk: {
+            const kind = str(value, "notification_type");
+            if (eq(kind, "permission_prompt") or eq(kind, "idle_prompt") or eq(kind, "elicitation_dialog")) break :blk .blocked;
+            return false;
+        } else if (eq(event, "Stop") or eq(event, "Interrupt")) .idle else if (eq(event, "SessionEnd")) .done else return false;
+        a.last_seq = seq;
+        a.provider = provider;
+        if (session.len > 0) a.session_len = clean(&a.session, session);
+        const old = a.state;
+        a.state = next;
+        a.changed_at = seq;
+        const tool = str(value, "tool_name");
+        const activity = if (tool.len > 0) tool else event;
+        a.activity_len = clean(&a.activity, activity);
+        if (start or next == .working) a.attention = .none;
+        if (old == next or watched) return false;
+        if (next == .blocked) {
+            a.attention = .needs_input;
+            return true;
+        }
+        if (next == .idle and old == .working and !eq(event, "Interrupt")) {
+            a.attention = .finished;
+            return true;
+        }
+        return false;
+    }
+};
+fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+pub fn str(v: std.json.Value, key: []const u8) []const u8 {
+    if (v != .object) return "";
+    const item = v.object.get(key) orelse return "";
+    return if (item == .string) item.string else "";
+}
+pub fn clean(out: []u8, input: []const u8) usize {
+    const n = @min(out.len, input.len);
+    for (input[0..n], 0..) |ch, i| out[i] = if (ch >= 32 and ch < 127) ch else ' ';
+    return n;
+}
+test "attention is edge triggered, sticky, ordered, and separate from activity" {
+    var a: Agent = .{};
+    const alloc = std.testing.allocator;
+    const working = try std.json.parseFromSlice(std.json.Value, alloc, "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"a\"}", .{});
+    defer working.deinit();
+    const blocked = try std.json.parseFromSlice(std.json.Value, alloc, "{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"a\"}", .{});
+    defer blocked.deinit();
+    const stopped = try std.json.parseFromSlice(std.json.Value, alloc, "{\"hook_event_name\":\"Stop\",\"session_id\":\"a\"}", .{});
+    defer stopped.deinit();
+    try std.testing.expect(!a.apply(.claude, working.value, 1, false));
+    try std.testing.expect(a.apply(.claude, blocked.value, 2, false));
+    try std.testing.expect(!a.apply(.claude, blocked.value, 3, false));
+    try std.testing.expect(!a.apply(.claude, working.value, 2, false));
+    try std.testing.expectEqual(Attention.needs_input, a.attention);
+    a.acknowledge();
+    try std.testing.expectEqual(State.blocked, a.state);
+    _ = a.apply(.claude, working.value, 4, false);
+    try std.testing.expect(a.apply(.claude, stopped.value, 5, false));
+    try std.testing.expectEqual(Attention.finished, a.attention);
+    _ = a.apply(.claude, working.value, 6, false);
+    try std.testing.expect(!a.apply(.claude, stopped.value, 7, true));
+}
+test "subagent and stale-session hooks cannot corrupt parent state" {
+    var a: Agent = .{};
+    a.session_len = clean(&a.session, "parent");
+    const v = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"hook_event_name\":\"Stop\",\"session_id\":\"child\"}", .{});
+    defer v.deinit();
+    try std.testing.expect(!a.apply(.codex, v.value, 10, false));
+    try std.testing.expectEqual(State.unknown, a.state);
+}

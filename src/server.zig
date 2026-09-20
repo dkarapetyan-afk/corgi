@@ -1,0 +1,1108 @@
+const std = @import("std");
+const os = @import("os.zig");
+const c = os.c;
+const a = os.allocator;
+const layout = @import("layout.zig");
+const agents = @import("agents.zig");
+const render = @import("render.zig");
+const commands = @import("commands.zig");
+const naming = @import("name_dialog.zig");
+const Terminal = @import("terminal.zig").Terminal;
+const native = @import("native.zig");
+const max_closed = 8;
+const ClosedPane = struct {
+    terminal: *Terminal,
+    cwd: []const u8,
+    tab: layout.Tab,
+    fn deinit(p: ClosedPane) void {
+        p.terminal.destroy();
+        a.free(p.cwd);
+    }
+};
+const Client = struct {
+    fd: c_int,
+    input: std.ArrayList(u8) = .empty,
+    output: std.ArrayList(u8) = .empty,
+    sent: usize = 0,
+    attached: bool = false,
+    dead: bool = false,
+    touched: i64 = 0,
+    fn queue(cl: *Client, value: anytype) !void {
+        const data = try std.json.Stringify.valueAlloc(a, value, .{});
+        defer a.free(data);
+        if (cl.output.items.len + data.len > 4 * 1024 * 1024) {
+            cl.dead = true;
+            return;
+        }
+        try cl.output.appendSlice(a, data);
+        try cl.output.append(a, '\n');
+    }
+    fn deinit(cl: *Client) void {
+        _ = c.close(cl.fd);
+        cl.input.deinit(a);
+        cl.output.deinit(a);
+    }
+};
+pub const Server = struct {
+    model: layout.Model = .{},
+    panes: std.ArrayList(render.Pane) = .empty,
+    closed: std.ArrayList(ClosedPane) = .empty,
+    clients: std.ArrayList(Client) = .empty,
+    sessions: std.ArrayList(native.Session) = .empty,
+    next_session: u32 = 1,
+    socket: []const u8,
+    executable: []const u8,
+    width: u16 = 100,
+    height: u16 = 30,
+    dirty: bool = true,
+    quit: bool = false,
+    watched: bool = true,
+    prefix: bool = false,
+    menu_page: usize = 0,
+    tab_menu: ?commands.TabMenu = null,
+    ui_mouse_down: bool = false,
+    resize_mode: bool = false,
+    copy_mode: bool = false,
+    paste: bool = false,
+    paste_to_pane: bool = false,
+    paste_to_name: bool = false,
+    name_dialog: ?naming.Dialog = null,
+    confirm: enum { none, pane, tab } = .none,
+    confirm_tab: ?layout.Id = null,
+    message: [512]u8 = .{0} ** 512,
+    message_len: usize = 0,
+    native_notice: ?u32 = null,
+    keybuf: std.ArrayList(u8) = .empty,
+    escape_at: i64 = 0,
+    bell: bool = false,
+    bell_kind: agents.Attention = .none,
+    muted: bool = false,
+    divider: ?layout.Model.Divider = null,
+    selection: ?struct { pane: u32, x: u16, y: u16, moved: bool = false } = null,
+    search_mode: bool = false,
+    search_text: [128]u8 = .{0} ** 128,
+    search_len: usize = 0,
+    search_skip: usize = 0,
+    last_frame: i64 = 0,
+    last_bell: i64 = 0,
+
+    fn area(s: *Server) layout.Rect {
+        return .{ .y = 1, .w = s.width, .h = s.height -| 2 };
+    }
+    fn pane(s: *Server, id: layout.Id) ?*render.Pane {
+        for (s.panes.items) |*p| if (p.id == id) return p;
+        return null;
+    }
+    fn focused(s: *Server) ?*render.Pane {
+        return if (s.model.count == 0) null else s.pane(s.model.tab().focus);
+    }
+    fn notice(s: *Server, msg: []const u8) void {
+        s.message_len = agents.clean(&s.message, msg);
+        s.native_notice = null;
+        s.dirty = true;
+    }
+    fn acknowledge(s: *Server) void {
+        if (s.focused()) |p| p.agent.acknowledge();
+    }
+    fn menu(s: *Server) ?commands.View {
+        if (!s.prefix and !s.resize_mode) return null;
+        return commands.View.init(s.width, s.height, s.resize_mode, s.menu_page, s.model.count > 0);
+    }
+    fn hasMenu(s: *Server) bool {
+        return s.prefix or s.resize_mode or s.tab_menu != null;
+    }
+    fn tabIndex(s: *Server, id: layout.Id) ?usize {
+        for (s.model.tabs[0..s.model.count], 0..) |tab, i| if (tab.id == id) return i;
+        return null;
+    }
+    fn openTabMenu(s: *Server, index: usize, x: u16) void {
+        s.closeMenu();
+        s.search_mode = false;
+        s.divider = null;
+        s.selection = null;
+        s.tab_menu = .{ .tab = s.model.tabs[index].id, .anchor_x = x };
+    }
+    fn tabMenuAction(s: *Server, key_: u8) !void {
+        const context = s.tab_menu orelse return;
+        s.closeMenu();
+        s.model.active = s.tabIndex(context.tab) orelse return;
+        s.copy_mode = false;
+        s.acknowledge();
+        try s.resizePanes();
+        switch (key_) {
+            'c' => try s.beginNewTab(),
+            'T' => s.beginRename(),
+            'X' => {
+                s.confirm = .tab;
+                s.confirm_tab = context.tab;
+                s.notice(" Close tab and all its running processes? y/N");
+            },
+            else => {},
+        }
+    }
+    fn moveTabMenu(s: *Server, next: bool) void {
+        if (s.tab_menu) |*context| context.move(next);
+        s.dirty = true;
+    }
+    fn openMenu(s: *Server) void {
+        s.tab_menu = null;
+        s.prefix = true;
+        s.menu_page = 0;
+        s.divider = null;
+        s.selection = null;
+        s.dirty = true;
+    }
+    fn closeMenu(s: *Server) void {
+        s.tab_menu = null;
+        s.prefix = false;
+        s.resize_mode = false;
+        s.dirty = true;
+    }
+    fn pageMenu(s: *Server, next: bool) void {
+        const view = s.menu() orelse return;
+        s.menu_page = if (next) (view.page + 1) % view.pages else (view.page + view.pages - 1) % view.pages;
+        s.dirty = true;
+    }
+    fn beginRename(s: *Server) void {
+        if (s.model.count == 0) return;
+        const tab = s.model.tab();
+        s.dismissName();
+        s.name_dialog = naming.Dialog.init(.{ .rename = tab.id }, tab.title());
+        s.prepareName();
+    }
+    fn beginNewTab(s: *Server) !void {
+        const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
+        const cwd = current orelse try a.dupe(u8, if (s.focused()) |p| p.cwd else ".");
+        s.dismissName();
+        const title = std.fs.path.basename(cwd);
+        s.name_dialog = naming.Dialog.init(.{ .create = cwd }, if (title.len == 0 or eq(title, ".")) "shell" else title);
+        s.prepareName();
+    }
+    fn prepareName(s: *Server) void {
+        s.search_mode = false;
+        s.copy_mode = false;
+        s.closeMenu();
+        s.divider = null;
+        s.selection = null;
+        s.dirty = true;
+    }
+    fn dismissName(s: *Server) void {
+        if (s.name_dialog) |dialog| if (dialog.target == .create) a.free(dialog.target.create);
+        s.name_dialog = null;
+    }
+    fn finishName(s: *Server, save: bool) void {
+        s.dirty = true;
+        if (save) if (s.name_dialog) |*dialog| {
+            switch (dialog.target) {
+                .rename => |id| {
+                    if (s.tabIndex(id)) |index| s.model.tabs[index].rename(dialog.name());
+                },
+                .create => |cwd| {
+                    var dir = std.fs.cwd().openDir(cwd, .{}) catch {
+                        dialog.failed = true;
+                        return;
+                    };
+                    dir.close();
+                    _ = s.create(null, cwd, null, dialog.name()) catch {
+                        dialog.failed = true;
+                        return;
+                    };
+                },
+            }
+        };
+        s.dismissName();
+        s.message_len = 0;
+    }
+    fn create(s: *Server, split: ?layout.Axis, cwd: []const u8, command: ?[]const u8, title: []const u8) !layout.Id {
+        if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
+        const t = try Terminal.create(s.width, s.height -| 3);
+        errdefer t.destroy();
+        const dir = try a.dupe(u8, cwd);
+        errdefer a.free(dir);
+        const before = s.model;
+        const id = if (split) |axis| try s.model.split(axis) else try s.model.newTab(if (title.len == 0) "shell" else title);
+        errdefer s.model = before;
+        try s.panes.ensureUnusedCapacity(a, 1);
+        try t.spawn(dir, s.socket, id, s.executable, command);
+        s.panes.appendAssumeCapacity(.{ .id = id, .terminal = t, .cwd = dir });
+        try s.resizePanes();
+        s.dirty = true;
+        return id;
+    }
+    fn resizePanes(s: *Server) !void {
+        var locations: [layout.max_panes]layout.Placement = undefined;
+        for (s.model.placements(s.area(), &locations)) |place| if (s.pane(place.id)) |p| {
+            try p.terminal.resize(@max(1, place.rect.w), @max(1, place.rect.h -| 1));
+        };
+    }
+    fn close(s: *Server, id: layout.Id) !void {
+        var previous = s.model;
+        try previous.focus(id);
+        try s.closed.ensureUnusedCapacity(a, 1);
+        const was_focused = s.model.count > 0 and s.model.tab().focus == id;
+        try s.model.close(id);
+        for (s.panes.items, 0..) |*p, i| if (p.id == id) {
+            refreshCwd(p);
+            _ = p.terminal.read();
+            p.terminal.stop();
+            if (s.closed.items.len == max_closed) s.closed.orderedRemove(0).deinit();
+            s.closed.appendAssumeCapacity(.{ .terminal = p.terminal, .cwd = p.cwd, .tab = previous.tab().* });
+            _ = s.panes.orderedRemove(i);
+            break;
+        };
+        // A removed split can invalidate a drag even if its pane wasn't focused.
+        s.divider = null;
+        s.selection = null;
+        if (s.tab_menu) |context| if (s.tabIndex(context.tab) == null) {
+            s.tab_menu = null;
+        };
+        if (s.confirm_tab) |target| if (s.tabIndex(target) == null) {
+            s.confirm = .none;
+            s.confirm_tab = null;
+            s.message_len = 0;
+        };
+        if (s.name_dialog) |dialog| if (dialog.target == .rename and s.tabIndex(dialog.target.rename) == null) s.dismissName();
+        if (was_focused) {
+            s.copy_mode = false;
+            s.search_mode = false;
+            s.resize_mode = false;
+            s.confirm = .none;
+            s.confirm_tab = null;
+            s.prefix = false;
+            s.message_len = 0;
+            s.native_notice = null;
+        }
+        s.dirty = true;
+        try s.resizePanes();
+    }
+    fn refreshCwd(p: *render.Pane) void {
+        if (p.terminal.exited) return;
+        if (os.processCwd(p.terminal.pid)) |cwd| {
+            a.free(p.cwd);
+            p.cwd = cwd;
+        }
+    }
+    fn undoClose(s: *Server) !void {
+        if (s.closed.items.len == 0) {
+            s.notice(" No closed panes to restore");
+            return;
+        }
+        const saved = s.closed.items[s.closed.items.len - 1];
+        const content = try saved.terminal.snapshot();
+        defer a.free(content);
+        // Validate before consuming history; a deleted directory is recoverable.
+        var dir = try std.fs.cwd().openDir(saved.cwd, .{});
+        dir.close();
+        const id = try s.create(null, saved.cwd, null, saved.tab.title());
+        const term = s.pane(id).?.terminal;
+        term.feed(content);
+        term.feed("\x1b[0m\r\n[Wrangler: restored output; new shell]\r\n");
+        _ = s.closed.pop();
+        saved.deinit();
+        s.copy_mode = false;
+        s.notice(" Restored closed pane in a new tab with a fresh shell");
+    }
+    fn attention(s: *Server) !void {
+        for ([_]agents.Attention{ .needs_input, .finished }) |priority| {
+            var best: ?*render.Pane = null;
+            for (s.panes.items) |*p| if (p.agent.attention == priority) {
+                if (best == null or p.agent.changed_at < best.?.agent.changed_at) best = p;
+            };
+            if (best) |p| {
+                try s.model.focus(p.id);
+                s.acknowledge();
+                try s.resizePanes();
+                s.dirty = true;
+                return;
+            }
+        }
+        for ([_]agents.Attention{ .needs_input, .finished }) |priority| {
+            for (s.sessions.items) |session| if (session.attention == priority) {
+                var msg: [180]u8 = undefined;
+                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: wrangler native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
+                s.native_notice = session.id;
+                return;
+            };
+        }
+        s.notice(" Nothing needs your attention");
+    }
+    fn action(s: *Server, name: []const u8, value: []const u8) !void {
+        s.message_len = 0;
+        if (eq(name, "new")) {
+            const current = if (s.focused()) |p| os.processCwd(p.terminal.pid) else null;
+            defer if (current) |dir| a.free(dir);
+            const cwd = current orelse if (s.focused()) |p| p.cwd else ".";
+            const title = std.fs.path.basename(cwd);
+            _ = try s.create(null, cwd, null, if (title.len == 0 or eq(title, ".")) "shell" else title);
+            s.copy_mode = false;
+        } else if (eq(name, "mute")) {
+            s.muted = !s.muted;
+            s.notice(if (s.muted) " Dings muted; attention markers remain on" else " Dings enabled");
+        } else if (eq(name, "undo-close")) return s.undoClose() else if (eq(name, "attention")) return s.attention() else if (s.model.count == 0) return error.NoPane else if (eq(name, "split")) {
+            const p = s.focused().?;
+            const current = os.processCwd(p.terminal.pid);
+            defer if (current) |dir| a.free(dir);
+            _ = try s.create(if (eq(value, "down")) .vertical else .horizontal, current orelse p.cwd, null, "");
+        } else if (eq(name, "zoom")) s.model.tab().zoom = !s.model.tab().zoom else if (eq(name, "close")) try s.close(s.model.tab().focus) else if (eq(name, "close-tab")) {
+            const tab_id = s.model.tab().id;
+            while (s.model.count > 0 and s.model.tab().id == tab_id) try s.close(s.model.tab().focus);
+        } else if (eq(name, "next") or eq(name, "prev")) {
+            s.model.active = if (eq(name, "next")) (s.model.active + 1) % s.model.count else (s.model.active + s.model.count - 1) % s.model.count;
+            s.copy_mode = false;
+            s.acknowledge();
+        } else if (eq(name, "tab")) {
+            const index = try std.fmt.parseInt(usize, value, 10);
+            if (index == 0 or index > s.model.count) return error.NoTab;
+            s.model.active = index - 1;
+            s.copy_mode = false;
+            s.acknowledge();
+        } else if (eq(name, "rename")) s.model.tab().rename(value) else if (eq(name, "focus") or eq(name, "swap") or eq(name, "resize")) {
+            const dir = std.meta.stringToEnum(layout.Direction, value) orelse return error.BadDirection;
+            if (eq(name, "resize")) s.model.resize(dir) else if (s.model.neighbor(dir, s.area())) |id| {
+                if (eq(name, "swap")) try s.model.swap(id) else try s.model.focus(id);
+                s.acknowledge();
+            }
+        } else if (eq(name, "move-tab")) s.model.reorder(if (eq(value, "left")) -1 else 1) else if (eq(name, "break")) try s.model.breakPane() else if (eq(name, "join")) {
+            const dest = try std.fmt.parseInt(usize, value, 10);
+            if (dest == 0) return error.NoTab;
+            try s.model.joinPane(dest - 1);
+        } else return error.UnknownAction;
+        try s.resizePanes();
+        s.dirty = true;
+    }
+    fn scroll(s: *Server, delta: isize) void {
+        if (s.focused()) |p| {
+            p.terminal.vt.scrollViewport(.{ .delta = delta });
+            s.copy_mode = true;
+            s.dirty = true;
+        }
+    }
+    fn clipboard(s: *Server, cl: *Client) !void {
+        const p = s.focused() orelse return;
+        const text = try p.terminal.selectedText();
+        defer a.free(text);
+        const encoded = try a.alloc(u8, std.base64.standard.Encoder.calcSize(text.len));
+        defer a.free(encoded);
+        _ = std.base64.standard.Encoder.encode(encoded, text);
+        const osc = try std.fmt.allocPrint(a, "\x1b]52;c;{s}\x07", .{encoded});
+        defer a.free(osc);
+        try cl.queue(.{ .type = "frame", .data = osc });
+        s.notice(" Viewport copied via OSC 52");
+    }
+    fn key(s: *Server, cl: *Client, byte: u8) !void {
+        if (s.tab_menu) |context| {
+            switch (byte) {
+                27 => s.closeMenu(),
+                13 => try s.tabMenuAction(commands.TabMenu.actions[context.highlighted].key),
+                'j', 9 => s.moveTabMenu(true),
+                'k' => s.moveTabMenu(false),
+                'c' => try s.tabMenuAction('c'),
+                'T', 'r' => try s.tabMenuAction('T'),
+                'X', 'x' => try s.tabMenuAction('X'),
+                2 => s.openMenu(),
+                else => {},
+            }
+            return;
+        }
+        if (s.search_mode) {
+            if (byte == 27) {
+                s.search_mode = false;
+                s.message_len = 0;
+            } else if (byte == 13) {
+                s.search_mode = false;
+                s.search_skip = 0;
+                s.message_len = 0;
+                if (s.focused()) |p| if (!try p.terminal.search(s.search_text[0..s.search_len], 0)) s.notice(" No matches");
+            } else if (byte == 127) {
+                s.search_len -|= 1;
+            } else if (byte >= 32 and byte < 127 and s.search_len < s.search_text.len) {
+                s.search_text[s.search_len] = byte;
+                s.search_len += 1;
+            }
+            if (s.search_mode) {
+                s.message[0] = '/';
+                @memcpy(s.message[1 .. s.search_len + 1], s.search_text[0..s.search_len]);
+                s.message_len = s.search_len + 1;
+            }
+            s.dirty = true;
+            return;
+        }
+        if (s.confirm != .none) {
+            const pending = s.confirm;
+            const target = s.confirm_tab;
+            s.confirm = .none;
+            s.confirm_tab = null;
+            s.message_len = 0;
+            if (byte == 'y' or byte == 'Y') {
+                if (target) |id| s.model.active = s.tabIndex(id) orelse return;
+                try s.action(if (pending == .pane) "close" else "close-tab", "");
+            }
+            s.dirty = true;
+            return;
+        }
+        if (s.name_dialog) |*dialog| {
+            switch (dialog.key(byte)) {
+                .save => s.finishName(true),
+                .cancel => s.finishName(false),
+                .none => {},
+            }
+            s.dirty = true;
+            return;
+        }
+        if (s.resize_mode) {
+            if (direction(byte)) |dir| try s.action("resize", dir) else s.closeMenu();
+            return;
+        }
+        if (s.prefix) {
+            s.prefix = false;
+            s.dirty = true;
+            if (s.model.count == 0) {
+                for (commands.entries) |entry| if (entry.key == byte and entry.needs_pane) return;
+            }
+            switch (byte) {
+                2 => if (s.focused()) |p| try p.terminal.send(&.{2}),
+                'c' => try s.beginNewTab(),
+                'u' => try s.action("undo-close", ""),
+                'v', '%' => try s.action("split", "right"),
+                '-', '"' => try s.action("split", "down"),
+                'h', 'j', 'k', 'l' => try s.action("focus", direction(byte).?),
+                'H', 'J', 'K', 'L' => try s.action("swap", direction(std.ascii.toLower(byte)).?),
+                'n' => try s.action("next", ""),
+                'p' => try s.action("prev", ""),
+                '1'...'9' => try s.action("tab", &.{byte}),
+                'z' => try s.action("zoom", ""),
+                'a' => try s.action("attention", ""),
+                '!' => try s.action("break", ""),
+                'm' => try s.action("mute", ""),
+                'r' => {
+                    s.resize_mode = true;
+                    s.menu_page = 0;
+                },
+                'T', ',' => s.beginRename(),
+                'x' => {
+                    s.confirm = .pane;
+                    s.notice(" Close pane and its running process? y/N");
+                },
+                'X' => {
+                    s.confirm = .tab;
+                    s.notice(" Close tab and all its running processes? y/N");
+                },
+                '[' => {
+                    s.copy_mode = true;
+                    s.dirty = true;
+                },
+                'q', 'd' => {
+                    try cl.queue(.{ .type = "detach" });
+                    cl.attached = false;
+                },
+                '?' => s.openMenu(),
+                else => {},
+            }
+            return;
+        }
+        if (byte == 2) {
+            s.openMenu();
+            return;
+        }
+        if (s.copy_mode) {
+            switch (byte) {
+                'k' => s.scroll(-1),
+                'j' => s.scroll(1),
+                21 => s.scroll(-10),
+                4 => s.scroll(10),
+                'g' => if (s.focused()) |p| {
+                    p.terminal.vt.scrollViewport(.top);
+                    s.dirty = true;
+                },
+                'G' => if (s.focused()) |p| {
+                    p.terminal.vt.scrollViewport(.bottom);
+                    s.dirty = true;
+                },
+                'y', 13 => try s.clipboard(cl),
+                '/' => {
+                    s.search_mode = true;
+                    s.search_len = 0;
+                    s.notice("/");
+                },
+                'n', 'N' => if (s.focused()) |p| {
+                    if (byte == 'n') s.search_skip += 1 else s.search_skip -|= 1;
+                    if (!try p.terminal.search(s.search_text[0..s.search_len], s.search_skip)) {
+                        s.search_skip = 0;
+                        _ = try p.terminal.search(s.search_text[0..s.search_len], 0);
+                    }
+                    s.dirty = true;
+                },
+                'q', 27 => {
+                    s.copy_mode = false;
+                    if (s.focused()) |p| {
+                        p.terminal.vt.scrollViewport(.bottom);
+                        try p.terminal.vt.screens.active.select(null);
+                    }
+                    s.dirty = true;
+                },
+                else => {},
+            }
+            return;
+        }
+        if (s.focused()) |p| {
+            try p.terminal.send(&.{byte});
+            p.agent.acknowledge();
+        }
+    }
+    fn input(s: *Server, cl: *Client, data: []const u8) !void {
+        try s.keybuf.appendSlice(a, data);
+        var used: usize = 0;
+        while (used < s.keybuf.items.len) {
+            const rest = s.keybuf.items[used..];
+            if (rest[0] != 27) {
+                if (s.paste) {
+                    if (s.paste_to_name and s.name_dialog != null) {
+                        if (rest[0] >= 32 and rest[0] < 127) try s.key(cl, rest[0]);
+                    } else if (s.paste_to_pane) {
+                        if (s.focused()) |p| try p.terminal.send(rest[0..1]);
+                    }
+                } else try s.key(cl, rest[0]);
+                used += 1;
+                continue;
+            }
+            if (rest.len < 2) break;
+            if (!s.paste and rest[1] != '[' and rest[1] != 'O' and (s.hasMenu() or s.name_dialog != null or s.confirm != .none)) {
+                try s.key(cl, 27);
+                used += 1;
+                continue;
+            }
+            var len: usize = 2;
+            if (rest[1] == '[' or rest[1] == 'O') {
+                while (len < rest.len and !(rest[len] >= 0x40 and rest[len] <= 0x7e)) : (len += 1) {}
+                if (len == rest.len) break;
+                len += 1;
+            }
+            const seq = rest[0..len];
+            if (eq(seq, "\x1b[200~") or eq(seq, "\x1b[201~")) {
+                s.paste = eq(seq, "\x1b[200~");
+                if (s.paste) {
+                    s.paste_to_pane = !s.hasMenu() and s.name_dialog == null and s.confirm == .none;
+                    s.paste_to_name = s.name_dialog != null;
+                }
+                if (s.paste_to_pane) {
+                    if (s.focused()) |p| if (p.terminal.vt.modes.get(.bracketed_paste)) try p.terminal.send(seq);
+                }
+            } else if (s.paste) {
+                if (s.paste_to_pane) {
+                    if (s.focused()) |p| try p.terminal.send(seq);
+                }
+            } else if (eq(seq, "\x1b[I")) {
+                s.watched = true;
+                s.acknowledge();
+            } else if (eq(seq, "\x1b[O")) s.watched = false else if (std.mem.startsWith(u8, seq, "\x1b[<")) try s.mouse(cl, seq) else if (s.tab_menu != null) {
+                if (eq(seq, "\x1b[A") or eq(seq, "\x1bOA")) s.moveTabMenu(false) else if (eq(seq, "\x1b[B") or eq(seq, "\x1bOB")) s.moveTabMenu(true);
+            } else if (s.menu() != null) {
+                if (eq(seq, "\x1b[5~")) s.pageMenu(false) else if (eq(seq, "\x1b[6~")) s.pageMenu(true);
+            } else if (s.name_dialog) |*dialog| {
+                dialog.sequence(seq);
+                s.dirty = true;
+            } else if (s.confirm != .none) {
+                // Dialog keys belong to Wrangler, never to the shell beneath it.
+            } else if (s.copy_mode and eq(seq, "\x1b[5~")) s.scroll(-20) else if (s.copy_mode and eq(seq, "\x1b[6~")) s.scroll(20) else if (s.focused()) |p| try p.terminal.send(seq);
+            used += len;
+        }
+        std.mem.copyForwards(u8, s.keybuf.items[0 .. s.keybuf.items.len - used], s.keybuf.items[used..]);
+        s.keybuf.items.len -= used;
+        s.escape_at = std.time.milliTimestamp();
+        if (s.keybuf.items.len > 256) {
+            s.keybuf.clearRetainingCapacity();
+            return error.InvalidInput;
+        }
+    }
+    fn mouse(s: *Server, cl: *Client, seq: []const u8) !void {
+        var fields = std.mem.splitScalar(u8, seq[3 .. seq.len - 1], ';');
+        const button = std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return;
+        const x = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
+        const y = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
+        const release = seq[seq.len - 1] == 'm';
+        if (s.ui_mouse_down) {
+            if (release) s.ui_mouse_down = false;
+            return;
+        }
+        if (!release and button == 2 and y == 0 and s.name_dialog == null and s.confirm == .none) {
+            if (render.tabAt(&s.model, s.width, x)) |index| {
+                s.ui_mouse_down = true;
+                s.openTabMenu(index, x);
+                return;
+            }
+        }
+        if (s.tab_menu) |context| {
+            if (!release and (button == 64 or button == 65)) s.moveTabMenu(button == 65);
+            if (!release and button == 0) {
+                s.ui_mouse_down = true;
+                if (context.hit(s.width, s.height, x, y)) |index| try s.tabMenuAction(commands.TabMenu.actions[index].key) else s.closeMenu();
+            } else if (!release and (button == 35 or button == 32)) {
+                if (context.hit(s.width, s.height, x, y)) |index| {
+                    s.tab_menu.?.highlighted = index;
+                    s.dirty = true;
+                }
+            }
+            return;
+        }
+        if (s.menu()) |view| {
+            if (!release and (button == 64 or button == 65)) s.pageMenu(button == 65);
+            if (!release and button == 0) {
+                s.ui_mouse_down = true;
+                switch (view.hit(x, y)) {
+                    .close => s.closeMenu(),
+                    .previous => s.pageMenu(false),
+                    .next => s.pageMenu(true),
+                    .command => |entry| try s.key(cl, entry.key),
+                    .none => {},
+                }
+            }
+            return;
+        }
+        if (s.name_dialog) |*dialog| {
+            if (!release and button == 0) {
+                s.ui_mouse_down = true;
+                switch (naming.View.init(s.width, s.height, dialog.*).hit(x, y)) {
+                    .save => s.finishName(true),
+                    .cancel => s.finishName(false),
+                    .clear => dialog.clear(),
+                    .field => |cursor| dialog.position(cursor),
+                    .none => {},
+                }
+                s.dirty = true;
+            }
+            return;
+        }
+        if (s.confirm != .none) {
+            if (!release and button == 0) {
+                s.ui_mouse_down = true;
+                try s.key(cl, if (y == s.height - 1 and x < 10) 'y' else 'n');
+            }
+            return;
+        }
+        if (release and s.divider != null) {
+            s.divider = null;
+            return;
+        }
+        if (button == 32 and s.divider != null) {
+            s.model.dragDivider(s.divider.?, x, y);
+            try s.resizePanes();
+            s.dirty = true;
+            return;
+        }
+        if (y == 0 and button == 0 and !release) {
+            const add_x = render.addTabX(&s.model, s.width);
+            if (x >= add_x and x < add_x + 3) {
+                s.ui_mouse_down = true;
+                try s.beginNewTab();
+                return;
+            }
+            if (render.tabAt(&s.model, s.width, x)) |index| {
+                s.model.active = index;
+                s.acknowledge();
+                try s.resizePanes();
+                s.dirty = true;
+            }
+            return;
+        }
+        var locations: [layout.max_panes]layout.Placement = undefined;
+        for (s.model.placements(s.area(), &locations)) |p| if (p.rect.contains(x, y)) {
+            try s.model.focus(p.id);
+            s.acknowledge();
+            s.dirty = true;
+            const term = s.pane(p.id).?.terminal;
+            if (y > p.rect.y and term.vt.flags.mouse_event != .none and !s.copy_mode and button & 4 == 0) {
+                // Translate coordinates through Ghostty's input encoder into the app's chosen protocol.
+                const vt = @import("terminal.zig").vt;
+                var encoded: std.Io.Writer.Allocating = .init(a);
+                defer encoded.deinit();
+                var opts = vt.input.MouseEncodeOptions.fromTerminal(&term.vt, .{
+                    .screen = .{ .width = term.vt.cols, .height = term.vt.rows },
+                    .cell = .{ .width = 1, .height = 1 },
+                    .padding = .{},
+                });
+                opts.any_button_pressed = !release and button & 3 != 3;
+                const btn: ?vt.input.MouseButton = if (button & 64 != 0) (if (button & 1 == 0) .four else .five) else switch (button & 3) {
+                    0 => .left,
+                    1 => .middle,
+                    2 => .right,
+                    else => null,
+                };
+                try vt.input.encodeMouse(&encoded.writer, .{
+                    .action = if (release) .release else if (button & 32 != 0) .motion else .press,
+                    .button = btn,
+                    .mods = .{ .shift = button & 4 != 0, .alt = button & 8 != 0, .ctrl = button & 16 != 0 },
+                    .pos = .{ .x = @floatFromInt(x - p.rect.x), .y = @floatFromInt(y - p.rect.y - 1) },
+                }, opts);
+                try term.send(encoded.written());
+                return;
+            }
+            if (release) {
+                if (s.selection) |sel| if (sel.moved) try s.clipboard(cl);
+                s.selection = null;
+                return;
+            }
+            if (button == 64) {
+                s.scroll(-3);
+                return;
+            }
+            if (button == 65) {
+                s.scroll(3);
+                return;
+            }
+            if (button & 3 == 2) {
+                s.ui_mouse_down = true;
+                s.openMenu();
+                return;
+            }
+            if (y > p.rect.y) {
+                const px = x - p.rect.x;
+                const py = y - p.rect.y - 1;
+                if (button & 32 != 0) {
+                    if (s.selection) |*sel| if (sel.pane == p.id) {
+                        sel.moved = true;
+                        try term.select(sel.x, sel.y, px, py);
+                    };
+                } else if (button & 3 == 0) {
+                    s.selection = .{ .pane = p.id, .x = px, .y = py };
+                    try term.vt.screens.active.select(null);
+                }
+            }
+            return;
+        };
+        if (release) {
+            s.selection = null;
+            return;
+        }
+        if (button == 0) s.divider = s.model.dividerAt(s.area(), x, y);
+    }
+    fn request(s: *Server, cl: *Client, v: std.json.Value) !void {
+        const op = agents.str(v, "op");
+        if (eq(op, "native.start")) {
+            if (s.sessions.items.len >= 16) return error.TooManyNativeSessions;
+            const provider = std.meta.stringToEnum(agents.Provider, agents.str(v, "provider")) orelse return error.BadProvider;
+            const cwd = agents.str(v, "cwd");
+            try s.sessions.ensureUnusedCapacity(a, 1);
+            const session = try native.Session.start(s.next_session, provider, if (cwd.len > 0) cwd else ".");
+            s.sessions.appendAssumeCapacity(session);
+            s.next_session += 1;
+            try cl.queue(.{ .ok = true, .session = session.id, .provider = provider });
+        } else if (eq(op, "native.list")) {
+            const Info = struct { id: u32, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, next_seq: u64 };
+            var info: std.ArrayList(Info) = .empty;
+            defer info.deinit(a);
+            for (s.sessions.items) |session| try info.append(a, .{ .id = session.id, .provider = session.provider, .ready = session.ready, .exited = session.exited, .state = session.state, .attention = session.attention, .pending_requests = session.approvals.items.len, .next_seq = session.next_seq });
+            try cl.queue(.{ .ok = true, .sessions = info.items });
+        } else if (std.mem.startsWith(u8, op, "native.")) {
+            const id = std.math.cast(u32, number(v, "session", 0)) orelse return error.NoNativeSession;
+            for (s.sessions.items, 0..) |*session, index| if (session.id == id) {
+                s.dirty = true;
+                if (s.native_notice == id) {
+                    s.native_notice = null;
+                    s.message_len = 0;
+                }
+                if (eq(op, "native.stop")) {
+                    session.destroy();
+                    _ = s.sessions.orderedRemove(index);
+                    try cl.queue(.{ .ok = true });
+                } else if (eq(op, "native.send")) {
+                    try session.send(v.object.get("message") orelse return error.InvalidMessage);
+                    try cl.queue(.{ .ok = true });
+                } else if (eq(op, "native.events")) {
+                    const after = std.math.cast(u64, number(v, "after", 0)) orelse 0;
+                    var events: std.ArrayList(native.Event) = .empty;
+                    defer events.deinit(a);
+                    for (session.events.items) |event| if (event.seq > after) try events.append(a, event);
+                    try cl.queue(.{ .ok = true, .events = events.items, .pending_requests = session.approvals.items, .next_seq = session.next_seq, .first_seq = if (session.events.items.len > 0) session.events.items[0].seq else session.next_seq });
+                    session.attention = .none;
+                } else return error.UnknownOperation;
+                return;
+            };
+            return error.NoNativeSession;
+        } else if (eq(op, "attach")) {
+            for (s.clients.items) |other| if (other.attached and other.fd != cl.fd) return error.AlreadyAttached;
+            cl.attached = true;
+            s.watched = true;
+            s.prefix = false;
+            s.tab_menu = null;
+            s.ui_mouse_down = false;
+            s.copy_mode = false;
+            s.dismissName();
+            s.resize_mode = false;
+            s.confirm = .none;
+            s.confirm_tab = null;
+            s.keybuf.clearRetainingCapacity();
+            s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
+            s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
+            if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "shell");
+            try s.resizePanes();
+            s.acknowledge();
+            s.dirty = true;
+            try cl.queue(.{ .type = "attached" });
+        } else if (eq(op, "size")) {
+            if (!cl.attached) return error.NotAttached;
+            s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
+            s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
+            try s.resizePanes();
+            s.dirty = true;
+        } else if (eq(op, "input")) {
+            if (!cl.attached) return error.NotAttached;
+            try s.input(cl, agents.str(v, "data"));
+        } else if (eq(op, "action")) {
+            try s.action(agents.str(v, "name"), agents.str(v, "value"));
+            try cl.queue(.{ .ok = true });
+        } else if (eq(op, "new") or eq(op, "split")) {
+            const cwd = agents.str(v, "cwd");
+            const cmd = agents.str(v, "command");
+            const id = try s.create(if (eq(op, "new")) null else if (eq(agents.str(v, "axis"), "down")) .vertical else .horizontal, if (cwd.len == 0) "." else cwd, if (cmd.len == 0) null else cmd, agents.str(v, "title"));
+            try cl.queue(.{ .ok = true, .pane = id });
+        } else if (eq(op, "list")) {
+            const Info = struct { id: u32, tab: u32, focused: bool, provider: agents.Provider, state: agents.State, attention: agents.Attention, session: []const u8, activity: []const u8, cwd: []const u8, exited: bool };
+            var items: std.ArrayList(Info) = .empty;
+            defer items.deinit(a);
+            for (s.panes.items) |p| {
+                var copy = s.model;
+                try copy.focus(p.id);
+                try items.append(a, .{ .id = p.id, .tab = copy.tab().id, .focused = s.model.count > 0 and s.model.tab().focus == p.id, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .session = p.agent.sessionId(), .activity = p.agent.label(), .cwd = p.cwd, .exited = p.terminal.exited });
+            }
+            try cl.queue(.{ .ok = true, .panes = items.items, .tabs = s.model.count, .closed_panes = s.closed.items.len, .muted = s.muted });
+        } else if (eq(op, "focus") or eq(op, "close") or eq(op, "read") or eq(op, "send") or eq(op, "hook")) {
+            const id = std.math.cast(u32, number(v, "pane", 0)) orelse return error.NoPane;
+            const p = s.pane(id) orelse return error.NoPane;
+            if (eq(op, "focus")) {
+                try s.model.focus(id);
+                s.acknowledge();
+                try s.resizePanes();
+                s.dirty = true;
+            } else if (eq(op, "close")) try s.close(id) else if (eq(op, "read")) {
+                const text = try p.terminal.text();
+                defer a.free(text);
+                try cl.queue(.{ .ok = true, .text = text });
+                return;
+            } else if (eq(op, "send")) {
+                try p.terminal.send(agents.str(v, "text"));
+                if (boolean(v, "enter")) try p.terminal.send("\r");
+            } else {
+                const provider = std.meta.stringToEnum(agents.Provider, agents.str(v, "provider")) orelse return error.BadProvider;
+                const event = v.object.get("event") orelse return error.NoEvent;
+                const viewed = s.watched and s.model.count > 0 and s.model.tab().focus == id and s.hasClient();
+                const ding = p.agent.apply(provider, event, number(v, "seq", std.time.microTimestamp()), viewed);
+                if (ding) {
+                    s.bell = true;
+                    if (s.bell_kind != .needs_input) s.bell_kind = p.agent.attention;
+                }
+                s.dirty = true;
+            }
+            try cl.queue(.{ .ok = true });
+        } else if (eq(op, "ping")) try cl.queue(.{ .ok = true, .version = "0.1.0" }) else if (eq(op, "shutdown")) {
+            s.quit = true;
+            try cl.queue(.{ .ok = true });
+        } else return error.UnknownOperation;
+    }
+    fn hasClient(s: *Server) bool {
+        for (s.clients.items) |cl| if (cl.attached and !cl.dead) return true;
+        return false;
+    }
+    pub fn run(s: *Server) !void {
+        _ = c.signal(c.SIGPIPE, os.sig_ignore);
+        const fd = try os.listen(s.socket);
+        defer {
+            _ = c.close(fd);
+            std.fs.cwd().deleteFile(s.socket) catch {};
+        }
+        defer {
+            for (s.panes.items) |p| {
+                p.terminal.destroy();
+                a.free(p.cwd);
+            }
+            s.panes.deinit(a);
+            for (s.closed.items) |p| p.deinit();
+            s.closed.deinit(a);
+            for (s.clients.items) |*cl| cl.deinit();
+            s.clients.deinit(a);
+            s.keybuf.deinit(a);
+            for (s.sessions.items) |*session| session.destroy();
+            s.sessions.deinit(a);
+            s.dismissName();
+        }
+        while (!s.quit) {
+            var polls: [1 + layout.max_panes + 32]c.struct_pollfd = undefined;
+            var count: usize = 1;
+            polls[0] = .{ .fd = fd, .events = c.POLLIN, .revents = 0 };
+            for (s.panes.items) |p| {
+                polls[count] = .{ .fd = if (p.terminal.exited) -1 else p.terminal.fd, .events = @intCast(c.POLLIN | (if (p.terminal.pending.items.len > 0) c.POLLOUT else 0)), .revents = 0 };
+                count += 1;
+            }
+            for (s.clients.items) |cl| {
+                polls[count] = .{ .fd = cl.fd, .events = @intCast(c.POLLIN | (if (cl.output.items.len > cl.sent) c.POLLOUT else 0)), .revents = 0 };
+                count += 1;
+            }
+            _ = c.poll(&polls, @intCast(count), 16);
+            // Read every live PTY, even when its tab is hidden. Only visible output dirties the frame.
+            for (s.panes.items, 0..) |*p, i| {
+                if (polls[i + 1].revents != 0) refreshCwd(p);
+                p.terminal.flush();
+                if (p.terminal.read()) {
+                    var copy = s.model;
+                    copy.focus(p.id) catch continue;
+                    if (copy.active == s.model.active and (!s.model.tab().zoom or s.model.tab().focus == p.id)) s.dirty = true;
+                }
+            }
+            for (s.sessions.items) |*session| {
+                const ding = session.poll() catch |err| blk: {
+                    s.notice(@errorName(err));
+                    _ = c.kill(-session.child.id, c.SIGTERM);
+                    break :blk false;
+                };
+                if (ding) {
+                    s.bell = true;
+                    if (s.bell_kind != .needs_input) s.bell_kind = session.attention;
+                    var msg: [160]u8 = undefined;
+                    s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}  |  wrangler native events {d}", .{ @tagName(session.provider), session.id, @tagName(session.state), session.id }));
+                    s.native_notice = session.id;
+                }
+            }
+            // Reap closed panes too. A HUP can take effect after the pane was removed.
+            while (true) {
+                var status: c_int = 0;
+                const pid = c.waitpid(-1, &status, c.WNOHANG);
+                if (pid <= 0) break;
+                for (s.panes.items) |*p| if (p.terminal.pid == pid) {
+                    p.terminal.exited = true;
+                    p.terminal.exit_status = status;
+                    s.dirty = true;
+                };
+                for (s.sessions.items) |*session| if (session.child.id == pid) {
+                    session.exited = true;
+                    session.state = .done;
+                };
+            }
+            // Both Terminal.read and the general child reaper can detect exit.
+            // Remove in a separate pass so adjacent exits aren't skipped.
+            var pi: usize = 0;
+            while (pi < s.panes.items.len) {
+                if (s.panes.items[pi].terminal.exited) {
+                    try s.close(s.panes.items[pi].id);
+                } else pi += 1;
+            }
+            var ci: usize = 0;
+            while (ci < s.clients.items.len) {
+                const cl = &s.clients.items[ci];
+                var bytes: [16384]u8 = undefined;
+                const n = c.read(cl.fd, &bytes, bytes.len);
+                if (n == 0) cl.dead = true;
+                if (n > 0) {
+                    cl.touched = std.time.milliTimestamp();
+                    try cl.input.appendSlice(a, bytes[0..@intCast(n)]);
+                    if (cl.input.items.len > 1024 * 1024) cl.dead = true;
+                    var consumed: usize = 0;
+                    while (!cl.dead) {
+                        const newline = std.mem.indexOfScalarPos(u8, cl.input.items, consumed, '\n') orelse break;
+                        const parsed = std.json.parseFromSlice(std.json.Value, a, cl.input.items[consumed..newline], .{ .max_value_len = 1024 * 1024 }) catch {
+                            try cl.queue(.{ .ok = false, .err = "InvalidJson" });
+                            consumed = newline + 1;
+                            continue;
+                        };
+                        defer parsed.deinit();
+                        s.request(cl, parsed.value) catch |err| {
+                            try cl.queue(.{ .ok = false, .err = @errorName(err) });
+                            if (cl.attached) s.notice(@errorName(err));
+                        };
+                        consumed = newline + 1;
+                    }
+                    std.mem.copyForwards(u8, cl.input.items[0 .. cl.input.items.len - consumed], cl.input.items[consumed..]);
+                    cl.input.items.len -= consumed;
+                }
+                if (!cl.attached and std.time.milliTimestamp() - cl.touched > 5000) cl.dead = true;
+                if (cl.dead) {
+                    cl.deinit();
+                    _ = s.clients.orderedRemove(ci);
+                    continue;
+                }
+                ci += 1;
+            }
+            if (s.keybuf.items.len > 0 and std.time.milliTimestamp() - s.escape_at > 40) {
+                for (s.clients.items) |*cl| if (cl.attached) {
+                    if (s.keybuf.items.len == 1 and s.keybuf.items[0] == 27) try s.key(cl, 27) else if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) {
+                        if (s.focused()) |p| try p.terminal.send(s.keybuf.items);
+                    }
+                    break;
+                };
+                s.keybuf.clearRetainingCapacity();
+            }
+            if (s.dirty and s.hasClient() and std.time.milliTimestamp() - s.last_frame >= 30) {
+                var native_blocked: usize = 0;
+                var native_finished: usize = 0;
+                for (s.sessions.items) |session| switch (session.attention) {
+                    .needs_input => native_blocked += 1,
+                    .finished => native_finished += 1,
+                    .none => {},
+                };
+                const bytes = try render.frame(&s.model, s.panes.items, s.width, s.height, .{
+                    .message = s.message[0..s.message_len],
+                    .copy_mode = s.copy_mode,
+                    .native_blocked = native_blocked,
+                    .native_finished = native_finished,
+                    .menu = s.menu(),
+                    .tab_menu = s.tab_menu,
+                    .dialog = s.name_dialog,
+                    .confirm = s.confirm != .none,
+                });
+                defer a.free(bytes);
+                for (s.clients.items) |*cl| if (cl.attached and cl.output.items.len == 0) {
+                    try cl.queue(.{ .type = "frame", .data = bytes });
+                    s.dirty = false;
+                };
+                s.last_frame = std.time.milliTimestamp();
+            }
+            if (s.bell and std.time.milliTimestamp() - s.last_bell > 1500) {
+                for (s.clients.items) |*cl| if (cl.attached and !s.muted) try cl.queue(.{ .type = "bell", .kind = @tagName(s.bell_kind) });
+                s.bell = false;
+                s.bell_kind = .none;
+                s.last_bell = std.time.milliTimestamp();
+            }
+            for (s.clients.items) |*cl| {
+                if (cl.sent < cl.output.items.len) {
+                    const pending = cl.output.items[cl.sent..];
+                    const written = c.write(cl.fd, pending.ptr, pending.len);
+                    if (written > 0) cl.sent += @intCast(written) else if (written < 0 and std.posix.errno(written) != .AGAIN and std.posix.errno(written) != .INTR) cl.dead = true;
+                    if (cl.sent == cl.output.items.len) {
+                        cl.output.clearRetainingCapacity();
+                        cl.sent = 0;
+                    }
+                }
+            }
+            if (polls[0].revents & c.POLLIN != 0) {
+                const client_fd = c.accept(fd, null, null);
+                if (client_fd >= 0) {
+                    if (s.clients.items.len == 32) _ = c.close(client_fd) else {
+                        os.nonblock(client_fd);
+                        os.cloexec(client_fd);
+                        try s.clients.append(a, .{ .fd = client_fd, .touched = std.time.milliTimestamp() });
+                    }
+                }
+            }
+        }
+    }
+};
+fn eq(x: []const u8, y: []const u8) bool {
+    return std.mem.eql(u8, x, y);
+}
+fn direction(key: u8) ?[]const u8 {
+    return switch (key) {
+        'h' => "left",
+        'j' => "down",
+        'k' => "up",
+        'l' => "right",
+        else => null,
+    };
+}
+fn number(v: std.json.Value, key: []const u8, default: i64) i64 {
+    if (v != .object) return default;
+    const n = v.object.get(key) orelse return default;
+    return if (n == .integer) n.integer else default;
+}
+fn boolean(v: std.json.Value, key: []const u8) bool {
+    if (v != .object) return false;
+    const b = v.object.get(key) orelse return false;
+    return b == .bool and b.bool;
+}
