@@ -215,7 +215,7 @@ pub const Server = struct {
     }
     fn create(s: *Server, split: ?layout.Axis, cwd: []const u8, command: ?[]const u8, title: []const u8) !layout.Id {
         if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
-        const t = try Terminal.create(s.width, s.height -| 3);
+        const t = try Terminal.create(s.width, s.height -| 2);
         errdefer t.destroy();
         const dir = try a.dupe(u8, cwd);
         errdefer a.free(dir);
@@ -232,7 +232,7 @@ pub const Server = struct {
     fn resizePanes(s: *Server) !void {
         var locations: [layout.max_panes]layout.Placement = undefined;
         for (s.model.placements(s.area(), &locations)) |place| if (s.pane(place.id)) |p| {
-            try p.terminal.resize(@max(1, place.rect.w), @max(1, place.rect.h -| 1));
+            try p.terminal.resize(@max(1, place.rect.w), @max(1, place.rect.h));
         };
     }
     fn close(s: *Server, id: layout.Id) !void {
@@ -710,7 +710,7 @@ pub const Server = struct {
             s.acknowledge();
             s.dirty = true;
             const term = s.pane(p.id).?.terminal;
-            if (y > p.rect.y and term.vt.flags.mouse_event != .none and !s.copy_mode and button & 4 == 0) {
+            if (term.vt.flags.mouse_event != .none and !s.copy_mode and button & 4 == 0) {
                 // Translate coordinates through Ghostty's input encoder into the app's chosen protocol.
                 const vt = @import("terminal.zig").vt;
                 var encoded: std.Io.Writer.Allocating = .init(a);
@@ -731,7 +731,7 @@ pub const Server = struct {
                     .action = if (release) .release else if (button & 32 != 0) .motion else .press,
                     .button = btn,
                     .mods = .{ .shift = button & 4 != 0, .alt = button & 8 != 0, .ctrl = button & 16 != 0 },
-                    .pos = .{ .x = @floatFromInt(x - p.rect.x), .y = @floatFromInt(y - p.rect.y - 1) },
+                    .pos = .{ .x = @floatFromInt(x - p.rect.x), .y = @floatFromInt(y - p.rect.y) },
                 }, opts);
                 try term.send(encoded.written());
                 return;
@@ -754,18 +754,16 @@ pub const Server = struct {
                 s.openMenu();
                 return;
             }
-            if (y > p.rect.y) {
-                const px = x - p.rect.x;
-                const py = y - p.rect.y - 1;
-                if (button & 32 != 0) {
-                    if (s.selection) |*sel| if (sel.pane == p.id) {
-                        sel.moved = true;
-                        try term.select(sel.x, sel.y, px, py);
-                    };
-                } else if (button & 3 == 0) {
-                    s.selection = .{ .pane = p.id, .x = px, .y = py };
-                    try term.vt.screens.active.select(null);
-                }
+            const px = x - p.rect.x;
+            const py = y - p.rect.y;
+            if (button & 32 != 0) {
+                if (s.selection) |*sel| if (sel.pane == p.id) {
+                    sel.moved = true;
+                    try term.select(sel.x, sel.y, px, py);
+                };
+            } else if (button & 3 == 0) {
+                s.selection = .{ .pane = p.id, .x = px, .y = py };
+                try term.vt.screens.active.select(null);
             }
             return;
         };

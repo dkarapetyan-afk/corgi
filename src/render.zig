@@ -78,30 +78,14 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
         if (place.rect.w == 0 or place.rect.h == 0) continue;
         for (panes) |p| if (p.id == place.id) {
             const r = place.rect;
-            const focused = model.tab().focus == p.id;
-            try w.print("\x1b[{d};{d}H", .{ r.y + 1, r.x + 1 });
-            try w.writeAll(if (focused) "\x1b[1;38;2;161;194;178m" else "\x1b[0;38;2;100;108;121m");
-            var header: [256]u8 = undefined;
-            const marker: []const u8 = switch (p.agent.attention) {
-                .none => "",
-                .finished => " + done",
-                .needs_input => " ! needs you",
-            };
-            const label = if (p.terminal.exited) "exited" else @tagName(p.agent.state);
-            const title = if (p.agent.provider == .other)
-                try std.fmt.bufPrint(&header, " {s}{d}", .{ if (focused) ">" else " ", p.id })
-            else
-                try std.fmt.bufPrint(&header, " {s}{d} {s} {s}{s}", .{ if (focused) ">" else " ", p.id, @tagName(p.agent.provider), label, marker });
-            try w.writeAll(title[0..@min(title.len, r.w)]);
-            try w.writeAll("\x1b[0m");
             try p.terminal.render.update(a, &p.terminal.vt);
             const state = &p.terminal.render;
             var last_style: ?terminal.vt.Style = null;
             var last_fg: ?terminal.vt.color.RGB = null;
             var last_bg: ?terminal.vt.color.RGB = null;
             for (state.row_data.items(.cells), 0..) |cells, row| {
-                if (row + 1 >= r.h) break;
-                try w.print("\x1b[{d};{d}H", .{ r.y + row + 2, r.x + 1 });
+                if (row >= r.h) break;
+                try w.print("\x1b[{d};{d}H", .{ r.y + row + 1, r.x + 1 });
                 for (cells.items(.raw), 0..) |cell, col| {
                     if (col >= r.w) break;
                     if (cell.wide == .spacer_tail or cell.wide == .spacer_head) continue;
@@ -152,16 +136,24 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
         const text = try std.fmt.bufPrint(&status, " [ Close ]  [ Cancel ] {s}", .{ui.message});
         try w.writeAll(text[0..@min(text.len, width)]);
     } else {
-        const text = if (ui.message.len > 0) ui.message else try std.fmt.bufPrint(&status, " {s}  ^B commands   ! {d} needs you  + {d} finished   ^B a attention", .{ if (ui.copy_mode) "SCROLL  j/k move  y copy viewport  q exit" else "wrangler", blocked, finished });
+        var agent_label: [64]u8 = undefined;
+        var label: []const u8 = "wrangler";
+        if (model.count > 0) for (panes) |p| {
+            if (p.id == model.tab().focus and p.agent.provider != .other) {
+                label = try std.fmt.bufPrint(&agent_label, "{s} {s}", .{ @tagName(p.agent.provider), @tagName(p.agent.state) });
+                break;
+            }
+        };
+        const text = if (ui.message.len > 0) ui.message else try std.fmt.bufPrint(&status, " {s}  ^B commands   ! {d} needs you  + {d} finished   ^B a attention", .{ if (ui.copy_mode) "SCROLL  j/k move  y copy viewport  q exit" else label, blocked, finished });
         try w.writeAll(text[0..@min(text.len, width)]);
     }
     try w.writeAll("\x1b[0m");
     if (model.count > 0 and !ui.copy_mode and ui.menu == null and ui.tab_menu == null and ui.dialog == null and !ui.confirm) for (model.placements(area, &locations)) |place| {
-        if (place.id != model.tab().focus or place.rect.h < 2) continue;
+        if (place.id != model.tab().focus or place.rect.h == 0) continue;
         for (panes) |p| if (p.id == place.id) {
             if (p.terminal.render.cursor.visible) if (p.terminal.render.cursor.viewport) |cursor| {
-                if (cursor.x < place.rect.w and cursor.y + 1 < place.rect.h) {
-                    try w.print("\x1b[{d};{d}H\x1b[?25h", .{ place.rect.y + cursor.y + 2, place.rect.x + cursor.x + 1 });
+                if (cursor.x < place.rect.w and cursor.y < place.rect.h) {
+                    try w.print("\x1b[{d};{d}H\x1b[?25h", .{ place.rect.y + cursor.y + 1, place.rect.x + cursor.x + 1 });
                 }
             };
         };

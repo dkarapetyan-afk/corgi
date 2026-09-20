@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Real PTY/socket regressions. Provider doubles never make inference requests."""
 import fcntl
+import base64
 import json
 import os
 import pathlib
 import re
 import select
+import shlex
 import socket
 import struct
 import subprocess
@@ -343,6 +345,52 @@ class Runtime(unittest.TestCase):
         self.input('q')
         self.input("printf '%s%s\\n' LIVE_AFTER_ UNDO\r")
         self.until(lambda:'LIVE_AFTER_UNDO' in self.run_cli('read',str(pane)))
+    def test_panes_use_full_height_and_translate_first_row_input(self):
+        fixture=pathlib.Path(self.temp.name,'screen.py')
+        fixture.write_text('''import os, signal, tty
+tty.setraw(0)
+def draw(*_):
+    cols, rows = os.get_terminal_size(0)
+    os.write(1, f'\\x1b[2J\\x1b[HTOP_{rows}x{cols}\\x1b[{rows};1HBOTTOM_{rows}\\x1b[1;2H\\x1b[?1000h\\x1b[?1006h'.encode())
+signal.signal(signal.SIGWINCH, draw)
+draw()
+while True:
+    with open('mouse-input', 'ab') as log: log.write(os.read(0, 1024))
+''')
+        command=f'exec {shlex.quote(sys.executable)} {shlex.quote(str(fixture))}'
+        first=self.rpc(op='new',cwd=self.temp.name,command=command)['pane']
+        self.attach()
+        screen=self.frame_with('BOTTOM_22')
+        self.assertTrue(screen[1].startswith('TOP_22x80'))
+        self.assertTrue(screen[22].startswith('BOTTOM_22'))
+        self.rpc(op='hook',pane=first,provider='codex',seq=1,event={'hook_event_name':'SessionStart','session_id':'geometry'})
+        frame=self.get_type('frame')['data']
+        while 'codex idle' not in frame: frame=self.get_type('frame')['data']
+        self.assertIn('\x1b[2;2H\x1b[?25h',frame)
+        self.assertIn('codex idle',screen_text(frame)[23])
+        self.click(3,2);self.click(3,23)
+        log=pathlib.Path(self.temp.name,'mouse-input')
+        expected=b'\x1b[<0;3;1M\x1b[<0;3;1m\x1b[<0;3;22M\x1b[<0;3;22m'
+        self.until(lambda:log.exists() and log.read_bytes()==expected)
+        # Shift-drag the first terminal row while the app has mouse reporting enabled.
+        self.input('\x1b[<4;1;2M\x1b[<36;3;2M\x1b[<4;3;2m')
+        frame=self.get_type('frame')['data']
+        while not frame.startswith('\x1b]52;c;'): frame=self.get_type('frame')['data']
+        self.assertEqual(base64.b64decode(frame[7:-1]),b'TOP')
+        self.rpc(op='split',cwd=self.temp.name,axis='down',command=command)
+        screen=self.frame_with('BOTTOM_11')
+        while not screen[1].startswith('TOP_10x80'): screen=self.frame_with('BOTTOM_11')
+        self.assertTrue(screen[10].startswith('BOTTOM_10'))
+        self.assertTrue(screen[12].startswith('TOP_11x80'))
+        self.assertTrue(screen[22].startswith('BOTTOM_11'))
+        self.rpc(op='action',name='zoom')
+        screen=self.frame_with('TOP_22x80')
+        self.assertTrue(screen[1].startswith('TOP_22x80'))
+        self.assertTrue(screen[22].startswith('BOTTOM_22'))
+        self.write(op='size',cols=10,rows=4)
+        screen=self.frame_with('TOP_2x10',10,4)
+        self.assertTrue(screen[1].startswith('TOP_2x10'))
+        self.assertTrue(screen[2].startswith('BOTTOM_2'))
     def test_keyboard_fragmented_paste_mouse_resize_and_reattach(self):
         self.attach();self.get_type('frame')
         self.input('\x02v');self.until(lambda:len(self.panes())==2)
