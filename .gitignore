@@ -5,3 +5,6 @@ zig-out/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local cmux session bookkeeping written beneath a literal tilde directory.
+/~/.cmuxterm/
