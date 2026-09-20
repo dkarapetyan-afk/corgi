@@ -558,6 +558,16 @@ while True:
         self.input('\x1b[');self.input('B\r')
         self.frame_with('rename t',10,4);self.input('Tiny\r')
         self.tab_frame('Tiny',10,4)
+    def test_wheel_and_right_drag_do_not_open_commands(self):
+        self.attach();self.frame_with('^B commands')
+        for modifiers in (0,4,8,16,28):
+            for button in (64,65,66,67,34):
+                self.input(f'\x1b[<{button | modifiers};40;10M')
+                frame=self.get_type('frame')['data']
+                self.assertNotIn('Commands',frame,(button,modifiers))
+        # A real right-button press still opens the menu.
+        self.input('\x1b[<2;40;10M\x1b[<2;40;10m')
+        self.frame_with('Commands')
     def test_prefix_menu_keyboard_mouse_and_no_paste_leak(self):
         self.attach();self.get_type('frame')
         self.input('\x02');menu=self.frame_with('Commands')
@@ -780,6 +790,11 @@ while True:
         log=pathlib.Path(self.temp.name,'mouse-input')
         expected=b'\x1b[<0;3;1M\x1b[<0;3;1m\x1b[<0;3;22M\x1b[<0;3;22m'
         self.until(lambda:log.exists() and log.read_bytes()==expected)
+        # Forward all four wheel directions without converting sideways to vertical.
+        for button in (64,65,66,67,72,73,74,75):
+            self.input(f'\x1b[<{button};31;2M')
+            expected+=f'\x1b[<{button};3;1M'.encode()
+        self.until(lambda:log.read_bytes()==expected)
         # Shift-drag the first terminal row while the app has mouse reporting enabled.
         self.input('\x1b[<4;29;2M\x1b[<36;31;2M\x1b[<4;31;2m')
         frame=self.get_type('frame')['data']

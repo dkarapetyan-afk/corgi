@@ -1023,10 +1023,14 @@ pub const Server = struct {
                     .padding = .{},
                 });
                 opts.any_button_pressed = !release and button & 3 != 3;
-                const btn: ?vt.input.MouseButton = if (button & 64 != 0) (if (button & 1 == 0) .four else .five) else switch (button & 3) {
+                const btn: ?vt.input.MouseButton = switch (button & 0xc3) {
                     0 => .left,
                     1 => .middle,
                     2 => .right,
+                    64 => .four,
+                    65 => .five,
+                    66 => .six,
+                    67 => .seven,
                     else => null,
                 };
                 try vt.input.encodeMouse(&encoded.writer, .{
@@ -1043,15 +1047,17 @@ pub const Server = struct {
                 s.selection = null;
                 return;
             }
-            if (button == 64) {
-                s.scroll(-3);
+            // Wheel events are a separate button class, including horizontal
+            // scrolling and modifiers. They must never fall through to clicks.
+            if (button & 64 != 0) {
+                switch (button & 0xc3) {
+                    64 => s.scroll(-3),
+                    65 => s.scroll(3),
+                    else => {}, // No horizontal viewport scrolling.
+                }
                 return;
             }
-            if (button == 65) {
-                s.scroll(3);
-                return;
-            }
-            if (button & 3 == 2) {
+            if (button & 0xe3 == 2) {
                 s.ui_mouse_down = true;
                 s.openMenu();
                 return;
