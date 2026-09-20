@@ -104,6 +104,107 @@ class Runtime(unittest.TestCase):
         self.assertEqual(p.returncode,0,(args,p.stderr,p.stdout))
         return p.stdout
     def rpc(self,**v): return json.loads(self.run_cli('rpc',json.dumps(v)))
+    def raw_rpc(self,**v):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3);client.connect(self.path)
+            client.sendall(json.dumps(v).encode()+b'\n')
+            with client.makefile('rb') as stream:return json.loads(stream.readline())
+    def session(self): return self.rpc(op='session.snapshot',protocol=1)
+    def test_runtime_protocol_negotiates_and_rejects_before_mutating(self):
+        hello=self.raw_rpc(op='hello',protocol=1)
+        self.assertEqual(hello['type'],'hello')
+        self.assertIn('pane.surface',hello['capabilities'])
+        self.assertNotIn('handoff',hello['capabilities'])
+        ws=self.workspaces()[0]['id']
+        for protocol in (0,2,-1,'1'):
+            result=self.raw_rpc(op='pane.create',protocol=protocol,workspace=ws)
+            self.assertEqual(result['err'],'UnsupportedProtocol')
+        self.assertEqual(self.raw_rpc(op='session.snapshot')['err'],'ProtocolRequired')
+        self.assertEqual(self.session()['panes'],[])
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3);client.connect(self.path)
+            with client.makefile('rb') as stream:
+                client.sendall(b'{"op":"hello","protocol":1}\n')
+                self.assertEqual(json.loads(stream.readline())['protocol'],1)
+                client.sendall(b'{"op":"session.snapshot"}\n')
+                self.assertEqual(json.loads(stream.readline())['type'],'session')
+    def test_runtime_operations_target_ids_without_changing_selection(self):
+        first=self.rpc(op='new',command='sleep 30')['pane']
+        second=self.rpc(op='new',command='sleep 30')['pane']
+        original=self.session()
+        ws=original['workspaces'][0]['id']
+        before=next(p for p in original['panes'] if p['id']==first)
+        third=self.rpc(op='pane.create',protocol=1,workspace=ws,title='third',command='sleep 30')['pane']
+        split=self.rpc(op='pane.split',protocol=1,pane=first,axis='right',command='sleep 30')['pane']
+        self.rpc(op='tab.rename',protocol=1,tab=before['tab'],title='background')
+        self.rpc(op='split.resize',protocol=1,pane=first,direction='right')
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),second)
+        snap=self.session()
+        self.assertEqual({p['id'] for p in snap['panes']},{first,second,third,split})
+        self.assertEqual(next(p['pid'] for p in snap['panes'] if p['id']==first),before['pid'])
+        split_panes=[p for p in snap['panes'] if p['id'] in (first,split)]
+        self.assertEqual(sum(p['cols'] for p in split_panes)+1,before['cols'])
+        tab=next(t for t in snap['workspaces'][0]['tabs'] if t['id']==before['tab'])
+        self.assertEqual(tab['title'],'background')
+        self.assertEqual(tab['layout']['split'],{'axis':'horizontal','ratio':540,'first':{'pane':first},'second':{'pane':split}})
+        # Versioned data describes shared organization, never a viewer's focus.
+        self.assertNotIn('active',snap['workspaces'][0])
+        self.assertNotIn('focus',tab)
+        self.assertNotIn('focused',snap['panes'][0])
+        self.rpc(op='pane.close',protocol=1,pane=split)
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),second)
+        survivor=next(p for p in self.session()['panes'] if p['id']==first)
+        self.assertEqual((survivor['cols'],survivor['rows']),(before['cols'],before['rows']))
+    def test_runtime_target_failure_does_not_change_layout_or_focus(self):
+        pane=self.rpc(op='new',command='sleep 30')['pane']
+        before=self.session()
+        ws=before['workspaces'][0]['id']
+        invalid=[
+            dict(op='pane.split',pane=pane,axis='bad'),
+            dict(op='pane.split',pane=999,axis='right'),
+            dict(op='pane.create',workspace=ws,cwd=self.temp.name+'/missing'),
+            dict(op='pane.create',workspace=999),
+            dict(op='pane.close',pane=-1),
+            dict(op='pane.input',pane=pane,data=42),
+            dict(op='tab.rename',title='missing target'),
+        ]
+        for request in invalid:
+            self.assertIn('err',self.raw_rpc(protocol=1,**request))
+        after=self.session()
+        self.assertEqual(after['workspaces'],before['workspaces'])
+        self.assertEqual([p['id'] for p in after['panes']],[pane])
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),pane)
+    def test_runtime_surface_and_input_do_not_switch_to_the_target(self):
+        first=self.rpc(op='new',command="printf '\\033[31m界é\\033[0m\\n'; exec /bin/sh")['pane']
+        second=self.rpc(op='new',command='sleep 30')['pane']
+        self.until(lambda:'界é' in self.rpc(op='read',pane=first)['text'])
+        self.rpc(op='pane.input',protocol=1,pane=first,data="printf 'DIRECT_INPUT_OK\\n'\r")
+        self.until(lambda:'DIRECT_INPUT_OK' in self.rpc(op='read',pane=first)['text'])
+        response=self.rpc(op='pane.surface',protocol=1,pane=first)
+        surface=response['surface']
+        self.assertEqual(response['type'],'surface')
+        self.assertEqual(surface['pane'],first)
+        self.assertEqual(len(surface['lines']),surface['rows'])
+        self.assertIn('界é',''.join(surface['lines']))
+        self.assertIn('DIRECT_INPUT_OK',''.join(surface['lines']))
+        self.assertTrue(all(line.endswith('\x1b[0m') for line in surface['lines']))
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),second)
+    def test_runtime_subscription_survives_idle_and_receives_changes(self):
+        self.rpc(op='new',command='sleep 30')
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3);client.connect(self.path)
+            with client.makefile('rb') as stream:
+                client.sendall(b'{"op":"session.subscribe","protocol":1}\n')
+                initial=json.loads(stream.readline())
+                self.assertEqual(initial['type'],'session')
+                time.sleep(5.2) # Ordinary one-shot RPC connections expire after 5s.
+                new=self.rpc(op='new',command='sleep 30')['pane']
+                for _ in range(20):
+                    update=json.loads(stream.readline())
+                    if any(p['id']==new for p in update['panes']):break
+                else:self.fail('subscription did not receive created pane')
+                self.assertGreater(update['revision'],initial['revision'])
+                self.assertEqual(update['server_pid'],initial['server_pid'])
     def until(self,predicate,timeout=4):
         end=time.monotonic()+timeout
         while time.monotonic()<end:

@@ -49,4 +49,7 @@ To load code changes, run `./go.sh --restart` from outside Corgi. This ends the 
 
 Tests: `./scripts/zig build test` and `python3 tests/smoke.py` (after building).
 
+The [development reload milestones](docs/development-reloads.md) describe the
+versioned runtime interface, upcoming viewer-owned UI, and planned live handoff.
+
 See the [reference](docs/reference.md) for all controls and agent APIs.

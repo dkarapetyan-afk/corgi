@@ -58,7 +58,11 @@ Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text
 
 Exiting a shell immediately removes its pane; an empty tab disappears too. Corgi keeps the last **eight closed panes** in memory, including terminal output and scrollback, the tab name, and the last observed working directory. `prefix u` (or `corgi action undo-close`) restores the most recent one in its original workspace (or the current one if removed), into a new tab with a **fresh shell**, not the old process or agent session. With one workspace, closing the last tab automatically detaches and returns to the outer terminal. Run `./go.sh` to reattach with a new shell, then `prefix u` to restore a snapshot. Snapshots and native agent sessions remain in the background runtime until it shuts down.
 
-This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. There is one interactive client per runtime; a second attach is rejected rather than stealing input ownership. Limits: 24 tabs, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
+This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. Multiple viewers can attach and currently share the selected view; the layout fits the smallest attached terminal. Limits: 24 tabs per workspace, 64 panes, 16 native provider processes, 10,000 scrollback lines per terminal.
+
+The additive [runtime protocol](development-reloads.md#protocol-1) exposes shared
+session snapshots, pane surfaces, and operations with explicit targets for the
+upcoming viewer-owned UI. Legacy CLI and viewer operations retain their behavior.
 
 ## Agent integration
 

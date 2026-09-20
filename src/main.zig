@@ -225,6 +225,10 @@ const help =
     \\
 ;
 test {
+    _ = @import("checkpoint_probe.zig");
+    _ = @import("runtime.zig");
+    _ = @import("protocol.zig");
+    _ = @import("surface.zig");
     _ = @import("sidebar.zig");
     _ = @import("name_dialog.zig");
     _ = @import("commands.zig");

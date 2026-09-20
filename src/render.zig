@@ -1,12 +1,11 @@
 const std = @import("std");
 const layout = @import("layout.zig");
-const terminal = @import("terminal.zig");
 const agents = @import("agents.zig");
 const commands = @import("commands.zig");
 const naming = @import("name_dialog.zig");
 const sidebar = @import("sidebar.zig");
 const a = @import("os.zig").allocator;
-pub const Pane = struct { id: layout.Id, terminal: *terminal.Terminal, agent: agents.Agent = .{}, detection: @import("detection.zig").Tracker = .{}, cwd: []const u8 };
+pub const Pane = @import("runtime.zig").Pane;
 pub const Buffer = std.Io.Writer.Allocating;
 pub const Ui = struct {
     message: []const u8,
@@ -129,44 +128,9 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
             const r = place.rect;
             try p.terminal.updateRender();
             const state = &p.terminal.render;
-            var last_style: ?terminal.vt.Style = null;
-            var last_fg: ?terminal.vt.color.RGB = null;
-            var last_bg: ?terminal.vt.color.RGB = null;
-            for (state.row_data.items(.cells), 0..) |cells, row| {
-                if (row >= r.h) break;
+            for (0..@min(state.rows, r.h)) |row| {
                 try w.print("\x1b[{d};{d}H", .{ r.y + row + 1, r.x + 1 });
-                for (cells.items(.raw), 0..) |cell, col| {
-                    if (col >= r.w) break;
-                    if (cell.wide == .spacer_tail or cell.wide == .spacer_head) continue;
-                    const style: terminal.vt.Style = if (cell.style_id == 0) .{} else cells.items(.style)[col];
-                    var fg = style.fg(.{ .default = state.colors.foreground, .palette = &state.colors.palette });
-                    var bg = style.bg(&cell, &state.colors.palette) orelse state.colors.background;
-                    if (ui.dialog != null) {
-                        fg = dim(fg);
-                        bg = dim(bg);
-                    }
-                    const selected = if (state.row_data.items(.selection)[row]) |range| col >= range[0] and col <= range[1] else false;
-                    if (style.flags.inverse != selected) std.mem.swap(terminal.vt.color.RGB, &fg, &bg);
-                    if (last_style == null or !last_style.?.eql(style) or !std.meta.eql(last_fg.?, fg) or !std.meta.eql(last_bg.?, bg)) {
-                        try w.print("\x1b[0;38;2;{d};{d};{d};48;2;{d};{d};{d}m", .{ fg.r, fg.g, fg.b, bg.r, bg.g, bg.b });
-                        if (style.flags.bold) try w.writeAll("\x1b[1m");
-                        if (style.flags.faint) try w.writeAll("\x1b[2m");
-                        if (style.flags.italic) try w.writeAll("\x1b[3m");
-                        if (style.flags.underline != .none) try w.writeAll("\x1b[4m");
-                        if (style.flags.strikethrough) try w.writeAll("\x1b[9m");
-                        last_style = style;
-                        last_fg = fg;
-                        last_bg = bg;
-                    }
-                    const cp = cell.codepoint();
-                    var bytes: [4]u8 = undefined;
-                    const len = try std.unicode.utf8Encode(if (cp == 0 or style.flags.invisible) ' ' else cp, &bytes);
-                    try w.writeAll(bytes[0..len]);
-                    if (cell.content_tag == .codepoint_grapheme and !style.flags.invisible) for (cells.items(.grapheme)[col]) |extra| {
-                        const n = try std.unicode.utf8Encode(extra, &bytes);
-                        try w.writeAll(bytes[0..n]);
-                    };
-                }
+                try @import("surface.zig").writeRow(w, state, row, r.w, ui.dialog != null);
             }
             try w.writeAll("\x1b[0m");
             break;
@@ -223,9 +187,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     try w.writeAll("\x1b[?2026l");
     return out.toOwnedSlice();
 }
-fn dim(color: terminal.vt.color.RGB) terminal.vt.color.RGB {
-    return .{ .r = color.r / 2, .g = color.g / 2, .b = color.b / 2 };
-}
+
 test "tab drop slots follow midpoints and clipped visible tabs" {
     var m: layout.Model = .{};
     _ = try m.newTab("one");
