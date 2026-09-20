@@ -554,9 +554,17 @@ pub const Server = struct {
     fn scroll(s: *Server, delta: isize) void {
         if (s.focused()) |p| {
             p.terminal.vt.scrollViewport(.{ .delta = delta });
-            s.copy_mode = true;
             s.dirty = true;
         }
+    }
+    fn sendInput(s: *Server, term: *Terminal, bytes: []const u8) !void {
+        if (!s.copy_mode and bytes.len > 0 and term.vt.screens.active.pages.viewport != .active) {
+            term.vt.scrollViewport(.bottom);
+            try term.vt.screens.active.select(null);
+            s.selection = null;
+            s.dirty = true;
+        }
+        try term.send(bytes);
     }
     fn clipboard(s: *Server, cl: *Client) !void {
         const p = s.focused() orelse return;
@@ -645,7 +653,7 @@ pub const Server = struct {
                 for (commands.entries) |entry| if (entry.key == byte and entry.needs_pane) return;
             }
             switch (byte) {
-                2 => if (s.focused()) |p| try p.terminal.send(&.{2}),
+                2 => if (s.focused()) |p| try s.sendInput(p.terminal, &.{2}),
                 'w' => s.beginWorkspace(null),
                 'W' => s.beginWorkspace(s.workspaces.current().id),
                 '}' => try s.action("workspace-next", ""),
@@ -736,7 +744,7 @@ pub const Server = struct {
             return;
         }
         if (s.focused()) |p| {
-            try p.terminal.send(&.{byte});
+            try s.sendInput(p.terminal, &.{byte});
             p.agent.acknowledge();
         }
     }
@@ -754,7 +762,7 @@ pub const Server = struct {
                     if (cl.paste_to_name and s.name_dialog != null) {
                         if (rest[0] >= 32 and rest[0] < 127) try s.key(cl, rest[0]);
                     } else if (cl.paste_pane) |id| {
-                        if (s.pane(id)) |p| try p.terminal.send(rest[0..1]);
+                        if (s.pane(id)) |p| try s.sendInput(p.terminal, rest[0..1]);
                     }
                 } else try s.key(cl, rest[0]);
                 used += 1;
@@ -807,11 +815,11 @@ pub const Server = struct {
                     cl.paste_to_name = s.name_dialog != null;
                 }
                 if (cl.paste_pane) |id| {
-                    if (s.pane(id)) |p| if (p.terminal.vt.modes.get(.bracketed_paste)) try p.terminal.send(seq);
+                    if (s.pane(id)) |p| if (p.terminal.vt.modes.get(.bracketed_paste)) try s.sendInput(p.terminal, seq);
                 }
             } else if (cl.paste) {
                 if (cl.paste_pane) |id| {
-                    if (s.pane(id)) |p| try p.terminal.send(seq);
+                    if (s.pane(id)) |p| try s.sendInput(p.terminal, seq);
                 }
             } else if (eq(seq, "\x1b[I")) {
                 cl.watched = true;
@@ -825,7 +833,7 @@ pub const Server = struct {
                 s.dirty = true;
             } else if (s.confirm != .none) {
                 // Dialog keys belong to Corgi, never to the shell beneath it.
-            } else if (s.copy_mode and eq(seq, "\x1b[5~")) s.scroll(-20) else if (s.copy_mode and eq(seq, "\x1b[6~")) s.scroll(20) else if (s.focused()) |p| try p.terminal.send(seq);
+            } else if (s.copy_mode and eq(seq, "\x1b[5~")) s.scroll(-20) else if (s.copy_mode and eq(seq, "\x1b[6~")) s.scroll(20) else if (s.focused()) |p| try s.sendInput(p.terminal, seq);
             used += len;
         }
         std.mem.copyForwards(u8, cl.keybuf.items[0 .. cl.keybuf.items.len - used], cl.keybuf.items[used..]);
@@ -1455,9 +1463,9 @@ pub const Server = struct {
             // A lone ESC and literal paste fragments keep the short timeout.
             for (s.clients.items) |*cl| if (cl.attached and cl.keybuf.items.len > 0 and std.time.milliTimestamp() - cl.escape_at > @as(i64, if (cl.paste or cl.keybuf.items.len == 1) 40 else 1000)) {
                 if (cl.paste) {
-                    if (cl.paste_pane) |id| if (s.pane(id)) |p| try p.terminal.send(cl.keybuf.items);
+                    if (cl.paste_pane) |id| if (s.pane(id)) |p| try s.sendInput(p.terminal, cl.keybuf.items);
                 } else if (cl.keybuf.items.len == 1 and cl.keybuf.items[0] == 27) try s.key(cl, 27) else if (!s.hasMenu() and s.name_dialog == null and s.confirm == .none) {
-                    if (s.focused()) |p| try p.terminal.send(cl.keybuf.items);
+                    if (s.focused()) |p| try s.sendInput(p.terminal, cl.keybuf.items);
                 }
                 cl.keybuf.clearRetainingCapacity();
             };

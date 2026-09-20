@@ -558,6 +558,35 @@ while True:
         self.input('\x1b[');self.input('B\r')
         self.frame_with('rename t',10,4);self.input('Tiny\r')
         self.tab_frame('Tiny',10,4)
+    def test_wheel_scrollback_keeps_keyboard_live(self):
+        fixture=pathlib.Path(self.temp.name,'scroll-input.py')
+        fixture.write_text('''import os, tty
+tty.setraw(0)
+os.write(1, b''.join(f'HISTORY_{i}\\r\\n'.encode() for i in range(100))+b'LIVE_PROMPT')
+while True:
+    with open('scroll-input', 'ab') as log: log.write(os.read(0, 1024))
+''')
+        self.rpc(op='new',cwd=self.temp.name,command=f'exec {shlex.quote(sys.executable)} {shlex.quote(str(fixture))}')
+        self.attach();self.frame_with('LIVE_PROMPT')
+        log=pathlib.Path(self.temp.name,'scroll-input')
+        expected=b''
+        for keys,forwarded in (('jkqy',b'jkqy'),('\x1b[A',b'\x1b[A'),
+                               ('\x1b[107;5u',b'\x0b'),
+                               ('\x1b[200~paste\x1b[201~',b'paste'),('\x1b',b'\x1b')):
+            self.input('\x1b[<64;40;10M')
+            screen=screen_text(self.get_type('frame')['data'])
+            self.assertNotIn('LIVE_PROMPT','\n'.join(screen))
+            self.assertNotIn('SCROLL  j/k','\n'.join(screen))
+            self.input(keys)
+            expected+=forwarded
+            self.until(lambda:log.exists() and log.read_bytes()==expected)
+            self.frame_with('LIVE_PROMPT')
+        # Explicit copy mode remains modal, including when using the wheel.
+        self.input('\x02[');self.frame_with('SCROLL  j/k')
+        self.input('\x1b[<64;40;10Mzqx')
+        expected+=b'x'
+        self.until(lambda:log.read_bytes()==expected)
+        self.frame_with('LIVE_PROMPT')
     def test_wheel_and_right_drag_do_not_open_commands(self):
         self.attach();self.frame_with('^B commands')
         for modifiers in (0,4,8,16,28):
