@@ -30,13 +30,14 @@ pub fn open(view: *View, cwd: []const u8, theme: @import("theme.zig").Theme) !u6
         if (cap == .string and std.mem.eql(u8, cap.string, "viewer.sync")) break true;
     } else false;
     if (!supported) return error.ViewerProtocolUnavailable;
-    const opened = try view.connection.call(.{ .op = "viewer.open", .protocol = 1, .cwd = cwd, .theme = theme });
+    const opened = try view.connection.call(.{ .op = "viewer.open", .protocol = 1, .can_relaunch = true, .cwd = cwd, .theme = theme });
     defer opened.deinit();
     try view.clients.append(a, .{ .fd = -1, .attached = true });
     try view.refresh();
     return @intCast(opened.value.object.get("bell_seq").?.integer);
 }
 pub fn deinit(view: *View) void {
+    if (view.executable.len > 0) a.free(view.executable);
     view.dismissName();
     for (view.clients.items) |*cl| {
         @import("viewer_protocol.zig").clearControls(cl);
@@ -72,6 +73,10 @@ pub fn sync(view: *View, bell_seq: *u64, play_sound: bool) !bool {
     view.clients.items[0].viewer_id = reply.viewer;
     for (reply.controls) |control| {
         if (control.seq <= view.clients.items[0].last_control) continue;
+        if (control.kind == .action and std.mem.eql(u8, control.name, "relaunch")) {
+            view.executable = try a.dupe(u8, control.value);
+            return false;
+        }
         switch (control.kind) {
             .focus => view.focusPane(control.id) catch |err| view.notice(@errorName(err)),
             .workspace => view.switchWorkspace(control.id) catch |err| view.notice(@errorName(err)),
@@ -87,7 +92,7 @@ pub fn sync(view: *View, bell_seq: *u64, play_sound: bool) !bool {
     return !reply.detach and view.clients.items[0].attached;
 }
 
-pub fn run(fd: c_int, path: []const u8, probe: *@import("theme.zig").Probe, input: *std.ArrayList(u8)) !void {
+pub fn run(fd: c_int, path: []const u8, probe: *@import("theme.zig").Probe, input: *std.ArrayList(u8)) !?[]const u8 {
     var connection: Connection = .{ .fd = fd };
     var view: View = .{ .connection = &connection, .socket = path, .executable = "" };
     defer deinit(&view);
@@ -120,7 +125,7 @@ pub fn run(fd: c_int, path: []const u8, probe: *@import("theme.zig").Probe, inpu
         try view.expireInput();
         const now = std.time.milliTimestamp();
         if (view.dirty or now >= next_sync) {
-            if (!try sync(&view, &bell_seq, true)) return;
+            if (!try sync(&view, &bell_seq, true)) return if (view.executable.len > 0) try a.dupe(u8, view.executable) else null;
             next_sync = std.time.milliTimestamp() + 30;
             const frame = try view.frame();
             if (!std.mem.eql(u8, previous, frame)) try os.writeAll(1, frame);
@@ -135,20 +140,21 @@ pub fn run(fd: c_int, path: []const u8, probe: *@import("theme.zig").Probe, inpu
             if (line.len == 0) continue;
             const event = try std.json.parseFromSlice(std.json.Value, a, line, .{});
             defer event.deinit();
-            if (std.mem.eql(u8, agents.str(event.value, "type"), "detach")) return;
+            if (std.mem.eql(u8, agents.str(event.value, "type"), "detach")) return null;
             if (std.mem.eql(u8, agents.str(event.value, "type"), "frame")) try os.writeAll(1, agents.str(event.value, "data"));
         }
         cl.output.clearRetainingCapacity();
         var poll = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
         _ = c.poll(&poll, 1, 16);
-        if (poll.revents & (c.POLLHUP | c.POLLERR) != 0) return;
+        if (poll.revents & (c.POLLHUP | c.POLLERR) != 0) return null;
         if (poll.revents & c.POLLIN != 0) {
             var bytes: [8192]u8 = undefined;
             const n = c.read(0, &bytes, bytes.len);
-            if (n <= 0) return;
+            if (n <= 0) return null;
             try probe.feed(bytes[0..@intCast(n)], input);
         }
     }
+    return null;
 }
 fn dimensions() struct { cols: u16, rows: u16 } {
     var size = std.mem.zeroes(c.struct_winsize);

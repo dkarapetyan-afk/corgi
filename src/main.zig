@@ -4,12 +4,17 @@ const a = os.allocator;
 const c = os.c;
 const agents = @import("agents.zig");
 const integration = @import("integration.zig");
+pub var build_id: [64]u8 = undefined;
 pub fn main() void {
     run() catch |err| {
         if (err == error.ReloadProtocolUnavailable) {
             std.debug.print("corgi: this daemon predates live handoff. Save work and perform one ordinary restart from outside Corgi. The current daemon and panes were left running.\n", .{});
         } else if (err == error.ViewerProtocolUnavailable) {
             std.debug.print("corgi: this daemon needs one update to support local viewers. Save work and restart it from outside Corgi; later UI changes only need a new viewer.\n", .{});
+        } else if (err == error.DetachAndReattachViewerOnce) {
+            std.debug.print("corgi: this viewer predates automatic relaunch. Detach once with Ctrl-B q, then run ./go.sh from the outer terminal. Your panes remain running.\n", .{});
+        } else if (err == error.AmbiguousViewer) {
+            std.debug.print("corgi: multiple viewers are focused on this pane. Detach the intended viewer with Ctrl-B q and run ./go.sh from its terminal.\n", .{});
         } else if (err == error.NestedCorgi) {
             std.debug.print("corgi: cannot attach inside a Corgi pane; detach first or use another terminal.\n", .{});
         } else {
@@ -27,6 +32,31 @@ fn run() !void {
     defer a.free(path);
     const exe = try std.fs.selfExePathAlloc(a);
     defer a.free(exe);
+    if (eq(cmd, "serve") or eq(cmd, "__handoff") or eq(cmd, "dev")) {
+        var file = try std.fs.openFileAbsolute(exe, .{});
+        defer file.close();
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        var buffer: [65536]u8 = undefined;
+        while (true) {
+            const n = try file.read(&buffer);
+            if (n == 0) break;
+            hash.update(buffer[0..n]);
+        }
+        build_id = std.fmt.bytesToHex(hash.finalResult(), .lower);
+    }
+    if (eq(cmd, "dev")) {
+        try ensureServer(path, exe);
+        const fd = try os.connect(path);
+        defer _ = c.close(fd);
+        var conn: @import("rpc.zig").Connection = .{ .fd = fd };
+        const hello = try conn.call(.{ .op = "hello", .protocol = 1 });
+        defer hello.deinit();
+        if (!eq(agents.str(hello.value, "build_id"), &build_id)) try reload(path, exe);
+        if (os.env("CORGI_PANE")) |pane| {
+            return request(path, .{ .op = "action", .name = "relaunch", .value = exe, .pane = try std.fmt.parseInt(u32, pane, 10) }, false);
+        }
+        return @import("client.zig").attach(path);
+    }
     if (eq(cmd, "--help") or eq(cmd, "help")) return os.writeAll(1, help);
     if (eq(cmd, "--version")) return os.writeAll(1, "corgi 0.1.0 (Ghostty VT; Zig 0.15.2)\n");
     if (eq(cmd, "which")) {
@@ -173,6 +203,8 @@ fn request(path: []const u8, value: anytype, plain: bool) !void {
     defer parsed.deinit();
     const err = agents.str(parsed.value, "err");
     if (err.len > 0) {
+        if (eq(err, "DetachAndReattachViewerOnce")) return error.DetachAndReattachViewerOnce;
+        if (eq(err, "AmbiguousViewer")) return error.AmbiguousViewer;
         std.debug.print("{s}\n", .{err});
         return error.ServerRejected;
     }
@@ -233,6 +265,7 @@ const help =
     \\corgi — a small Ghostty-powered agent terminal
     \\
     \\  corgi                         start / attach
+    \\  corgi dev                     reload if changed; attach or relaunch viewer
     \\  corgi start                   start detached runtime
     \\  corgi new [shell-command]     create tab
     \\  corgi split right|down [cmd]  split focused pane

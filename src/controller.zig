@@ -32,6 +32,7 @@ pub const Interest = struct { pane: u32, cols: u16, rows: u16, offset: ?usize = 
 pub const Control = struct { seq: u64 = 0, kind: enum { focus, workspace, action }, id: u32 = 0, name: []const u8 = "", value: []const u8 = "" };
 pub const Client = struct {
     viewer_id: u32 = 0,
+    can_relaunch: bool = false,
     next_control: u64 = 1,
     last_control: u64 = 0,
     view_workspace: u32 = 0,
@@ -1277,7 +1278,7 @@ pub fn Controller(comptime remote: bool) type {
             if (eq(op, "hello")) {
                 try protocol.require(v, null);
                 cl.protocol_version = protocol.version;
-                try cl.queue(.{ .type = "hello", .protocol = protocol.version, .capabilities = protocol.capabilities, .server_pid = c.getpid() });
+                try cl.queue(.{ .type = "hello", .protocol = protocol.version, .capabilities = protocol.capabilities, .server_pid = c.getpid(), .build_id = &@import("main.zig").build_id });
                 return true;
             }
             var known = false;

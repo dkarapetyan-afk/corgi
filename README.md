@@ -45,7 +45,7 @@ claude
 
 Corgi detects agents automatically, including Bun and Node launches, and sets up hooks in existing Codex/Claude settings directories. Existing settings are preserved, with a backup before editing. Codex may ask you to trust the hooks in `/hooks`.
 
-For UI-only changes, detach with **Ctrl-B q** and run `./go.sh` again, or open another viewer. The new viewer renders and handles input locally while the daemon and its processes keep running. For runtime/protocol changes, run `./go.sh --reload` even from inside a Corgi pane. It replaces the daemon while preserving pane processes and connected viewers; failure leaves the old daemon running. An older daemon without handoff support needs one final ordinary `./go.sh --restart` from outside Corgi after saving work.
+Run `./go.sh` to build and launch: it starts the runtime if needed and live-reloads it only when the binary changed. From inside a Corgi pane, it asks the viewer focused on that pane to detach and re-exec the freshly built client. Running panes survive both operations. Existing viewers from before this feature need one manual **Ctrl-B q** and `./go.sh`; if multiple viewers focus the invoking pane, detach and reattach the intended viewer manually. `./go.sh --reload` forces a daemon-only live reload. `./go.sh --restart` is a destructive runtime restart; save work and run it from outside Corgi. Other arguments are passed through to the CLI.
 
 Recovery snapshots are saved every two seconds when state changes, and on clean shutdown. `corgi checkpoint` saves immediately and prints the private file path. Restored agent commands are displayed for you to run; they are never executed automatically. Shell command history remains managed by the shell.
 

@@ -21,6 +21,12 @@ fn signalHandler(_: c_int) callconv(.c) void {
     c._exit(0);
 }
 pub fn attach(path: []const u8) !void {
+    if (try attachOnce(path)) |executable| {
+        defer a.free(executable);
+        try os.exec(&.{ executable, "attach" });
+    }
+}
+fn attachOnce(path: []const u8) !?[]const u8 {
     if (c.isatty(0) == 0 or c.isatty(1) == 0) return error.TerminalRequired;
     const fd = try os.connect(path);
     defer _ = c.close(fd);
@@ -40,5 +46,5 @@ pub fn attach(path: []const u8) !void {
     try probe.query(&input);
     try os.writeAll(1, "\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h" ++ keyboard.enable);
     keyboard_enabled = true;
-    try @import("viewer.zig").run(fd, path, &probe, &input);
+    return try @import("viewer.zig").run(fd, path, &probe, &input);
 }

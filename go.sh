@@ -26,4 +26,7 @@ if [ "${1:-}" = "--restart" ]; then
         done
     fi
 fi
+if [ "$#" -eq 0 ]; then
+    set -- dev
+fi
 exec "$root/zig-out/bin/corgi" "$@"

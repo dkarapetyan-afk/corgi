@@ -31,6 +31,7 @@ pub fn handle(s: anytype, cl: anytype, v: std.json.Value) anyerror!bool {
         const first = for (s.clients.items) |other| {
             if ((other.viewer or other.attached) and !other.dead) break false;
         } else true;
+        cl.can_relaunch = if (v.object.get("can_relaunch")) |flag| flag == .bool and flag.bool else false;
         cl.viewer = true;
         cl.viewer_id = s.next_viewer;
         s.next_viewer += 1;
@@ -234,6 +235,18 @@ pub fn clearControls(cl: anytype) void {
     cl.controls.clearRetainingCapacity();
 }
 fn targetViewer(s: anytype, v: std.json.Value) !?*@import("controller.zig").Client {
+    if (eq(u8, agents.str(v, "name"), "relaunch")) {
+        const pane = try protocol.id(v, "pane");
+        var target: ?*@import("controller.zig").Client = null;
+        for (s.clients.items) |*view| if (view.viewer and !view.dead and view.view_focus == pane) {
+            if (target != null) return error.AmbiguousViewer;
+            target = view;
+        };
+        const view = target orelse return error.NoViewer;
+        if (!view.can_relaunch) return error.DetachAndReattachViewerOnce;
+        if (!std.fs.path.isAbsolute(agents.str(v, "value"))) return error.InvalidExecutable;
+        return view;
+    }
     if (v.object.get("viewer")) |_| {
         const id = try protocol.id(v, "viewer");
         for (s.clients.items) |*cl| if (cl.viewer and !cl.dead and cl.viewer_id == id) return cl;
