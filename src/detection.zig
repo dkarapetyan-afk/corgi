@@ -123,11 +123,8 @@ pub fn screenState(provider: Provider, title: []const u8, screen: []const u8) ?S
     const text = lower[0..@min(tail.len, lower.len)];
     for (text, tail[0..text.len]) |*out, ch| out.* = std.ascii.toLower(ch);
     if ((has(text, "enter to confirm") and has(text, "esc to cancel")) or has(text, "enter to submit answer") or has(text, "enter to submit all")) return .blocked;
-    var title_chars = std.unicode.Utf8View.init(title) catch return null;
-    var it = title_chars.iterator();
-    while (it.nextCodepoint()) |cp| {
-        if ((cp >= 0x2800 and cp <= 0x28ff) or (cp >= 0x25d0 and cp <= 0x25d3)) return .working;
-    }
+    // Title spinners also run during startup, MCP connection and other UI
+    // loading. They do not establish an active turn.
     if (has(text, "esc to interrupt")) return .working;
     if (provider == .claude and std.mem.startsWith(u8, title, "✳ ")) return .idle;
     if (provider == .codex) {
@@ -147,6 +144,7 @@ pub const Tracker = struct {
     missing: u8 = 0,
     candidate: ?State = null,
     confirmations: u8 = 0,
+    ready: bool = false,
 
     pub fn update(t: *Tracker, agent: *agents.Agent, job: ?Job, title: []const u8, screen: []const u8, watched: bool) bool {
         const current = job orelse {
@@ -167,7 +165,9 @@ pub const Tracker = struct {
             t.pid = current.pid;
             t.candidate = null;
             t.confirmations = 0;
+            t.ready = false;
             agent.provider = current.provider;
+            if (agent.last_seq == 0) agent.state = .initializing;
         }
         if (agent.last_seq != 0) return false;
         const next = screenState(current.provider, title, screen) orelse {
@@ -175,12 +175,20 @@ pub const Tracker = struct {
             t.confirmations = 0;
             return false;
         };
+        // Before the first stable prompt, even an interrupt hint can belong
+        // to startup. Real turn hooks bypass this conservative fallback.
+        if (next == .working and !t.ready) {
+            t.candidate = null;
+            t.confirmations = 0;
+            return false;
+        }
         if (t.candidate != next) {
             t.candidate = next;
             t.confirmations = 0;
         }
         t.confirmations +|= 1;
         if (t.confirmations < (if (next == .idle) @as(u8, 3) else 2) or agent.state == next) return false;
+        if (next == .idle) t.ready = true;
         const old = agent.state;
         agent.state = next;
         agent.changed_at = std.time.microTimestamp();
@@ -219,6 +227,14 @@ test "fallback debounces attention, yields to hooks, and clears exited agents" {
     const job: Job = .{ .pid = 123, .provider = .claude };
     try std.testing.expect(!tracker.update(&agent, job, "⠋ Task", "", false));
     try std.testing.expect(!tracker.update(&agent, job, "⠋ Task", "", false));
+    try std.testing.expectEqual(State.initializing, agent.state);
+    for (0..4) |_| _ = tracker.update(&agent, job, "⠋ Starting", "Initializing (esc to interrupt)", false);
+    try std.testing.expectEqual(State.initializing, agent.state);
+    for (0..3) |_| _ = tracker.update(&agent, job, "✳ Ready", "", false);
+    // A spinner alone stays idle even after startup.
+    for (0..3) |_| _ = tracker.update(&agent, job, "⠋ Loading", "", false);
+    try std.testing.expectEqual(State.idle, agent.state);
+    for (0..2) |_| _ = tracker.update(&agent, job, "⠋ Task", "Working (esc to interrupt)", false);
     try std.testing.expectEqual(State.working, agent.state);
     try std.testing.expect(!tracker.update(&agent, job, "✳ Task", "", false));
     try std.testing.expect(!tracker.update(&agent, job, "✳ Task", "", false));

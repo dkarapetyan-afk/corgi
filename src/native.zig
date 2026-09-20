@@ -6,13 +6,24 @@ const a = os.allocator;
 const c = os.c;
 const agents = @import("agents.zig");
 pub const Event = struct { seq: u64, line: []const u8 };
+const Tool = struct {
+    id: []const u8,
+    thread: []const u8,
+    turn: []const u8,
+    fn deinit(t: Tool) void {
+        a.free(t.id);
+        a.free(t.thread);
+        a.free(t.turn);
+    }
+};
 pub const Session = struct {
     id: u32,
     provider: agents.Provider,
+    cwd: []const u8,
     child: std.process.Child,
     ready: bool = false,
     exited: bool = false,
-    state: agents.State = .unknown,
+    state: agents.State = .initializing,
     attention: agents.Attention = .none,
     input: std.ArrayList(u8) = .empty,
     output: std.ArrayList(u8) = .empty,
@@ -20,9 +31,12 @@ pub const Session = struct {
     events: std.ArrayList(Event) = .empty,
     approvals: std.ArrayList([]const u8) = .empty,
     active_threads: std.StringHashMapUnmanaged(void) = .empty,
+    active_tools: std.ArrayList(Tool) = .empty,
     journal_bytes: usize = 0,
     next_seq: u64 = 1,
     pub fn start(id: u32, provider: agents.Provider, cwd: []const u8) !Session {
+        const directory = try std.fs.cwd().realpathAlloc(a, cwd);
+        errdefer a.free(directory);
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(a);
         const bin = try @import("discovery.zig").resolve(provider, cwd);
@@ -48,11 +62,12 @@ pub const Session = struct {
         os.nonblock(child.stdin.?.handle);
         os.cloexec(child.stdout.?.handle);
         os.cloexec(child.stdin.?.handle);
-        var result: Session = .{ .id = id, .provider = provider, .child = child, .ready = provider == .claude };
+        var result: Session = .{ .id = id, .provider = provider, .cwd = directory, .child = child, .ready = provider == .claude, .state = if (provider == .claude) .idle else .initializing };
         if (provider == .codex) try result.queue(.{ .id = "__wrangler_init", .method = "initialize", .params = .{ .clientInfo = .{ .name = "wrangler", .version = "0.1.0" } } });
         return result;
     }
     pub fn destroy(s: *Session) void {
+        a.free(s.cwd);
         if (!s.exited) {
             _ = c.kill(-s.child.id, c.SIGKILL);
             var status: c_int = 0;
@@ -65,11 +80,103 @@ pub const Session = struct {
         var threads = s.active_threads.keyIterator();
         while (threads.next()) |key| a.free(key.*);
         s.active_threads.deinit(a);
+        s.clearTools(null, null);
+        s.active_tools.deinit(a);
         s.events.deinit(a);
         s.approvals.deinit(a);
         s.input.deinit(a);
         s.output.deinit(a);
         s.deferred.deinit(a);
+    }
+    pub fn markExited(s: *Session) void {
+        s.exited = true;
+        s.state = .done;
+        s.clearTools(null, null);
+    }
+    pub fn toolActive(s: *const Session) bool {
+        if (s.exited) return false;
+        if (s.active_tools.items.len > 0) return true;
+        for (s.approvals.items) |line| {
+            const parsed = std.json.parseFromSlice(std.json.Value, a, line, .{}) catch continue;
+            defer parsed.deinit();
+            const v = parsed.value;
+            if (s.provider == .codex) {
+                const method = agents.str(v, "method");
+                if (eq(method, "item/commandExecution/requestApproval") or eq(method, "item/fileChange/requestApproval") or eq(method, "item/tool/call") or eq(method, "item/tool/requestUserInput")) return true;
+            } else if (v == .object) {
+                const request = v.object.get("request") orelse continue;
+                if (eq(agents.str(request, "subtype"), "can_use_tool")) return true;
+            }
+        }
+        return false;
+    }
+    fn startTool(s: *Session, id: []const u8, thread: []const u8, turn: []const u8) !void {
+        if (id.len == 0 or id.len > 256 or thread.len > 256 or turn.len > 256) return;
+        for (s.active_tools.items) |tool| if (eq(tool.id, id) and eq(tool.thread, thread)) return;
+        if (s.active_tools.items.len >= 128) return error.TooManyNativeTools;
+        const owned_id = try a.dupe(u8, id);
+        errdefer a.free(owned_id);
+        const owned_thread = try a.dupe(u8, thread);
+        errdefer a.free(owned_thread);
+        const owned_turn = try a.dupe(u8, turn);
+        errdefer a.free(owned_turn);
+        try s.active_tools.append(a, .{ .id = owned_id, .thread = owned_thread, .turn = owned_turn });
+        s.state = .working;
+        s.attention = .none;
+    }
+    fn finishTool(s: *Session, id: []const u8, thread: []const u8) void {
+        for (s.active_tools.items, 0..) |tool, i| {
+            if (eq(tool.id, id) and eq(tool.thread, thread)) {
+                s.active_tools.swapRemove(i).deinit();
+                return;
+            }
+        }
+    }
+    fn clearTools(s: *Session, thread: ?[]const u8, turn: ?[]const u8) void {
+        var i: usize = 0;
+        while (i < s.active_tools.items.len) {
+            const tool = s.active_tools.items[i];
+            if ((thread == null or eq(tool.thread, thread.?)) and (turn == null or eq(tool.turn, turn.?))) {
+                s.active_tools.swapRemove(i).deinit();
+            } else i += 1;
+        }
+    }
+    fn observeTools(s: *Session, v: std.json.Value, params: std.json.Value, method: []const u8, kind: []const u8) !void {
+        if (s.provider == .codex and params == .object) {
+            const thread = agents.str(params, "threadId");
+            if (eq(method, "item/started") or eq(method, "item/completed")) {
+                const item = params.object.get("item") orelse return;
+                const id = agents.str(item, "id");
+                if (eq(method, "item/completed")) {
+                    s.finishTool(id, thread);
+                } else {
+                    const item_kind = agents.str(item, "type");
+                    for ([_][]const u8{ "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch", "imageView", "imageGeneration" }) |tool_kind| {
+                        if (eq(item_kind, tool_kind)) {
+                            try s.startTool(id, thread, agents.str(params, "turnId"));
+                            break;
+                        }
+                    }
+                }
+            } else if (eq(method, "turn/completed")) {
+                const turn = agents.str(params.object.get("turn") orelse .null, "id");
+                s.clearTools(thread, if (turn.len > 0) turn else null);
+            }
+        } else if (s.provider == .claude and v == .object) {
+            if (eq(kind, "result")) {
+                s.clearTools(null, null);
+                return;
+            }
+            if (!eq(kind, "assistant") and !eq(kind, "user")) return;
+            const message = v.object.get("message") orelse return;
+            if (message != .object) return;
+            const content = message.object.get("content") orelse return;
+            if (content != .array) return;
+            for (content.array.items) |block| {
+                const block_kind = agents.str(block, "type");
+                if (eq(block_kind, "tool_use")) try s.startTool(agents.str(block, "id"), "", "") else if (eq(block_kind, "tool_result")) s.finishTool(agents.str(block, "tool_use_id"), "");
+            }
+        }
     }
     fn queue(s: *Session, v: anytype) !void {
         const line = try std.json.Stringify.valueAlloc(a, v, .{});
@@ -143,12 +250,14 @@ pub const Session = struct {
                     try s.output.appendSlice(a, s.deferred.items);
                     s.deferred.clearRetainingCapacity();
                     s.ready = true;
+                    s.state = .idle;
                 }
                 const old = s.state;
                 const method = agents.str(v, "method");
                 const kind = agents.str(v, "type");
                 const params = if (v == .object) v.object.get("params") orelse .null else .null;
                 const thread_id = agents.str(params, "threadId");
+                try s.observeTools(v, params, method, kind);
                 if (requestId(s.provider, v) != null) {
                     if (s.approvals.items.len >= 64) return error.TooManyNativeRequests;
                     try s.approvals.append(a, try a.dupe(u8, line));

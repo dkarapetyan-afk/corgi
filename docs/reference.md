@@ -60,7 +60,9 @@ This is an initial implementation of Herdr's core tab/pane operations. Copy mode
 
 ## Agent integration
 
-The left sidebar lists agents across all tabs, grouped by tab order, with their provider, status, tab name, and current tool or activity. Click an entry to focus its pane and acknowledge its attention marker. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
+The left sidebar lists agents across all tabs in tab order. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted.
+
+The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Wrangler adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
 
 Terminal agents are discovered from each pane's foreground process group, including native binaries and CLI scripts launched with Bun, Node, or Python. Ordinary shells are omitted, and an agent disappears when its process returns to the shell. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden.
 
@@ -78,7 +80,7 @@ At runtime startup, Wrangler merges its hooks into `~/.codex/hooks.json` and `~/
 
 The installed commands use the pane's `WRANGLER_BIN`, `WRANGLER_SOCKET`, and `WRANGLER_PANE`; they do nothing outside Wrangler. No aliases or executable shims are needed. Provider flags, login, model selection, inference, resume, and native remoting remain available. Permission policies and project configuration are unchanged.
 
-Codex requires trusting new hook definitions in its `/hooks` UI. Wrangler does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong terminal title and visible prompt signals supply debounced working/waiting/idle status. Unrecognized displays remain unknown. Hook events take precedence once received; output activity alone never means a turn finished.
+Codex requires trusting new hook definitions in its `/hooks` UI. Wrangler does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong visible prompt signals supply debounced working/waiting/idle status. New processes remain in initialization until their first recognized prompt or hook: title spinners alone never mean working, and fallback turn detection waits for the first stable idle prompt. Hook events take precedence once received; output activity alone never means a turn finished.
 
 `wrangler hooks claude|codex` prints hook configuration for inspection or your own integration. `wrangler agent claude|codex ...` remains an optional executable-discovery launcher; it no longer injects duplicate hooks.
 

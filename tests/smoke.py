@@ -17,6 +17,7 @@ import tempfile
 import termios
 import time
 import unittest
+import unicodedata
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EXE = str(ROOT / 'zig-out/bin/wrangler')
@@ -35,6 +36,14 @@ for line in sys.stdin:
         emit({'type':'control_request','request_id':'permission-1','request':{'subtype':'can_use_tool','tool_name':'Bash'}} if claude else {'id':900,'method':'item/commandExecution/requestApproval','params':{'threadId':'t'}})
     elif v.get('method') == 'test/flood':
         for i in range(150): emit({'type':'fixture','n':i})
+    elif v.get('method') == 'test/tool-start':
+        ident=v['params']['id']
+        emit({'type':'assistant','message':{'content':[{'type':'tool_use','id':ident,'name':'Bash','input':{}}]}} if claude else {'method':'item/started','params':{'threadId':'t','turnId':'turn','item':{'id':ident,'type':'commandExecution'}}})
+    elif v.get('method') == 'test/tool-stop':
+        ident=v['params']['id']
+        emit({'type':'user','message':{'content':[{'type':'tool_result','tool_use_id':ident,'content':'done'}]}} if claude else {'method':'item/completed','params':{'threadId':'t','turnId':'turn','item':{'id':ident,'type':'commandExecution'}}})
+    elif v.get('method') == 'test/turn-end':
+        emit({'type':'result','result':'done'} if claude else {'method':'turn/completed','params':{'threadId':'t','turn':{'id':'turn'}}})
     elif v.get('id') == 900 or v.get('type') == 'control_response':
         emit({'type':'result','result':'complete'} if claude else {'method':'turn/completed','params':{'threadId':'t'}})
     elif v.get('method') == 'test/exit': sys.exit(0)
@@ -59,7 +68,7 @@ def screen_text(data, cols=80, rows=24):
         elif data[i]=='\n':y+=1
         elif data[i]>=' ':
             if 0<=x<cols and 0<=y<rows:grid[y][x]=data[i]
-            x+=1
+            x+=0 if unicodedata.combining(data[i]) else 2 if unicodedata.east_asian_width(data[i]) in ('W','F') else 1
         i+=1
     return [''.join(row) for row in grid]
 
@@ -127,6 +136,16 @@ class Runtime(unittest.TestCase):
         self.fail('missing visible text '+text)
     def tab_frame(self,text,cols=80,rows=24):
         return self.frame_with(text,cols,rows,row=0)
+    def agent_frame(self,provider,icon,directory=None,activity='',color=None):
+        for _ in range(100):
+            data=self.get_type('frame')['data'];screen=screen_text(data)
+            if color and f'\x1b[38;2;{color}m{icon}' not in data:continue
+            for y in range(2,21,2):
+                if not screen[y][:27].startswith(' '+icon+' '):continue
+                if directory is not None and directory not in screen[y][4:27]:continue
+                if screen[y+1][1:4].strip()!=activity:continue
+                if screen[y+1][4:27].strip()==provider:return screen
+        self.fail('missing two-line agent entry '+provider)
     def tabs_are(self,labels):
         for _ in range(100):
             screen=screen_text(self.get_type('frame')['data'])
@@ -261,18 +280,18 @@ class Runtime(unittest.TestCase):
         self.input('\r');screen=self.tabs_are('1 2 3')
         third=next(p['id'] for p in self.panes() if p['focused'])
         self.rpc(op='hook',pane=third,provider='codex',seq=1,event={'hook_event_name':'SessionStart','session_id':'numbering'})
-        self.frame_with('Tab 3')
-        self.rpc(op='action',name='move-tab',value='left');screen=self.frame_with('Tab 2')
+        self.agent_frame('codex','○')
+        self.rpc(op='action',name='move-tab',value='left');screen=self.tabs_are('1 2 3')
         self.assertEqual(' '.join(screen[0][28:].split()),'1 2 3 +')
-        self.rpc(op='close',pane=first);screen=self.frame_with('Tab 1')
+        self.rpc(op='close',pane=first);screen=self.tabs_are('1 2')
         self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +');self.assertNotIn(' 3 ',screen[0])
         self.input('\x02T');self.frame_with('rename tab')
         self.rpc(op='action',name='move-tab',value='right');self.frame_with('│2')
-        self.input('\r');screen=self.frame_with('Tab 2')
+        self.input('\r');screen=self.tabs_are('1 2')
         self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +')  # Saving the preview keeps the name unset.
         self.input('\x02TPinned\r');self.tab_frame('Pinned')
         self.input('\x02T\x03');self.frame_with('│2')
-        self.input('\r');screen=self.frame_with('Tab 2')
+        self.input('\r');screen=self.tabs_are('1 2')
         self.assertEqual(' '.join(screen[0][28:].split()),'1 2 +')
         self.input('\x02T2\r');self.tabs_are('1 2')
         self.rpc(op='action',name='move-tab',value='left');self.tabs_are('2 2')
@@ -470,22 +489,24 @@ while True:
         def hook(event,**extra):
             p=subprocess.run([EXE,'hook','codex'],env={**self.env,'WRANGLER_PANE':str(one)},input=json.dumps({'hook_event_name':event,'session_id':'sidebar',**extra}),text=True,capture_output=True,timeout=3)
             self.assertEqual((p.returncode,p.stdout,p.stderr),(0,'',''))
-        hook('SessionStart');screen=self.frame_with('codex  idle')
+        hook('SessionStart');screen=self.agent_frame('codex','○',color='166;227;161')
         self.assertNotIn('SessionStart','\n'.join(screen))
-        hook('UserPromptSubmit');self.frame_with('Thinking...')
-        hook('PreToolUse',tool_name='Bash');screen=self.frame_with('Bash')
-        self.assertIn('codex  working','\n'.join(row[:27] for row in screen))
-        hook('PermissionRequest');screen=self.frame_with('codex  needs you')
+        self.assertNotIn('Alpha','\n'.join(row[:27] for row in screen))
+        hook('UserPromptSubmit');self.agent_frame('codex','●',activity='🧠',color='249;226;175')
+        hook('PreToolUse',tool_name='Bash');screen=self.agent_frame('codex','●',activity='🔧')
+        self.assertNotIn('Bash','\n'.join(row[:27] for row in screen))
+        hook('PermissionRequest');screen=self.agent_frame('codex','●',activity='🔧',color='243;139;168')
         self.assertEqual(self.panes()[0]['attention'],'needs_input')
-        self.click_text([row[:27] for row in screen],'Alpha')
+        self.click_text([row[:27] for row in screen],'codex')
         self.until(lambda:self.panes()[0]['focused'] and self.panes()[0]['attention']=='none')
         self.assertEqual(self.panes()[0]['state'],'blocked')
         self.rpc(op='action',name='rename',value='Renamed')
         screen=self.tab_frame('Renamed')
-        self.assertIn('Renamed','\n'.join(row[:27] for row in screen))
-        hook('UserPromptSubmit');self.frame_with('codex  working')
-        hook('Stop');self.frame_with('codex  idle')
-        hook('SessionEnd');self.frame_with('codex  ended')
+        self.assertNotIn('Renamed','\n'.join(row[:27] for row in screen))
+        hook('PostToolUse',tool_name='Bash');self.agent_frame('codex','●',activity='🧠')
+        hook('UserPromptSubmit');self.agent_frame('codex','●',activity='🧠',color='249;226;175')
+        hook('Stop');self.agent_frame('codex','○',color='166;227;161')
+        hook('SessionEnd');self.agent_frame('codex','○',color='108;112;134')
         self.rpc(op='close',pane=one)
         screen=self.frame_with('No agents yet')
         self.assertNotIn('Renamed','\n'.join(row[:27] for row in screen))
@@ -494,40 +515,74 @@ while True:
         self.click(2,1);self.frame_with('No agents yet')
     def test_sidebar_scrolling_and_clicks_keep_stable_pane_targets(self):
         panes=[]
-        for index in range(10):
-            pane=self.rpc(op='new',cwd=self.temp.name,title=f'Agent-{index}',command='sleep 30')['pane'];panes.append(pane)
+        for index in range(12):
+            directory=pathlib.Path(self.temp.name,f'Agent-{index}');directory.mkdir()
+            pane=self.rpc(op='new',cwd=str(directory),title=f'Tab-{index}',command='sleep 30')['pane'];panes.append(pane)
             self.rpc(op='hook',pane=pane,provider='claude',seq=1,event={'hook_event_name':'SessionStart','session_id':str(index)})
-        self.attach();screen=self.frame_with('< 1-6/10 >')
-        self.assertNotIn('Agent-9','\n'.join(row[:27] for row in screen))
-        self.input('\x1b[<65;5;12M');screen=self.frame_with('< 2-7/10 >')
-        self.click(20,23);screen=self.frame_with('< 5-10/10 >')
+        self.attach();screen=self.frame_with('< 1-10/12 >')
+        self.assertNotIn('Agent-11','\n'.join(row[:27] for row in screen))
+        self.input('\x1b[<65;5;12M');screen=self.frame_with('< 2-11/12 >')
+        self.click(20,23);screen=self.frame_with('< 3-12/12 >')
         self.click_text([row[:27] for row in screen],'Agent-8')
         self.until(lambda:next(p['id'] for p in self.panes() if p['focused'])==panes[8])
         self.rpc(op='action',name='move-tab',value='left')
-        self.rpc(op='close',pane=panes[9]);screen=self.frame_with('< 4-9/9 >')
+        self.rpc(op='close',pane=panes[11]);screen=self.frame_with('< 2-11/11 >')
         self.click_text([row[:27] for row in screen],'Agent-8')
         self.until(lambda:next(p['id'] for p in self.panes() if p['focused'])==panes[8])
         self.write(op='size',cols=30,rows=8)
         screen=self.frame_with(' + ',30,8)
         self.assertNotIn('agents',screen[0])
-        self.write(op='size',cols=80,rows=24);self.frame_with('< 4-9/9 >')
+        self.write(op='size',cols=80,rows=24);self.frame_with('< 2-11/11 >')
+    def test_sidebar_uses_live_directory_then_hook_directory_without_tab_labels(self):
+        project=pathlib.Path(self.temp.name,'frontend');project.mkdir()
+        pane=self.rpc(op='new',cwd=self.temp.name,title='Unrelated tab name')['pane']
+        self.rpc(op='hook',pane=pane,provider='claude',seq=1,event={'hook_event_name':'SessionStart','session_id':'directory'})
+        self.attach();self.agent_frame('claude','○')
+        self.rpc(op='send',pane=pane,text='cd '+shlex.quote(str(project)),enter=True)
+        screen=self.agent_frame('claude','○',directory='frontend')
+        self.assertNotIn('Unrelated','\n'.join(row[:27] for row in screen))
+        self.rpc(op='hook',pane=pane,provider='claude',seq=2,event={'hook_event_name':'PreToolUse','session_id':'directory','cwd':'/a/very/long/working/directory/backend','tool_name':'Read'})
+        screen=self.agent_frame('claude','●',directory='backend',activity='🔧')
+        self.assertTrue(screen[2].startswith(' ●  …'))
+        self.rpc(op='hook',pane=pane,provider='claude',seq=3,event={'hook_event_name':'PostToolUse','session_id':'directory','tool_name':'Read'})
+        self.agent_frame('claude','●',directory='backend',activity='🧠')
     def test_sidebar_native_updates_and_selection_keep_approvals_pending(self):
         self.rpc(op='new',cwd=self.temp.name,command='sleep 30')
         self.attach();self.get_type('frame')
         ident=self.rpc(op='native.start',provider='codex',cwd=self.temp.name)['session']
-        self.frame_with('codex  ready')
+        self.agent_frame('codex','○',color='166;227;161')
         self.rpc(op='native.send',session=ident,message={'id':1,'method':'test/approval'})
-        screen=self.frame_with('codex  needs you')
-        self.click_text([row[:27] for row in screen],f'App Server {ident}')
+        screen=self.agent_frame('codex','●',activity='🔧',color='243;139;168')
+        self.click_text([row[:27] for row in screen],'codex')
         self.frame_with(f'wrangler native events {ident}')
         session=self.rpc(op='native.list')['sessions'][0]
         self.assertEqual((session['pending_requests'],session['attention']),(1,'needs_input'))
         self.rpc(op='native.send',session=ident,message={'id':900,'result':{'decision':'decline'}})
-        self.frame_with('codex  finished')
+        self.agent_frame('codex','●',color='148;226;213')
         self.rpc(op='native.send',session=ident,message={'id':2,'method':'test/exit'})
-        self.frame_with('codex  ended')
+        self.agent_frame('codex','○',color='108;112;134')
         self.until(lambda:self.rpc(op='native.list')['sessions'][0]['exited'])
         self.rpc(op='native.stop',session=ident);self.frame_with('No agents yet')
+    def test_native_tool_activity_tracks_overlapping_calls_and_clears_on_turn_end(self):
+        self.attach();self.get_type('frame')
+        for provider in ('codex','claude'):
+            ident=self.rpc(op='native.start',provider=provider,cwd=self.temp.name)['session']
+            self.agent_frame(provider,'○')
+            def send(method,tool='a'):
+                self.rpc(op='native.send',session=ident,message={'method':'test/'+method,'params':{'id':tool}})
+            def count(n):
+                self.until(lambda:next(s for s in self.rpc(op='native.list')['sessions'] if s['id']==ident)['active_tools']==n)
+            send('tool-start');count(1);self.agent_frame(provider,'●',activity='🔧')
+            send('tool-start','b');count(2)
+            send('tool-stop');count(1)
+            self.write(op='size',cols=80,rows=24);self.agent_frame(provider,'●',activity='🔧')
+            send('tool-stop','b');count(0);self.agent_frame(provider,'●',activity='🧠')
+            send('tool-start','c');count(1);self.agent_frame(provider,'●',activity='🔧')
+            send('turn-end');count(0);self.agent_frame(provider,'●',color='148;226;213')
+            send('tool-start','d');count(1)
+            send('exit');count(0)
+            self.agent_frame(provider,'○',color='108;112;134')
+            self.rpc(op='native.stop',session=ident);self.frame_with('No agents yet')
     def test_attention_is_deduplicated_and_explicitly_acknowledged(self):
         self.attach();self.get_type('frame');self.input('\x02v');self.until(lambda:len(self.panes())==2)
         def hook(event,seq,session='test',**extra):
@@ -589,7 +644,7 @@ while True:
         self.restart_runtime();self.rpc(op='new',cwd=self.temp.name)
         self.assertEqual(bad.read_text(),'{broken');self.assertEqual(target.read_text(),'{}')
         self.assertTrue((claude/'settings.json').is_symlink())
-    def ordinary_agent(self,provider,hooks=False):
+    def ordinary_agent(self,provider,hooks=False,initializing=False):
         program=pathlib.Path(self.temp.name,provider)
         program.write_text('#!'+sys.executable+'\n'+r'''
 import os,sys,json,pathlib,subprocess
@@ -600,6 +655,10 @@ def event(name):
     for group in json.loads(path.read_text()).get('hooks',{}).get(name,[]):
         for hook in group['hooks']:
             subprocess.run(['/bin/sh','-c',hook['command']],input=json.dumps({'hook_event_name':name,'session_id':'ordinary-'+provider}),text=True)
+if '--loading' in sys.argv:
+    print('\x1b[2J\x1b[H\x1b]2;⠋ Starting\x07Initializing (esc to interrupt)',flush=True)
+    for line in sys.stdin:
+        if line.strip()=='ready':break
 event('SessionStart')
 print('\x1b[2J\x1b[H\x1b]2;✳ Ready\x07› ',flush=True)
 for line in sys.stdin:
@@ -617,7 +676,7 @@ event('SessionEnd')
             pathlib.Path(self.env['CODEX_HOME' if provider=='codex' else 'CLAUDE_CONFIG_DIR']).mkdir(exist_ok=True)
             self.restart_runtime()
         pane=self.rpc(op='new',cwd=self.temp.name)['pane']
-        self.rpc(op='send',pane=pane,text='PATH='+shlex.quote(self.temp.name)+':$PATH '+provider,enter=True)
+        self.rpc(op='send',pane=pane,text='PATH='+shlex.quote(self.temp.name)+':$PATH '+provider+(' --loading' if initializing else ''),enter=True)
         self.until(lambda:any(p['id']==pane and p['provider']==provider for p in self.panes()))
         return pane
     def test_plain_commands_gain_hooks_without_wrappers(self):
@@ -639,6 +698,18 @@ event('SessionEnd')
             self.until(lambda:self.panes()[0]['state']==state)
         self.rpc(op='send',pane=pane,text='exit',enter=True)
         self.until(lambda:self.panes()[0]['provider']=='other')
+    def test_agent_startup_has_its_own_indicator_and_never_thinks(self):
+        pane=self.ordinary_agent('codex',initializing=True)
+        self.attach()
+        screen=self.agent_frame('codex','●',color='160;146;184')
+        self.assertNotIn('🧠','\n'.join(row[:27] for row in screen))
+        # Longer than the fallback's debounce: loading must remain distinct.
+        time.sleep(.8)
+        self.assertEqual(self.panes()[0]['state'],'initializing')
+        self.rpc(op='send',pane=pane,text='ready',enter=True)
+        self.agent_frame('codex','○',color='166;227;161')
+        self.rpc(op='send',pane=pane,text='work',enter=True)
+        self.agent_frame('codex','●',activity='🧠',color='249;226;175')
     @unittest.skipUnless(shutil.which('bun'),'Bun is not installed')
     def test_bun_agent_detection(self):
         script=pathlib.Path(self.temp.name,'node_modules/@anthropic-ai/claude-code/cli.js')

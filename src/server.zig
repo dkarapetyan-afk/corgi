@@ -98,21 +98,15 @@ pub const Server = struct {
     }
     fn agentEntries(s: *Server, entries: *[sidebar.max_entries]sidebar.Entry) []sidebar.Entry {
         var count: usize = 0;
-        for (s.model.tabs[0..s.model.count], 0..) |*tab, tab_index| {
+        for (s.model.tabs[0..s.model.count], 0..) |_, tab_index| {
             for (s.panes.items) |*p| {
                 if (p.agent.provider == .other or s.model.tabForPane(p.id) != tab_index) continue;
-                entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model.tab().focus == p.id, .activity = p.agent.label() };
-                if (tab.name_len > 0) {
-                    entries[count].setTitle(tab.title());
-                } else {
-                    entries[count].title_len = (std.fmt.bufPrint(&entries[count].title, "Tab {d}", .{tab_index + 1}) catch unreachable).len;
-                }
+                entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model.tab().focus == p.id, .cwd = if (p.agent.cwd_len > 0) p.agent.directory() else p.cwd, .tool_active = p.agent.tool_active };
                 count += 1;
             }
         }
         for (s.sessions.items) |*session| {
-            entries[count] = .{ .target = .{ .native = session.id }, .provider = session.provider, .state = session.state, .attention = session.attention, .ready = session.ready, .focused = s.native_notice == session.id };
-            entries[count].title_len = (std.fmt.bufPrint(&entries[count].title, "{s} {d}", .{ if (session.provider == .codex) "App Server" else "Stream session", session.id }) catch unreachable).len;
+            entries[count] = .{ .target = .{ .native = session.id }, .provider = session.provider, .state = session.state, .attention = session.attention, .focused = s.native_notice == session.id, .cwd = session.cwd, .tool_active = session.toolActive() };
             count += 1;
         }
         return entries[0..count];
@@ -334,7 +328,7 @@ pub const Server = struct {
     }
     fn refreshCwd(p: *render.Pane) void {
         if (p.terminal.exited) return;
-        if (os.processCwd(p.terminal.pid)) |cwd| {
+        if ((if (p.detection.pid > 0) os.processCwd(p.detection.pid) else null) orelse os.processCwd(p.terminal.pid)) |cwd| {
             a.free(p.cwd);
             p.cwd = cwd;
         }
@@ -875,10 +869,10 @@ pub const Server = struct {
             s.dirty = true;
             try cl.queue(.{ .ok = true, .session = session.id, .provider = provider });
         } else if (eq(op, "native.list")) {
-            const Info = struct { id: u32, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, next_seq: u64 };
+            const Info = struct { id: u32, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, active_tools: usize, next_seq: u64 };
             var info: std.ArrayList(Info) = .empty;
             defer info.deinit(a);
-            for (s.sessions.items) |session| try info.append(a, .{ .id = session.id, .provider = session.provider, .ready = session.ready, .exited = session.exited, .state = session.state, .attention = session.attention, .pending_requests = session.approvals.items.len, .next_seq = session.next_seq });
+            for (s.sessions.items) |session| try info.append(a, .{ .id = session.id, .provider = session.provider, .ready = session.ready, .exited = session.exited, .state = session.state, .attention = session.attention, .pending_requests = session.approvals.items.len, .active_tools = session.active_tools.items.len, .next_seq = session.next_seq });
             try cl.queue(.{ .ok = true, .sessions = info.items });
         } else if (std.mem.startsWith(u8, op, "native.")) {
             const id = std.math.cast(u32, number(v, "session", 0)) orelse return error.NoNativeSession;
@@ -1005,6 +999,10 @@ pub const Server = struct {
         defer if (text) |bytes| a.free(bytes);
         const watched = s.watched and s.model.count > 0 and s.model.tab().focus == p.id and s.hasClient();
         const ding = p.detection.update(&p.agent, job, p.terminal.vt.getTitle() orelse "", text orelse "", watched);
+        // A quiet agent can change directory without writing to the PTY.
+        const previous_cwd = std.hash.Wyhash.hash(0, p.cwd);
+        refreshCwd(p);
+        if (previous_cwd != std.hash.Wyhash.hash(0, p.cwd)) s.dirty = true;
         if (!std.meta.eql(before, p.agent)) s.dirty = true;
         if (ding) {
             s.bell = true;
@@ -1072,12 +1070,13 @@ pub const Server = struct {
                 const old_state = session.state;
                 const old_ready = session.ready;
                 const old_attention = session.attention;
+                const old_tool = session.toolActive();
                 const ding = session.poll() catch |err| blk: {
                     s.notice(@errorName(err));
                     _ = c.kill(-session.child.id, c.SIGTERM);
                     break :blk false;
                 };
-                if (session.state != old_state or session.ready != old_ready or session.attention != old_attention) s.dirty = true;
+                if (session.state != old_state or session.ready != old_ready or session.attention != old_attention or session.toolActive() != old_tool) s.dirty = true;
                 if (ding) {
                     s.bell = true;
                     if (s.bell_kind != .needs_input) s.bell_kind = session.attention;
@@ -1097,8 +1096,7 @@ pub const Server = struct {
                     s.dirty = true;
                 };
                 for (s.sessions.items) |*session| if (session.child.id == pid) {
-                    session.exited = true;
-                    session.state = .done;
+                    session.markExited();
                     s.dirty = true;
                 };
             }

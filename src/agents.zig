@@ -1,5 +1,5 @@
 const std = @import("std");
-pub const State = enum { unknown, idle, working, blocked, done };
+pub const State = enum { unknown, initializing, idle, working, blocked, done };
 pub const Attention = enum { none, finished, needs_input };
 pub const Provider = enum { claude, codex, other };
 pub const Agent = struct {
@@ -10,6 +10,11 @@ pub const Agent = struct {
     session_len: usize = 0,
     activity: [160]u8 = .{0} ** 160,
     activity_len: usize = 0,
+    tool: [160]u8 = .{0} ** 160,
+    tool_len: usize = 0,
+    tool_active: bool = false,
+    cwd: [std.fs.max_path_bytes]u8 = .{0} ** std.fs.max_path_bytes,
+    cwd_len: usize = 0,
     last_seq: i64 = 0,
     changed_at: i64 = 0,
     pub fn sessionId(a: *const Agent) []const u8 {
@@ -17,6 +22,12 @@ pub const Agent = struct {
     }
     pub fn label(a: *const Agent) []const u8 {
         return a.activity[0..a.activity_len];
+    }
+    pub fn toolLabel(a: *const Agent) []const u8 {
+        return a.tool[0..a.tool_len];
+    }
+    pub fn directory(a: *const Agent) []const u8 {
+        return a.cwd[0..a.cwd_len];
     }
     pub fn acknowledge(a: *Agent) void {
         a.attention = .none;
@@ -43,6 +54,26 @@ pub const Agent = struct {
         a.state = next;
         a.changed_at = seq;
         const tool = str(value, "tool_name");
+        const cwd = str(value, "cwd");
+        if (start) a.cwd_len = 0;
+        if (std.fs.path.isAbsolute(cwd) and cwd.len <= a.cwd.len) {
+            @memcpy(a.cwd[0..cwd.len], cwd);
+            a.cwd_len = cwd.len;
+        }
+        if (eq(event, "PreToolUse") or eq(event, "PermissionRequest")) {
+            a.tool_active = true;
+            if (tool.len > 0) a.tool_len = clean(&a.tool, tool);
+        } else if (eq(event, "Notification") and eq(str(value, "notification_type"), "permission_prompt")) {
+            a.tool_active = true;
+        } else if (eq(event, "PostToolUse") or eq(event, "PostToolUseFailure")) {
+            if (tool.len == 0 or eq(tool, a.toolLabel())) {
+                a.tool_len = 0;
+                a.tool_active = false;
+            }
+        } else if (next != .blocked) {
+            a.tool_len = 0;
+            a.tool_active = false;
+        }
         const activity = if (tool.len > 0) tool else event;
         a.activity_len = clean(&a.activity, activity);
         if (start or next == .working) a.attention = .none;

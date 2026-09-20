@@ -17,7 +17,7 @@ This builds Wrangler and starts or attaches to its background runtime. No config
 - **Ctrl-B**, then **v** or **-** splits right or down.
 - **Ctrl-B**, then **q** detaches while keeping your shells running. Run `./go.sh` to return.
 - Closing the last tab returns to your outer terminal. Closed-pane snapshots remain available after reattaching.
-- The **agent sidebar** shows live status and activity. Click an agent to jump to its pane; **Ctrl-B**, then **b** toggles the sidebar.
+- The **agent sidebar** shows a colored status circle and working directory, with an activity icon and agent name underneath. Click an agent to jump to its pane; **Ctrl-B**, then **b** toggles the sidebar.
 
 Run agents normally inside a pane:
 
