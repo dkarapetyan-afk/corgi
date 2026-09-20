@@ -77,12 +77,12 @@ pub const Agent = struct {
         const activity = if (tool.len > 0) tool else event;
         a.activity_len = clean(&a.activity, activity);
         if (start or next == .working) a.attention = .none;
-        if (old == next or watched) return false;
+        if (old == next) return false;
         if (next == .blocked) {
-            a.attention = .needs_input;
+            if (!watched) a.attention = .needs_input;
             return true;
         }
-        if (next == .idle and old == .working and !eq(event, "Interrupt")) {
+        if (!watched and next == .idle and old == .working and !eq(event, "Interrupt")) {
             a.attention = .finished;
             return true;
         }

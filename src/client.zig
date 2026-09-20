@@ -84,7 +84,7 @@ pub fn attach(path: []const u8) !void {
                 const kind = agents.str(v, "type");
                 if (std.mem.eql(u8, kind, "frame")) try os.writeAll(1, agents.str(v, "data"));
                 if (std.mem.eql(u8, kind, "detach")) return;
-                if (std.mem.eql(u8, kind, "bell")) try ding(agents.str(v, "kind"));
+                if (std.mem.eql(u8, kind, "bell")) try @import("sound.zig").play(agents.str(v, "kind"));
                 const err = agents.str(v, "err");
                 if (err.len > 0) {
                     cleanup();
@@ -104,26 +104,4 @@ fn dimensions() c.struct_winsize {
     if (size.ws_col == 0) size.ws_col = 100;
     if (size.ws_row == 0) size.ws_row = 30;
     return size;
-}
-fn ding(kind: []const u8) !void {
-    if (os.env("CORGI_BELL")) |setting| {
-        if (std.mem.eql(u8, setting, "off")) return;
-        if (std.mem.eql(u8, setting, "terminal")) return os.writeAll(1, "\x07");
-    }
-    if (@import("builtin").os.tag == .macos) {
-        var child = std.process.Child.init(&.{ "/usr/bin/afplay", if (std.mem.eql(u8, kind, "needs_input")) "/System/Library/Sounds/Glass.aiff" else "/System/Library/Sounds/Pop.aiff" }, a);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.spawn() catch return os.writeAll(1, "\x07");
-        const thread = std.Thread.spawn(.{}, waitSound, .{child}) catch {
-            _ = child.wait() catch {};
-            return;
-        };
-        thread.detach();
-    } else try os.writeAll(1, "\x07");
-}
-fn waitSound(child_: std.process.Child) void {
-    var child = child_;
-    _ = child.wait() catch {};
 }

@@ -96,12 +96,14 @@ Provider contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude
 
 ## A ding with somewhere to go
 
-- **Needs you:** macOS Glass sound; sticky `! needs you` marker.
-- **Turn finished:** quieter Pop sound; sticky `+ done` marker.
+- **Needs you:** Herdr's request sound, including in the focused pane; unseen requests retain a sticky `! needs you` marker.
+- **Turn finished:** Herdr's completion sound; sticky `+ done` marker.
 - `prefix a` visits waiting panes first, oldest first, then completed panes. Visiting acknowledges the marker without changing the agent's actual state.
-- The focused pane stays quiet while the attached terminal has focus. Focus reporting depends on the outer terminal supporting it.
+- Completion sounds stay quiet for the focused pane while an attached terminal has focus. Input requests still ding. Focus reporting depends on the outer terminal supporting it.
 - Duplicate hooks don't ring twice. Bursts are coalesced, with at least 1.5 seconds between sounds and waiting taking precedence.
-- Muting suppresses sounds while retaining the attention queue. `CORGI_BELL=terminal` selects BEL; `CORGI_BELL=off` disables client sounds. Other platforms use BEL.
+- Muting suppresses sounds while retaining the attention queue. `CORGI_BELL=terminal` selects BEL; `CORGI_BELL=off` disables client sounds.
+
+The two MP3s are embedded in the binary. Playback runs in a background thread using `afplay` on macOS, or the first successful MP3-capable player on Linux (`paplay`, `pw-play`, `ffplay`, `mpg123`, `mpv`). Temporary audio files are removed after playback; failed playback falls back to BEL. Plain SSH attachments use BEL so the notification reaches the local terminal rather than the remote host's audio device; its audibility depends on your terminal's bell settings.
 
 Sounds play on the attached machine. A detached runtime retains attention markers but does not send desktop notifications. Native protocol sessions also contribute to the attention count; `prefix a` identifies the session and command to inspect it.
 

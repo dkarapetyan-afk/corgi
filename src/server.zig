@@ -994,7 +994,7 @@ pub const Server = struct {
                 const ding = p.agent.apply(provider, event, number(v, "seq", std.time.microTimestamp()), viewed);
                 if (ding) {
                     s.bell = true;
-                    if (s.bell_kind != .needs_input) s.bell_kind = p.agent.attention;
+                    if (s.bell_kind != .needs_input) s.bell_kind = if (p.agent.state == .blocked) .needs_input else .finished;
                 }
                 s.dirty = true;
             }
@@ -1053,7 +1053,7 @@ pub const Server = struct {
         if (!std.meta.eql(before, p.agent)) s.dirty = true;
         if (ding) {
             s.bell = true;
-            if (s.bell_kind != .needs_input) s.bell_kind = p.agent.attention;
+            if (s.bell_kind != .needs_input) s.bell_kind = if (p.agent.state == .blocked) .needs_input else .finished;
         }
     }
     pub fn run(s: *Server) !void {

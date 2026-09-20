@@ -194,12 +194,11 @@ pub const Tracker = struct {
         agent.changed_at = std.time.microTimestamp();
         agent.activity_len = 0;
         if (next == .working) agent.attention = .none;
-        if (watched) return false;
         if (next == .blocked) {
-            agent.attention = .needs_input;
+            if (!watched) agent.attention = .needs_input;
             return true;
         }
-        if (next == .idle and old == .working) {
+        if (!watched and next == .idle and old == .working) {
             agent.attention = .finished;
             return true;
         }

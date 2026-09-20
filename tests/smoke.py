@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real PTY/socket regressions. Provider doubles never make inference requests."""
 import fcntl
+import hashlib
 import base64
 import json
 import os
@@ -677,6 +678,44 @@ while True:
             send('exit');count(0)
             self.agent_frame(provider,'○',color='108;112;134')
             self.rpc(op='native.stop',session=ident);self.frame_with('No agents yet')
+    def test_real_client_plays_embedded_request_and_completion_sounds(self):
+        players=pathlib.Path(self.temp.name,'players');players.mkdir()
+        played=pathlib.Path(self.temp.name,'played.jsonl')
+        player=f"""#!{sys.executable}
+import hashlib,json,pathlib,sys
+sound=pathlib.Path(sys.argv[-1])
+with open({str(played)!r},'a') as log:
+    log.write(json.dumps({{'hash':hashlib.sha256(sound.read_bytes()).hexdigest(),'path':str(sound)}})+'\\n')
+"""
+        for name in ('afplay','paplay','pw-play','ffplay','mpg123','mpv'):
+            path=players/name;path.write_text(player);path.chmod(0o700)
+        env={**self.env,'PATH':str(players)+os.pathsep+self.env.get('PATH',''),'TMPDIR':self.temp.name}
+        for name in ('CORGI_BELL','SSH_CONNECTION','SSH_TTY'):env.pop(name,None)
+        self.master,slave=os.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
+        self.proc=subprocess.Popen([EXE],env=env,stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
+        os.close(slave)
+        self.until(lambda:self.panes())
+        pane=self.panes()[0]['id']
+        def hook(event,seq):
+            self.rpc(op='hook',pane=pane,provider='codex',seq=seq,event={'hook_event_name':event,'session_id':'sounds'})
+        def records():
+            while select.select([self.master],[],[],0)[0]:os.read(self.master,65536)
+            return [json.loads(line) for line in played.read_text().splitlines()] if played.exists() else []
+        hook('SessionStart',1);hook('UserPromptSubmit',2);hook('PermissionRequest',3)
+        self.until(lambda:len(records())==1)
+        self.assertEqual(records()[0]['hash'],hashlib.sha256((ROOT/'src/sounds/request.mp3').read_bytes()).hexdigest())
+        # Repeated hooks and completing the currently watched pane stay quiet.
+        hook('PermissionRequest',4);hook('UserPromptSubmit',5);hook('Stop',6)
+        time.sleep(1.6);self.assertEqual(len(records()),1)
+        # A background completion uses the distinct embedded completion sound.
+        self.rpc(op='new',cwd=self.temp.name)
+        hook('UserPromptSubmit',7);hook('Stop',8)
+        self.until(lambda:len(records())==2)
+        self.assertEqual(records()[1]['hash'],hashlib.sha256((ROOT/'src/sounds/done.mp3').read_bytes()).hexdigest())
+        self.until(lambda:all(not pathlib.Path(record['path']).exists() for record in records()))
+        self.rpc(op='action',name='mute')
+        hook('UserPromptSubmit',9);hook('PermissionRequest',10)
+        time.sleep(1.6);self.assertEqual(len(records()),2)
     def test_attention_is_deduplicated_and_explicitly_acknowledged(self):
         self.attach();self.get_type('frame');self.input('\x02v');self.until(lambda:len(self.panes())==2)
         def hook(event,seq,session='test',**extra):
