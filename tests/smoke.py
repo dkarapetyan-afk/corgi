@@ -698,6 +698,26 @@ while True:
         # A real right-button press still opens the menu.
         self.input('\x1b[<2;40;10M\x1b[<2;40;10m')
         self.frame_with('Commands')
+    def test_menu_hover_highlights_and_click_activates(self):
+        self.attach();self.get_type('frame')
+        self.input('\x02')
+        menu=self.frame_with('Commands')
+        y=next(i for i,row in enumerate(menu) if 'Split right' in row)
+        x=menu[y].index('Split right')
+        self.input(f'\x1b[<35;{x+1};{y+1}M')
+        for _ in range(100):
+            data=self.get_type('frame')['data']
+            if '\x1b[38;2;24;27;32mSplit right' in data:break
+        else:self.fail('hover did not highlight command')
+        self.assertIn('\x1b[?1003h',data)
+        self.assertEqual(len(self.panes()),1)
+        self.click(x+1,y+1)
+        self.until(lambda:len(self.panes())==2)
+        for _ in range(100):
+            data=self.get_type('frame')['data']
+            if '\x1b[?1003l\x1b[?1002h' in data:break
+        else:self.fail('menu close did not restore drag tracking')
+
     def test_prefix_menu_keyboard_mouse_and_no_paste_leak(self):
         self.attach();self.get_type('frame')
         self.input('\x02');menu=self.frame_with('Commands')

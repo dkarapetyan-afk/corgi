@@ -81,6 +81,7 @@ pub const Server = struct {
     quit: bool = false,
     prefix: bool = false,
     menu_page: usize = 0,
+    menu_highlight: ?u8 = null,
     sidebar_open: bool = true,
     sidebar_offset: usize = 0,
     tab_menu: ?commands.TabMenu = null,
@@ -219,7 +220,9 @@ pub const Server = struct {
     }
     fn menu(s: *Server) ?commands.View {
         if (!s.prefix and !s.resize_mode) return null;
-        return commands.View.init(s.width, s.height, s.resize_mode, s.menu_page, s.model().count > 0);
+        var view = commands.View.init(s.width, s.height, s.resize_mode, s.menu_page, s.model().count > 0);
+        view.highlighted = s.menu_highlight;
+        return view;
     }
     fn hasMenu(s: *Server) bool {
         return s.prefix or s.resize_mode or s.tab_menu != null;
@@ -261,18 +264,21 @@ pub const Server = struct {
         s.tab_menu = null;
         s.prefix = true;
         s.menu_page = 0;
+        s.menu_highlight = null;
         s.divider = null;
         s.selection = null;
         s.dirty = true;
     }
     fn closeMenu(s: *Server) void {
         s.tab_menu = null;
+        s.menu_highlight = null;
         s.prefix = false;
         s.resize_mode = false;
         s.dirty = true;
     }
     fn pageMenu(s: *Server, next: bool) void {
         const view = s.menu() orelse return;
+        s.menu_highlight = null;
         s.menu_page = if (next) (view.page + 1) % view.pages else (view.page + view.pages - 1) % view.pages;
         s.dirty = true;
     }
@@ -665,6 +671,7 @@ pub const Server = struct {
                 'r' => {
                     s.resize_mode = true;
                     s.menu_page = 0;
+                    s.menu_highlight = null;
                 },
                 'T', ',' => s.beginRename(),
                 'x' => {
@@ -908,6 +915,16 @@ pub const Server = struct {
             return;
         }
         if (s.menu()) |view| {
+            if (!release and (button == 35 or button == 32)) {
+                const highlighted: ?u8 = switch (view.hit(x, y)) {
+                    .command => |entry| entry.key,
+                    else => null,
+                };
+                if (s.menu_highlight != highlighted) {
+                    s.menu_highlight = highlighted;
+                    s.dirty = true;
+                }
+            }
             if (!release and (button == 64 or button == 65)) s.pageMenu(button == 65);
             if (!release and button == 0) {
                 s.ui_mouse_down = true;
@@ -1004,6 +1021,7 @@ pub const Server = struct {
             };
             return;
         }
+        if (button & 32 != 0 and button & 3 == 3) return;
         var locations: [layout.max_panes]layout.Placement = undefined;
         for (s.model().placements(s.area(), &locations)) |p| if (p.rect.contains(x, y)) {
             try s.focusPane(p.id);

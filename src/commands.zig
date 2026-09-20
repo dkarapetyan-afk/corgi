@@ -98,6 +98,7 @@ pub const View = struct {
     pages: usize,
     resizing: bool,
     has_pane: bool,
+    highlighted: ?u8 = null,
 
     pub fn init(width: u16, height: u16, resizing: bool, page: usize, has_pane: bool) View {
         const columns: u16 = if (width >= 64 and !resizing) 2 else 1;
@@ -140,9 +141,13 @@ pub const View = struct {
             const row = index % v.rows;
             const col = index / v.rows;
             const enabled = !entry.needs_pane or v.has_pane;
-            try w.print("\x1b[{d};{d}H{s} {c}  \x1b[22m{s}", .{ v.y + row + 3, v.x + col * col_width + 1, if (enabled) "\x1b[1;38;2;161;194;178m" else "\x1b[38;2;86;94;105m", entry.key, if (enabled) "\x1b[38;2;226;230;233m" else "\x1b[38;2;86;94;105m" });
+            const selected = enabled and v.highlighted == entry.key;
+            try w.print("\x1b[{d};{d}H{s}", .{ v.y + row + 3, v.x + col * col_width + 1, if (selected) "\x1b[48;2;161;194;178m" else "\x1b[48;2;35;40;47m" });
+            try w.splatByteAll(' ', col_width);
+            try w.print("\x1b[{d};{d}H{s} {c}  \x1b[22m{s}", .{ v.y + row + 3, v.x + col * col_width + 1, if (selected) "\x1b[1;38;2;24;27;32m" else if (enabled) "\x1b[1;38;2;161;194;178m" else "\x1b[38;2;86;94;105m", entry.key, if (selected) "\x1b[38;2;24;27;32m" else if (enabled) "\x1b[38;2;226;230;233m" else "\x1b[38;2;86;94;105m" });
             try w.writeAll(entry.label[0..@min(entry.label.len, col_width -| 5)]);
         }
+        try w.writeAll("\x1b[48;2;35;40;47m");
         if (v.pages > 1) {
             var footer: [64]u8 = undefined;
             const previous = try std.fmt.bufPrint(&footer, " < {d}/{d}", .{ v.page + 1, v.pages });
