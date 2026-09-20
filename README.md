@@ -19,6 +19,7 @@ Multiple terminals can attach to the same runtime. They share the current view a
 
 - **Ctrl-B** opens the clickable command menu and shows shortcuts.
 - Click **+** to create a tab; right-click a tab to rename or close it. Unnamed tabs show their current position; clear a name to return to automatic numbering.
+- Drag a tab to reorder it; the vertical marker shows where it will land. Release outside the tab bar or press Escape to cancel.
 - **Ctrl-B**, then **v** or **-** splits right or down.
 - **Ctrl-B**, then **q** detaches while keeping your shells running. Run `./go.sh` to return.
 - With one workspace, closing the last tab returns to your outer terminal. With multiple workspaces, an empty workspace stays open so you can switch or create a tab. Closed-pane snapshots remain available after reattaching.

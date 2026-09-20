@@ -15,6 +15,7 @@ pub const Ui = struct {
     native_finished: usize,
     menu: ?commands.View = null,
     tab_menu: ?commands.TabMenu = null,
+    tab_drop_x: ?u16 = null,
     dialog: ?naming.Dialog = null,
     confirm: bool = false,
     sidebar_open: bool = true,
@@ -66,6 +67,24 @@ pub fn tabAt(model: *const layout.Model, width: u16, x: u16) ?usize {
     }
     return null;
 }
+pub const TabDrop = struct { index: usize, x: u16 };
+/// Use the same clipped tab geometry for hit testing and the drop marker.
+pub fn tabDrop(model: *const layout.Model, width: u16, x: u16) ?TabDrop {
+    if (x >= width or model.count == 0) return null;
+    const available = width -| 3;
+    const first = tabStart(model, available);
+    var left: usize = 0;
+    var last: ?TabDrop = null;
+    for (model.tabs[first..model.count], first..) |tab, i| {
+        const len = tabExtent(tab, i, first, available - left);
+        if (len == 0) break;
+        if (x < left + len / 2) return .{ .index = i, .x = @intCast(left -| 1) };
+        left += len;
+        last = .{ .index = i + 1, .x = @intCast(left -| 1) };
+        if (x < left) return last;
+    }
+    return last;
+}
 pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16, ui: Ui) ![]u8 {
     var out: Buffer = .init(a);
     defer out.deinit();
@@ -94,6 +113,9 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     }
     try w.writeAll("\x1b[1;38;2;161;194;178;48;2;35;40;47m + ");
     try w.writeAll("\x1b[0m");
+    if (ui.tab_drop_x) |drop_x| {
+        try w.print("\x1b[1;{d}H\x1b[1;38;2;161;194;178m│\x1b[0m", .{side.tabX() + drop_x + 1});
+    }
     if (model.count == 0) {
         const empty = " No panes. Ctrl-B c: new tab | Ctrl-B u: undo close | Ctrl-B q: detach";
         try w.print("\x1b[2;{d}H", .{side.width + 1});
@@ -203,4 +225,19 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
 }
 fn dim(color: terminal.vt.color.RGB) terminal.vt.color.RGB {
     return .{ .r = color.r / 2, .g = color.g / 2, .b = color.b / 2 };
+}
+test "tab drop slots follow midpoints and clipped visible tabs" {
+    var m: layout.Model = .{};
+    _ = try m.newTab("one");
+    _ = try m.newTab("two");
+    _ = try m.newTab("three");
+    try std.testing.expectEqual(@as(usize, 0), tabDrop(&m, 40, 4).?.index);
+    try std.testing.expectEqual(@as(usize, 1), tabDrop(&m, 40, 5).?.index);
+    try std.testing.expectEqual(@as(usize, 3), tabDrop(&m, 40, 35).?.index);
+    // Only the focused tab fits: the left gap is before tab three, not tab one.
+    try std.testing.expectEqual(@as(usize, 2), tabDrop(&m, 13, 0).?.index);
+    try std.testing.expectEqual(@as(usize, 3), tabDrop(&m, 13, 12).?.index);
+    try std.testing.expectEqual(@as(u16, 9), tabDrop(&m, 13, 12).?.x);
+    try std.testing.expect(tabDrop(&m, 13, 13) == null);
+    try std.testing.expect(tabDrop(&m, 3, 0) == null);
 }

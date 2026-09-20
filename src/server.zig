@@ -13,6 +13,19 @@ const Terminal = @import("terminal.zig").Terminal;
 const native = @import("native.zig");
 const Theme = @import("theme.zig").Theme;
 const max_closed = 8;
+const TabDrag = struct {
+    workspace_id: u32,
+    tab_id: layout.Id,
+    start_x: u16,
+    width: u16,
+    tabs_x: u16,
+    first: usize,
+    ids: [layout.max_tabs]layout.Id = undefined,
+    count: usize,
+    dragging: bool = false,
+    cancelled: bool = false,
+    drop: ?render.TabDrop = null,
+};
 const ClosedPane = struct {
     terminal: *Terminal,
     cwd: []const u8,
@@ -36,6 +49,7 @@ const Client = struct {
     paste: bool = false,
     paste_pane: ?layout.Id = null,
     paste_to_name: bool = false,
+    tab_drag: ?TabDrag = null,
     keybuf: std.ArrayList(u8) = .empty,
     escape_at: i64 = 0,
     dead: bool = false,
@@ -116,6 +130,9 @@ pub const Server = struct {
     }
     fn switchWorkspace(s: *Server, id: u32) !void {
         const index = s.workspaces.index(id) orelse return error.NoWorkspace;
+        for (s.clients.items) |*cl| if (cl.tab_drag) |*drag| {
+            drag.cancelled = true;
+        };
         s.dismissName();
         s.closeMenu();
         s.workspaces.active = index;
@@ -553,6 +570,10 @@ pub const Server = struct {
         s.notice(" Viewport copied via OSC 52");
     }
     fn key(s: *Server, cl: *Client, byte: u8) !void {
+        if (cl.tab_drag) |*drag| {
+            drag.cancelled = true;
+            s.dirty = true;
+        }
         if (s.tab_menu) |context| {
             switch (byte) {
                 27 => s.closeMenu(),
@@ -787,12 +808,52 @@ pub const Server = struct {
             return error.InvalidInput;
         }
     }
+    fn validTabDrag(s: *Server, drag: *TabDrag) bool {
+        const tabs_x = s.sidebarView(0).tabX();
+        const m = s.model();
+        if (drag.workspace_id != s.workspaces.current().id or drag.width != s.width or
+            drag.tabs_x != tabs_x or drag.count != m.count or
+            drag.first != render.tabStart(m, s.width - tabs_x -| 3) or
+            s.hasMenu() or s.name_dialog != null or s.confirm != .none)
+            drag.cancelled = true;
+        for (m.tabs[0..m.count], 0..) |tab, i| {
+            if (i >= drag.count or drag.ids[i] != tab.id) drag.cancelled = true;
+        }
+        return !drag.cancelled;
+    }
+    fn tabDropX(s: *Server) ?u16 {
+        for (s.clients.items) |*cl| {
+            if (!cl.attached or cl.dead) continue;
+            if (cl.tab_drag) |*drag| {
+                if (s.validTabDrag(drag) and drag.dragging) if (drag.drop) |drop| return drop.x;
+            }
+        }
+        return null;
+    }
     fn mouse(s: *Server, cl: *Client, seq: []const u8) !void {
         var fields = std.mem.splitScalar(u8, seq[3 .. seq.len - 1], ';');
         const button = std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return;
         const x = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const y = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const release = seq[seq.len - 1] == 'm';
+        if (cl.tab_drag) |*drag| {
+            const valid = s.validTabDrag(drag);
+            const drop = if (valid and y == 0 and x >= drag.tabs_x)
+                render.tabDrop(s.model(), s.width - drag.tabs_x, x - drag.tabs_x)
+            else
+                null;
+            if (button == 32 and !release) {
+                if (drop != null and x != drag.start_x) drag.dragging = true;
+                drag.drop = drop;
+            }
+            if (release and button & 3 == 0) {
+                if (valid and drag.dragging) if (drop) |target| s.model().moveTab(drag.tab_id, target.index);
+                cl.tab_drag = null;
+            }
+            // The tab owns this gesture, including motion/release over a pane.
+            s.dirty = true;
+            return;
+        }
         if (!release and (x >= s.width or y >= s.height)) return;
         const tabs_x = s.sidebarView(0).tabX();
         const tabs_width = s.width - tabs_x;
@@ -901,6 +962,16 @@ pub const Server = struct {
             }
             if (x >= tabs_x) if (render.tabAt(s.model(), tabs_width, x - tabs_x)) |index| {
                 s.model().active = index;
+                cl.tab_drag = .{
+                    .workspace_id = s.workspaces.current().id,
+                    .tab_id = s.model().tabs[index].id,
+                    .start_x = x,
+                    .width = s.width,
+                    .tabs_x = tabs_x,
+                    .first = render.tabStart(s.model(), tabs_width -| 3),
+                    .count = s.model().count,
+                };
+                for (s.model().tabs[0..s.model().count], 0..) |tab, i| cl.tab_drag.?.ids[i] = tab.id;
                 s.acknowledge();
                 try s.resizePanes();
                 s.dirty = true;
@@ -1377,6 +1448,7 @@ pub const Server = struct {
                     .native_finished = native_finished,
                     .menu = s.menu(),
                     .tab_menu = s.tab_menu,
+                    .tab_drop_x = s.tabDropX(),
                     .dialog = s.name_dialog,
                     .confirm = s.confirm != .none,
                     .sidebar_open = s.sidebar_open,

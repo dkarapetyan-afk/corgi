@@ -235,9 +235,27 @@ pub const Model = struct {
         return true;
     }
     pub fn reorder(m: *Model, delta: i32) void {
+        if (m.count == 0) return;
         const dest: usize = @intCast(std.math.clamp(@as(i32, @intCast(m.active)) + delta, 0, @as(i32, @intCast(m.count)) - 1));
         std.mem.swap(Tab, &m.tabs[m.active], &m.tabs[dest]);
         m.active = dest;
+    }
+    /// Insert a tab at a gap in the original order, preserving the focused tab.
+    pub fn moveTab(m: *Model, id: Id, insert: usize) void {
+        if (insert > m.count or m.count == 0) return;
+        const focused = m.tabs[m.active].id;
+        for (m.tabs[0..m.count], 0..) |tab_value, source| {
+            if (tab_value.id != id) continue;
+            const dest = insert - @intFromBool(insert > source);
+            var i = source;
+            while (i < dest) : (i += 1) m.tabs[i] = m.tabs[i + 1];
+            while (i > dest) : (i -= 1) m.tabs[i] = m.tabs[i - 1];
+            m.tabs[dest] = tab_value;
+            for (m.tabs[0..m.count], 0..) |t, index| {
+                if (t.id == focused) m.active = index;
+            }
+            return;
+        }
     }
     pub fn breakPane(m: *Model) !void {
         if (m.count == max_tabs) return error.TooManyTabs;
@@ -344,4 +362,25 @@ test "moving panes across tabs preserves pane identity" {
     try m.joinPane(0);
     try std.testing.expectEqual(@as(usize, 1), m.count);
     try std.testing.expect(m.findNode(a) != null and m.findNode(b) != null);
+}
+test "tab insertion preserves order, names, splits and logical focus" {
+    var m: Model = .{};
+    _ = try m.newTab("");
+    const first = m.tab().*;
+    _ = try m.newTab("named");
+    _ = try m.split(.horizontal);
+    const second = m.tab().*;
+    _ = try m.newTab("");
+    const third = m.tab().*;
+    m.moveTab(first.id, 3);
+    try std.testing.expectEqualDeep(second, m.tabs[0]);
+    try std.testing.expectEqualDeep(third, m.tabs[1]);
+    try std.testing.expectEqualDeep(first, m.tabs[2]);
+    try std.testing.expectEqual(third.id, m.tab().id);
+    m.moveTab(first.id, 0);
+    try std.testing.expectEqualDeep(first, m.tabs[0]);
+    try std.testing.expectEqualDeep(second, m.tabs[1]);
+    m.moveTab(second.id, 2); // Its own trailing gap is a no-op.
+    try std.testing.expectEqualDeep(second, m.tabs[1]);
+    try std.testing.expectEqual(third.id, m.tab().id);
 }

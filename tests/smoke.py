@@ -319,6 +319,46 @@ time.sleep(30)
     def right_click_tab(self,screen,title):
         x=screen[0].index(title)+1
         self.input(f'\x1b[<2;{x};1M\x1b[<2;{x};1m')
+    def test_mouse_tab_reorder_indicator_and_cancellation(self):
+        first=self.rpc(op='new',cwd=self.temp.name,title='First')['pane']
+        self.rpc(op='new',cwd=self.temp.name,title='Second')
+        self.rpc(op='new',cwd=self.temp.name,title='Third')
+        self.attach();screen=self.tabs_are('First Second Third')
+        def drag_frame():
+            for _ in range(100):
+                frame=screen_text(self.get_type('frame')['data'])
+                if '│' in frame[0][28:]:return frame
+            self.fail('missing tab drop indicator')
+        x=screen[0].index('First')+1
+        end=screen[0].rindex(' + ')+1
+        self.input(f'\x1b[<0;{x};1M\x1b[<32;{end};1M')
+        screen=drag_frame()
+        self.assertEqual(screen[0][end-2],'│')
+        self.input(f'\x1b[<0;{end};1m')
+        screen=self.tabs_are('Second Third First')
+        self.assertEqual(next(p['id'] for p in self.panes() if p['focused']),first)
+        # Dropping away from the bar cancels and clears the indicator.
+        x=screen[0].index('First')+1
+        left=29
+        self.input(f'\x1b[<0;{x};1M\x1b[<32;{left};1M')
+        drag_frame()
+        self.input(f'\x1b[<32;{left};3M\x1b[<0;{left};3m')
+        screen=self.tabs_are('Second Third First')
+        # A release from a second viewer cannot complete this viewer's drag.
+        other,reader=self.viewer();self.viewer_frame(reader,'First')
+        self.input(f'\x1b[<0;{x};1M\x1b[<32;{left};1M')
+        drag_frame()
+        other.sendall(json.dumps(dict(op='input',data=f'\x1b[<0;{left};1m')).encode()+b'\n')
+        self.input(f'\x1b[<0;{left};1m')
+        screen=self.tabs_are('First Second Third')
+        # A click without movement only focuses, and Escape cancels a drag.
+        self.click(screen[0].index('Third')+1,1)
+        screen=self.tabs_are('First Second Third')
+        self.input(f'\x1b[<0;{left};1M\x1b[<32;{end};1M')
+        drag_frame();self.input('\x1b')
+        self.tabs_are('First Second Third')
+        self.input(f'\x1b[<0;{end};1m')
+        self.tabs_are('First Second Third')
     def viewer(self,cols=80,rows=24):
         client=socket.socket(socket.AF_UNIX)
         client.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024)
