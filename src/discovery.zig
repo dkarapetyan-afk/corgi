@@ -75,8 +75,8 @@ const Finder = struct {
         };
         const z = try a.dupeZ(u8, path);
         defer a.free(z);
-        var stat: c.struct_stat = undefined;
-        if (c.stat(z, &stat) != 0 or (stat.st_mode & c.S_IFMT) != c.S_IFREG or c.access(z, c.X_OK) != 0) return null;
+        const stat = std.posix.fstatat(std.posix.AT.FDCWD, path, 0) catch return null;
+        if ((stat.mode & c.S_IFMT) != c.S_IFREG or c.access(z, c.X_OK) != 0) return null;
         const remaining = budget -| f.timer.read();
         if (remaining == 0) return null;
         if (probe(path, @min(remaining, 750 * std.time.ns_per_ms))) return try a.dupe(u8, path);

@@ -141,11 +141,9 @@ pub fn install(provider: []const u8) !void {
     // Don't replace a symlink, FIFO, or other user-managed indirection.
     const path = try std.fs.path.join(a, &.{ directory, filename });
     defer a.free(path);
-    const z = try a.dupeZ(u8, path);
-    defer a.free(z);
-    var stat: os.c.struct_stat = undefined;
-    const exists = os.c.lstat(z, &stat) == 0;
-    if (exists and (stat.st_mode & os.c.S_IFMT) != os.c.S_IFREG) return error.HookSettingsNotRegular;
+    const stat = std.posix.fstatat(std.posix.AT.FDCWD, path, std.posix.AT.SYMLINK_NOFOLLOW) catch null;
+    const exists = stat != null;
+    if (exists and (stat.?.mode & os.c.S_IFMT) != os.c.S_IFREG) return error.HookSettingsNotRegular;
     const before = if (exists) try dir.readFileAlloc(a, filename, 1024 * 1024) else try a.dupe(u8, "{}");
     defer a.free(before);
     const after = try mergedConfig(a, provider, before) orelse return;
@@ -159,7 +157,7 @@ pub fn install(provider: []const u8) !void {
         } else |err| if (err != error.PathAlreadyExists) return err;
     }
     var buffer: [4096]u8 = undefined;
-    var output = try dir.atomicFile(filename, .{ .mode = if (exists) @intCast(stat.st_mode & 0o777) else 0o600, .write_buffer = &buffer });
+    var output = try dir.atomicFile(filename, .{ .mode = if (exists) @intCast(stat.?.mode & 0o777) else 0o600, .write_buffer = &buffer });
     defer output.deinit();
     try output.file_writer.interface.writeAll(after);
     try output.file_writer.interface.writeAll("\n");
@@ -169,7 +167,7 @@ pub fn install(provider: []const u8) !void {
         defer a.free(latest);
         if (!std.mem.eql(u8, latest, before)) return error.HookSettingsChanged;
     } else {
-        if (os.c.lstat(z, &stat) == 0) return error.HookSettingsChanged;
+        if ((std.posix.fstatat(std.posix.AT.FDCWD, path, std.posix.AT.SYMLINK_NOFOLLOW) catch null) != null) return error.HookSettingsChanged;
     }
     try output.finish();
 }

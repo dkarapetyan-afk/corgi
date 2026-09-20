@@ -82,13 +82,14 @@ pub fn connect(path: []const u8) !c_int {
 pub fn privateDirectory(parent: []const u8) !void {
     const z = try allocator.dupeZ(u8, parent);
     defer allocator.free(z);
-    var stat: c.struct_stat = undefined;
-    const existed = c.lstat(z, &stat) == 0;
+    const existing = std.posix.fstatat(std.posix.AT.FDCWD, parent, std.posix.AT.SYMLINK_NOFOLLOW) catch null;
+    const existed = existing != null;
     if (!existed) {
         try std.fs.cwd().makePath(parent);
         if (c.chmod(z, 0o700) != 0) return error.UnsafeSocketDirectory;
     }
-    if (c.lstat(z, &stat) != 0 or stat.st_uid != c.getuid() or (stat.st_mode & c.S_IFMT) != c.S_IFDIR or (stat.st_mode & 0o077) != 0) return error.UnsafeSocketDirectory;
+    const stat = std.posix.fstatat(std.posix.AT.FDCWD, parent, std.posix.AT.SYMLINK_NOFOLLOW) catch return error.UnsafeSocketDirectory;
+    if (stat.uid != c.getuid() or (stat.mode & c.S_IFMT) != c.S_IFDIR or (stat.mode & 0o077) != 0) return error.UnsafeSocketDirectory;
 }
 pub fn listen(path: []const u8) !c_int {
     const parent = std.fs.path.dirname(path) orelse return error.BadSocketPath;
