@@ -4,6 +4,7 @@ const terminal = @import("terminal.zig");
 const agents = @import("agents.zig");
 const commands = @import("commands.zig");
 const naming = @import("name_dialog.zig");
+const sidebar = @import("sidebar.zig");
 const a = @import("os.zig").allocator;
 pub const Pane = struct { id: layout.Id, terminal: *terminal.Terminal, agent: agents.Agent = .{}, cwd: []const u8 };
 pub const Buffer = std.Io.Writer.Allocating;
@@ -16,6 +17,9 @@ pub const Ui = struct {
     tab_menu: ?commands.TabMenu = null,
     dialog: ?naming.Dialog = null,
     confirm: bool = false,
+    sidebar_open: bool = true,
+    sidebar_offset: usize = 0,
+    agents: []const sidebar.Entry = &.{},
 };
 pub fn tabWidth(tab: layout.Tab, index: usize) usize {
     return @min(tab.title().len, 16) + (if (index + 1 >= 10) @as(usize, 5) else 4);
@@ -52,9 +56,11 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     var out: Buffer = .init(a);
     defer out.deinit();
     const w = &out.writer;
+    const side = sidebar.View.init(width, height, ui.sidebar_open, ui.sidebar_offset, ui.agents.len);
     try w.writeAll("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
+    try w.print("\x1b[1;{d}H", .{side.tabX() + 1});
     var x: usize = 0;
-    const tab_space = width -| 3;
+    const tab_space = width - side.tabX() -| 3;
     const start = tabStart(model, tab_space);
     for (model.tabs[start..model.count], start..) |tab, i| {
         if (x >= tab_space) break;
@@ -69,11 +75,11 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
     try w.writeAll("\x1b[0m");
     if (model.count == 0) {
         const empty = " No panes. Ctrl-B c: new tab | Ctrl-B u: undo close | Ctrl-B q: detach";
-        try w.writeAll("\x1b[2;1H");
-        try w.writeAll(empty[0..@min(empty.len, width)]);
+        try w.print("\x1b[2;{d}H", .{side.width + 1});
+        try w.writeAll(empty[0..@min(empty.len, side.area().w)]);
     }
     var locations: [layout.max_panes]layout.Placement = undefined;
-    const area: layout.Rect = .{ .x = 0, .y = 1, .w = width, .h = height -| 2 };
+    const area = side.area();
     for (model.placements(area, &locations)) |place| {
         if (place.rect.w == 0 or place.rect.h == 0) continue;
         for (panes) |p| if (p.id == place.id) {
@@ -123,6 +129,7 @@ pub fn frame(model: *layout.Model, panes: []const Pane, width: u16, height: u16,
             break;
         };
     }
+    try side.draw(w, ui.agents);
     var blocked: usize = ui.native_blocked;
     var finished: usize = ui.native_finished;
     for (panes) |p| switch (p.agent.attention) {

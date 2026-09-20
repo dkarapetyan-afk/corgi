@@ -58,6 +58,10 @@ This is an initial implementation of Herdr's core tab/pane operations. Copy mode
 
 ## Agent integration
 
+The left sidebar lists agents across all tabs, grouped by tab order, with their provider, status, tab name, and current tool or activity. Click an entry to focus its pane and acknowledge its attention marker. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
+
+Terminal entries are driven by the session-local hooks installed by `wrangler agent codex|claude`. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden. This sidebar does not infer state from terminal text or run background inference.
+
 Inside a pane:
 
 ```sh
@@ -148,6 +152,7 @@ For remote terminals, run Wrangler on the host through SSH (`ssh -t host wrangle
 - `render.zig` / `client.zig`: terminal presentation, attach, clipboard, sound.
 - `commands.zig`: command menu layout, shortcut labels, and mouse targets.
 - `name_dialog.zig`: tab name editor and dialog rendering/mouse targets.
+- `sidebar.zig`: agent list presentation, scrolling, and mouse targets.
 - `agents.zig` / `integration.zig`: hook lifecycle evidence and provider launch configuration.
 - `discovery.zig`: automatic provider executable discovery and bounded version checks.
 - `native.zig`: durable App Server / Claude JSONL transports and retained approvals.

@@ -16,6 +16,7 @@ This builds Wrangler and starts or attaches to its background runtime. No config
 - Click **+** to create a tab; right-click a tab to rename or close it.
 - **Ctrl-B**, then **v** or **-** splits right or down.
 - **Ctrl-B**, then **q** detaches while keeping your shells running. Run `./go.sh` to return.
+- The **agent sidebar** shows live status and activity. Click an agent to jump to its pane; **Ctrl-B**, then **b** toggles the sidebar.
 
 Launch an installed agent inside a pane to enable Wrangler's hooks and attention sounds:
 

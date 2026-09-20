@@ -193,12 +193,13 @@ const help =
     \\Keys: Ctrl-B opens a clickable command menu; then c tab, v/- split,
     \\hjkl focus, HJKL swap, z zoom,
     \\r resize, T rename, n/p tabs, 1–9 jump, x close, X close tab,
-    \\u undo close, [ scroll/copy, a attention, m mute, q detach, ? help.
+    \\u undo close, [ scroll/copy, a attention, b agent sidebar, m mute, q detach, ? help.
     \\
     \\WRANGLER_SOCKET selects a runtime. No worktrees or workspaces.
     \\
 ;
 test {
+    _ = @import("sidebar.zig");
     _ = @import("name_dialog.zig");
     _ = @import("commands.zig");
     _ = @import("discovery.zig");

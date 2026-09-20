@@ -7,6 +7,7 @@ const agents = @import("agents.zig");
 const render = @import("render.zig");
 const commands = @import("commands.zig");
 const naming = @import("name_dialog.zig");
+const sidebar = @import("sidebar.zig");
 const Terminal = @import("terminal.zig").Terminal;
 const native = @import("native.zig");
 const max_closed = 8;
@@ -59,6 +60,8 @@ pub const Server = struct {
     watched: bool = true,
     prefix: bool = false,
     menu_page: usize = 0,
+    sidebar_open: bool = true,
+    sidebar_offset: usize = 0,
     tab_menu: ?commands.TabMenu = null,
     ui_mouse_down: bool = false,
     resize_mode: bool = false,
@@ -87,7 +90,50 @@ pub const Server = struct {
     last_bell: i64 = 0,
 
     fn area(s: *Server) layout.Rect {
-        return .{ .y = 1, .w = s.width, .h = s.height -| 2 };
+        return s.sidebarView(0).area();
+    }
+    fn sidebarView(s: *Server, count: usize) sidebar.View {
+        return sidebar.View.init(s.width, s.height, s.sidebar_open, s.sidebar_offset, count);
+    }
+    fn agentEntries(s: *Server, entries: *[sidebar.max_entries]sidebar.Entry) []sidebar.Entry {
+        var count: usize = 0;
+        for (s.model.tabs[0..s.model.count], 0..) |*tab, tab_index| {
+            for (s.panes.items) |*p| {
+                if (p.agent.provider == .other or s.model.tabForPane(p.id) != tab_index) continue;
+                entries[count] = .{ .target = .{ .pane = p.id }, .provider = p.agent.provider, .state = p.agent.state, .attention = p.agent.attention, .focused = s.model.tab().focus == p.id, .activity = p.agent.label() };
+                entries[count].setTitle(tab.title());
+                count += 1;
+            }
+        }
+        for (s.sessions.items) |*session| {
+            entries[count] = .{ .target = .{ .native = session.id }, .provider = session.provider, .state = session.state, .attention = session.attention, .ready = session.ready, .focused = s.native_notice == session.id };
+            entries[count].title_len = (std.fmt.bufPrint(&entries[count].title, "{s} {d}", .{ if (session.provider == .codex) "App Server" else "Stream session", session.id }) catch unreachable).len;
+            count += 1;
+        }
+        return entries[0..count];
+    }
+    fn selectAgent(s: *Server, target: sidebar.Target) !void {
+        s.copy_mode = false;
+        s.search_mode = false;
+        s.selection = null;
+        s.divider = null;
+        s.message_len = 0;
+        s.native_notice = null;
+        switch (target) {
+            .pane => |id| {
+                try s.model.focus(id);
+                s.acknowledge();
+                try s.resizePanes();
+            },
+            .native => |id| for (s.sessions.items) |session| {
+                if (session.id != id) continue;
+                var msg: [180]u8 = undefined;
+                s.notice(try std.fmt.bufPrint(&msg, " {s} native session {d}: {s}. Inspect: wrangler native events {d}", .{ @tagName(session.provider), id, @tagName(session.state), id }));
+                s.native_notice = id;
+                break;
+            },
+        }
+        s.dirty = true;
     }
     fn pane(s: *Server, id: layout.Id) ?*render.Pane {
         for (s.panes.items) |*p| if (p.id == id) return p;
@@ -215,7 +261,7 @@ pub const Server = struct {
     }
     fn create(s: *Server, split: ?layout.Axis, cwd: []const u8, command: ?[]const u8, title: []const u8) !layout.Id {
         if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
-        const t = try Terminal.create(s.width, s.height -| 2);
+        const t = try Terminal.create(s.area().w, s.area().h);
         errdefer t.destroy();
         const dir = try a.dupe(u8, cwd);
         errdefer a.free(dir);
@@ -335,6 +381,12 @@ pub const Server = struct {
             const title = std.fs.path.basename(cwd);
             _ = try s.create(null, cwd, null, if (title.len == 0 or eq(title, ".")) "shell" else title);
             s.copy_mode = false;
+        } else if (eq(name, "sidebar")) {
+            s.sidebar_open = !s.sidebar_open;
+            s.selection = null;
+            s.divider = null;
+            try s.resizePanes();
+            s.dirty = true;
         } else if (eq(name, "mute")) {
             s.muted = !s.muted;
             s.notice(if (s.muted) " Dings muted; attention markers remain on" else " Dings enabled");
@@ -472,6 +524,7 @@ pub const Server = struct {
                 '1'...'9' => try s.action("tab", &.{byte}),
                 'z' => try s.action("zoom", ""),
                 'a' => try s.action("attention", ""),
+                'b' => try s.action("sidebar", ""),
                 '!' => try s.action("break", ""),
                 'm' => try s.action("mute", ""),
                 'r' => {
@@ -620,16 +673,18 @@ pub const Server = struct {
         const x = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const y = (std.fmt.parseInt(u16, fields.next() orelse return, 10) catch return) -| 1;
         const release = seq[seq.len - 1] == 'm';
+        const tabs_x = s.sidebarView(0).tabX();
+        const tabs_width = s.width - tabs_x;
         if (s.ui_mouse_down) {
             if (release) s.ui_mouse_down = false;
             return;
         }
         if (!release and button == 2 and y == 0 and s.name_dialog == null and s.confirm == .none) {
-            if (render.tabAt(&s.model, s.width, x)) |index| {
+            if (x >= tabs_x) if (render.tabAt(&s.model, tabs_width, x - tabs_x)) |index| {
                 s.ui_mouse_down = true;
                 s.openTabMenu(index, x);
                 return;
-            }
+            };
         }
         if (s.tab_menu) |context| {
             if (!release and (button == 64 or button == 65)) s.moveTabMenu(button == 65);
@@ -689,19 +744,39 @@ pub const Server = struct {
             s.dirty = true;
             return;
         }
+        var agent_storage: [sidebar.max_entries]sidebar.Entry = undefined;
+        const entries = s.agentEntries(&agent_storage);
+        const side = s.sidebarView(entries.len);
+        if ((side.width > 0 and x < side.width and y < s.height - 1) or (y == 0 and x < tabs_x)) {
+            if (!release and (button == 64 or button == 65)) {
+                s.sidebar_offset = if (button == 64) side.offset -| 1 else @min(side.offset + 1, entries.len -| side.capacity);
+                s.dirty = true;
+            } else if (!release and button == 0) {
+                s.ui_mouse_down = true;
+                switch (side.hit(x, y)) {
+                    .toggle => try s.action("sidebar", ""),
+                    .previous => s.sidebar_offset = side.offset -| side.capacity,
+                    .next => s.sidebar_offset = @min(side.offset + side.capacity, entries.len -| side.capacity),
+                    .entry => |index| try s.selectAgent(entries[index].target),
+                    .none => {},
+                }
+                s.dirty = true;
+            }
+            return;
+        }
         if (y == 0 and button == 0 and !release) {
-            const add_x = render.addTabX(&s.model, s.width);
+            const add_x = tabs_x + render.addTabX(&s.model, tabs_width);
             if (x >= add_x and x < add_x + 3) {
                 s.ui_mouse_down = true;
                 try s.beginNewTab();
                 return;
             }
-            if (render.tabAt(&s.model, s.width, x)) |index| {
+            if (x >= tabs_x) if (render.tabAt(&s.model, tabs_width, x - tabs_x)) |index| {
                 s.model.active = index;
                 s.acknowledge();
                 try s.resizePanes();
                 s.dirty = true;
-            }
+            };
             return;
         }
         var locations: [layout.max_panes]layout.Placement = undefined;
@@ -783,6 +858,7 @@ pub const Server = struct {
             const session = try native.Session.start(s.next_session, provider, if (cwd.len > 0) cwd else ".");
             s.sessions.appendAssumeCapacity(session);
             s.next_session += 1;
+            s.dirty = true;
             try cl.queue(.{ .ok = true, .session = session.id, .provider = provider });
         } else if (eq(op, "native.list")) {
             const Info = struct { id: u32, provider: agents.Provider, ready: bool, exited: bool, state: agents.State, attention: agents.Attention, pending_requests: usize, next_seq: u64 };
@@ -946,11 +1022,15 @@ pub const Server = struct {
                 }
             }
             for (s.sessions.items) |*session| {
+                const old_state = session.state;
+                const old_ready = session.ready;
+                const old_attention = session.attention;
                 const ding = session.poll() catch |err| blk: {
                     s.notice(@errorName(err));
                     _ = c.kill(-session.child.id, c.SIGTERM);
                     break :blk false;
                 };
+                if (session.state != old_state or session.ready != old_ready or session.attention != old_attention) s.dirty = true;
                 if (ding) {
                     s.bell = true;
                     if (s.bell_kind != .needs_input) s.bell_kind = session.attention;
@@ -972,6 +1052,7 @@ pub const Server = struct {
                 for (s.sessions.items) |*session| if (session.child.id == pid) {
                     session.exited = true;
                     session.state = .done;
+                    s.dirty = true;
                 };
             }
             // Both Terminal.read and the general child reaper can detect exit.
@@ -1035,6 +1116,8 @@ pub const Server = struct {
                     .finished => native_finished += 1,
                     .none => {},
                 };
+                var agent_storage: [sidebar.max_entries]sidebar.Entry = undefined;
+                const entries = s.agentEntries(&agent_storage);
                 const bytes = try render.frame(&s.model, s.panes.items, s.width, s.height, .{
                     .message = s.message[0..s.message_len],
                     .copy_mode = s.copy_mode,
@@ -1044,6 +1127,9 @@ pub const Server = struct {
                     .tab_menu = s.tab_menu,
                     .dialog = s.name_dialog,
                     .confirm = s.confirm != .none,
+                    .sidebar_open = s.sidebar_open,
+                    .sidebar_offset = s.sidebar_offset,
+                    .agents = entries,
                 });
                 defer a.free(bytes);
                 for (s.clients.items) |*cl| if (cl.attached and cl.output.items.len == 0) {

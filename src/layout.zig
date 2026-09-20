@@ -99,6 +99,10 @@ pub const Model = struct {
         };
         return error.NoPane;
     }
+    pub fn tabForPane(m: *const Model, id: Id) ?usize {
+        for (m.tabs[0..m.count], 0..) |t, i| if (m.contains(t.root, id)) return i;
+        return null;
+    }
     pub fn close(m: *Model, id: Id) !void {
         const node = m.findNode(id) orelse return error.NoPane;
         for (m.tabs[0..m.count], 0..) |t, i| if (t.root == node) {
