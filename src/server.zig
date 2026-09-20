@@ -10,6 +10,7 @@ const naming = @import("name_dialog.zig");
 const sidebar = @import("sidebar.zig");
 const Terminal = @import("terminal.zig").Terminal;
 const native = @import("native.zig");
+const Theme = @import("theme.zig").Theme;
 const max_closed = 8;
 const ClosedPane = struct {
     terminal: *Terminal,
@@ -55,6 +56,7 @@ pub const Server = struct {
     executable: []const u8,
     width: u16 = 100,
     height: u16 = 30,
+    theme: Theme = .{},
     dirty: bool = true,
     quit: bool = false,
     watched: bool = true,
@@ -261,6 +263,7 @@ pub const Server = struct {
         if (s.panes.items.len >= layout.max_panes) return error.TooManyPanes;
         const t = try Terminal.create(s.area().w, s.area().h);
         errdefer t.destroy();
+        s.theme.apply(&t.vt);
         const dir = try a.dupe(u8, cwd);
         errdefer a.free(dir);
         const before = s.model;
@@ -900,6 +903,9 @@ pub const Server = struct {
                 return;
             };
             return error.NoNativeSession;
+        } else if (eq(op, "theme")) {
+            if (!cl.attached) return error.NotAttached;
+            s.updateTheme(v);
         } else if (eq(op, "attach")) {
             for (s.clients.items) |other| if (other.attached and other.fd != cl.fd) return error.AlreadyAttached;
             cl.attached = true;
@@ -918,6 +924,7 @@ pub const Server = struct {
             s.keybuf.clearRetainingCapacity();
             s.width = @intCast(std.math.clamp(number(v, "cols", 100), 10, 500));
             s.height = @intCast(std.math.clamp(number(v, "rows", 30), 4, 200));
+            s.updateTheme(v);
             if (s.model.count == 0) _ = try s.create(null, agents.str(v, "cwd"), null, "");
             try s.resizePanes();
             s.acknowledge();
@@ -985,6 +992,12 @@ pub const Server = struct {
             s.quit = true;
             try cl.queue(.{ .ok = true });
         } else return error.UnknownOperation;
+    }
+    fn updateTheme(s: *Server, v: std.json.Value) void {
+        const value = v.object.get("theme") orelse return;
+        s.theme.merge(Theme.fromJson(value));
+        for (s.panes.items) |p| s.theme.apply(&p.terminal.vt);
+        s.dirty = true;
     }
     fn hasClient(s: *Server) bool {
         for (s.clients.items) |cl| if (cl.attached and !cl.dead) return true;

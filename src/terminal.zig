@@ -17,6 +17,10 @@ pub const Terminal = struct {
         const t = try a.create(Terminal);
         errdefer a.destroy(t);
         t.* = .{ .vt = try vt.Terminal.init(a, .{ .cols = @max(1, cols), .rows = @max(1, rows), .max_scrollback = 10_000 }), .stream = undefined };
+        // Answer OSC 10/11 even before a client supplies its host theme. These
+        // match RenderState's fallback colors for headless or non-querying hosts.
+        t.vt.colors.foreground = .init(.{ .r = 255, .g = 255, .b = 255 });
+        t.vt.colors.background = .init(.{ .r = 0, .g = 0, .b = 0 });
         var handler = t.vt.vtHandler();
         handler.effects.write_pty = reply;
         handler.effects.device_attributes = attributes;
@@ -226,4 +230,32 @@ test "snapshot restores primary history and alternate output without input modes
     try std.testing.expect(try fresh.search("EARLY_HISTORY", 0));
     try std.testing.expect(try fresh.search("ALT_OUTPUT", 0));
     try std.testing.expect(try fresh.search("NEW_SHELL", 0));
+}
+
+test "terminal reports host colors and keeps application overrides" {
+    const t = try Terminal.create(20, 4);
+    defer t.destroy();
+    t.feed("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
+    try std.testing.expectEqualStrings("\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\", t.pending.items);
+    t.pending.clearRetainingCapacity();
+    var theme: @import("theme.zig").Theme = .{
+        .foreground = .{ .r = 220, .g = 220, .b = 220 },
+        .background = .{ .r = 30, .g = 30, .b = 30 },
+    };
+    theme.palette[2] = .{ .r = 12, .g = 200, .b = 30 };
+    theme.apply(&t.vt);
+    t.feed("\x1b]10;?\x1b\\\x1b]11;?\x07\x1b]4;2;?\x1b\\");
+    try std.testing.expectEqualStrings("\x1b]10;rgb:dcdc/dcdc/dcdc\x1b\\\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b]4;2;rgb:0c0c/c8c8/1e1e\x1b\\", t.pending.items);
+    try t.render.update(a, &t.vt);
+    try std.testing.expectEqual(theme.background.?, t.render.colors.background);
+    try std.testing.expectEqual(theme.palette[2].?, t.render.colors.palette[2]);
+    // An app can override and reset colors locally without changing the host.
+    t.feed("\x1b]11;rgb:01/02/03\x1b\\\x1b]4;2;rgb:04/05/06\x1b\\");
+    theme.background = .{ .r = 50, .g = 50, .b = 50 };
+    theme.apply(&t.vt);
+    try std.testing.expectEqual(vt.color.RGB{ .r = 1, .g = 2, .b = 3 }, t.vt.colors.background.get().?);
+    try std.testing.expectEqual(vt.color.RGB{ .r = 4, .g = 5, .b = 6 }, t.vt.colors.palette.current[2]);
+    t.feed("\x1b]111\x1b\\\x1b]104;2\x1b\\");
+    try std.testing.expectEqual(theme.background.?, t.vt.colors.background.get().?);
+    try std.testing.expectEqual(theme.palette[2].?, t.vt.colors.palette.current[2]);
 }

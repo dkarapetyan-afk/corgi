@@ -760,6 +760,54 @@ event('SessionEnd')
         self.assertTrue(any(json.loads(e['line']).get('result',{}).get('version')=='fixture' for e in events))
     def test_real_client_restores_terminal_on_detach(self):
         self.check_real_client_exit(b'\x02q',1)
+    def test_real_client_inherits_host_theme_and_answers_child_color_queries(self):
+        self.master,slave=os.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
+        self.proc=subprocess.Popen([EXE],env=self.env,stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
+        os.close(slave)
+        collected=bytearray()
+        def output_until(marker):
+            end=time.monotonic()+4
+            while marker not in collected and time.monotonic()<end:
+                if select.select([self.master],[],[],.05)[0]:collected.extend(os.read(self.master,65536))
+            self.assertIn(marker,collected)
+        output_until(b'\x1b]11;?')
+        # Fragment responses, mix BEL/ST terminators, and include early typing.
+        os.write(self.master,b'printf EARLY_INPUT_OK\r\x1b]10;rgb:dddd/')
+        os.write(self.master,b'dddd/dddd\x1b\\\x1b]11;rgb:1e/1e/1e\x07')
+        for i in range(16):os.write(self.master,f'\x1b]4;{i};rgb:11/cc/33\x1b\\'.encode())
+        output_until(b'EARLY_INPUT_OK');output_until(b'48;2;30;30;30m')
+        self.assertNotIn(b'rgb:',self.run_cli('read','1').encode())
+        probe=pathlib.Path(self.temp.name,'color_probe.py')
+        result=pathlib.Path(self.temp.name,'colors.json')
+        probe.write_text('''import os,select,time,tty,json,sys
+tty.setraw(0)
+os.write(1,b'\\x1b]10;?\\x1b\\\\\\x1b]11;?\\x1b\\\\\\x1b]4;2;?\\x1b\\\\')
+data=b'';end=time.monotonic()+2
+while time.monotonic()<end and data.count(b'\\x1b\\\\')<3:
+    if select.select([0],[],[],.05)[0]:data+=os.read(0,1024)
+open(sys.argv[1],'w').write(json.dumps(data.decode()))
+os.write(1,b'\\x1b[48;2;57;57;57m COMPOSER \\x1b[0m')
+while True:time.sleep(1)
+''')
+        ident=self.rpc(op='new',cwd=self.temp.name,command=shlex.join([sys.executable,str(probe),str(result)]))['pane']
+        self.until(result.exists)
+        replies=json.loads(result.read_text())
+        self.assertIn('\x1b]10;rgb:dddd/dddd/dddd\x1b\\',replies)
+        self.assertIn('\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\',replies)
+        self.assertIn('\x1b]4;2;rgb:1111/cccc/3333\x1b\\',replies)
+        output_until(b'48;2;57;57;57m COMPOSER ')
+        # A late reply updates existing panes and is not forwarded as input.
+        os.write(self.master,b'\x1b]11;rgb:22/22/22\x07')
+        output_until(b'48;2;34;34;34m')
+        self.rpc(op='close',pane=ident)
+        os.write(self.master,b'\x02q')
+        end=time.monotonic()+3
+        while self.proc.poll() is None and time.monotonic()<end:
+            if select.select([self.master],[],[],.05)[0]:
+                try:os.read(self.master,65536)
+                except OSError:break
+        self.proc.wait(timeout=1)
+        self.assertEqual(self.proc.returncode,0)
     def test_real_client_returns_to_terminal_on_last_shell_exit(self):
         self.check_real_client_exit(b'exit\r',0)
         self.assertEqual(self.rpc(op='list')['closed_panes'],1)

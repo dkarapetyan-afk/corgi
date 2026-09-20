@@ -29,16 +29,31 @@ pub fn attach(path: []const u8) !void {
     var raw = original;
     c.cfmakeraw(&raw);
     if (c.tcsetattr(0, c.TCSAFLUSH, &raw) != 0) return error.TerminalRequired;
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(a);
+    var probe: @import("theme.zig").Probe = .{};
+    try probe.query(&input);
     try os.writeAll(1, "\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h");
     var size = dimensions();
     const cwd = try std.process.getCwdAlloc(a);
     defer a.free(cwd);
-    try os.sendJson(fd, .{ .op = "attach", .cols = size.ws_col, .rows = size.ws_row, .cwd = cwd });
+    try os.sendJson(fd, .{ .op = "attach", .cols = size.ws_col, .rows = size.ws_row, .cwd = cwd, .theme = probe.theme });
     var pending: std.ArrayList(u8) = .empty;
     defer pending.deinit(a);
-    var input: std.ArrayList(u8) = .empty;
-    defer input.deinit(a);
     while (true) {
+        try probe.expire(&input);
+        if (probe.changed) {
+            try os.sendJson(fd, .{ .op = "theme", .theme = probe.theme });
+            probe.changed = false;
+        }
+        var input_end = input.items.len;
+        while (input_end > 0 and !std.unicode.utf8ValidateSlice(input.items[0..input_end])) : (input_end -= 1) {}
+        if (input_end > 0) {
+            try os.sendJson(fd, .{ .op = "input", .data = input.items[0..input_end] });
+            std.mem.copyForwards(u8, input.items[0 .. input.items.len - input_end], input.items[input_end..]);
+            input.items.len -= input_end;
+        }
+        if (input.items.len > 4) input.clearRetainingCapacity();
         const current = dimensions();
         if (current.ws_col != size.ws_col or current.ws_row != size.ws_row) {
             size = current;
@@ -53,15 +68,7 @@ pub fn attach(path: []const u8) !void {
             var buf: [8192]u8 = undefined;
             const n = c.read(0, &buf, buf.len);
             if (n <= 0) return;
-            try input.appendSlice(a, buf[0..@intCast(n)]);
-            var end = input.items.len;
-            while (end > 0 and !std.unicode.utf8ValidateSlice(input.items[0..end])) : (end -= 1) {}
-            if (end > 0) {
-                try os.sendJson(fd, .{ .op = "input", .data = input.items[0..end] });
-                std.mem.copyForwards(u8, input.items[0 .. input.items.len - end], input.items[end..]);
-                input.items.len -= end;
-            }
-            if (input.items.len > 4) input.clearRetainingCapacity();
+            try probe.feed(buf[0..@intCast(n)], &input);
         }
         if (polls[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR) != 0) {
             var buf: [65536]u8 = undefined;
