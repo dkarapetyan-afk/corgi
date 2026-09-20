@@ -1,6 +1,9 @@
 # Corgi
 
-A minimal terminal multiplexer for coding agents, written in Zig with Ghostty's terminal engine.
+A multiplexer terminal agent manager, heavily inspired by [herdr](https://github.com/herdrdev/herdr), powered by [Ghostty](https://github.com/ghostty-org/ghostty).
+
+
+## Development
 
 Requires **Zig 0.15.2** on your PATH (or set `ZIG=/path/to/zig`). Tested on macOS Apple Silicon.
 
@@ -10,7 +13,7 @@ From this directory:
 ./go.sh
 ```
 
-This builds Corgi and starts or attaches to its background runtime. No configuration required.
+This builds Corgi and starts or attaches to its background runtime.
 
 - **Ctrl-B** opens the clickable command menu and shows shortcuts.
 - Click **+** to create a tab; right-click a tab to rename or close it. Unnamed tabs show their current position; clear a name to return to automatic numbering.
