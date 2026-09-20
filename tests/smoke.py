@@ -1043,7 +1043,7 @@ while True:
         self.assertNotIn('Unrelated','\n'.join(row[:27] for row in screen))
         self.rpc(op='hook',pane=pane,provider='claude',seq=2,event={'hook_event_name':'PreToolUse','session_id':'directory','cwd':'/a/very/long/working/directory/backend','tool_name':'Read'})
         screen=self.agent_frame('claude','●',directory='backend',activity='🔧')
-        self.assertTrue(screen[13].startswith(' ●  …'))
+        self.assertTrue(screen[13].startswith(' ●  /.../'))
         self.rpc(op='hook',pane=pane,provider='claude',seq=3,event={'hook_event_name':'PostToolUse','session_id':'directory','tool_name':'Read'})
         self.agent_frame('claude','●',directory='backend',activity='🧠')
     def test_sidebar_native_updates_and_selection_keep_approvals_pending(self):
