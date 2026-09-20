@@ -6,18 +6,23 @@ const agents = @import("agents.zig");
 const integration = @import("integration.zig");
 pub fn main() void {
     run() catch |err| {
-        std.debug.print("corgi: {s}\n", .{@errorName(err)});
+        if (err == error.NestedCorgi) {
+            std.debug.print("corgi: cannot attach inside a Corgi pane; detach first or use another terminal.\n", .{});
+        } else {
+            std.debug.print("corgi: {s}\n", .{@errorName(err)});
+        }
         std.process.exit(1);
     };
 }
 fn run() !void {
     const args = try std.process.argsAlloc(a);
     defer std.process.argsFree(a, args);
+    const cmd = if (args.len > 1) args[1] else "attach";
+    if (eq(cmd, "attach") and os.env("CORGI_PANE") != null) return error.NestedCorgi;
     const path = try os.socketPath();
     defer a.free(path);
     const exe = try std.fs.selfExePathAlloc(a);
     defer a.free(exe);
-    const cmd = if (args.len > 1) args[1] else "attach";
     if (eq(cmd, "--help") or eq(cmd, "help")) return os.writeAll(1, help);
     if (eq(cmd, "--version")) return os.writeAll(1, "corgi 0.1.0 (Ghostty VT; Zig 0.15.2)\n");
     if (eq(cmd, "which")) {
