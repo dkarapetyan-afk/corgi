@@ -226,6 +226,40 @@ test("an agent marked unread stays unread in view until focus moves onto it", as
   }
 });
 
+test("only the focused pane reads a finished turn", async () => {
+  const sent: [string, any][] = [];
+  const s: any = new Controller({
+    socket: "",
+    request: transport(async (op, fields) => {
+      sent.push([op, fields]);
+      return { ok: true };
+    }).request,
+  });
+  const acknowledged = async () => {
+    sent.length = 0;
+    await viewer.presented(s);
+    return sent.filter(([op]) => op === "pane.acknowledge").map(([, fields]) => fields.pane);
+  };
+  const snapshot = pair();
+  for (const p of snapshot.panes)
+    Object.assign(p.agent, { attention: "finished", observation: { completed: 1, read: 0 } });
+  s.receiveSnapshot(snapshot);
+  try {
+    s.focusPane(1);
+    // The split beside it is in view but stays unread.
+    expect(await acknowledged()).toEqual([1]);
+    expect(s.workspaceEntries()[0].unread).toBe(1);
+    s.switchWorkspace(2);
+    expect(await acknowledged()).toEqual([3]);
+    s.switchWorkspace(1);
+    expect(await acknowledged()).toEqual([]);
+    s.focusPane(2);
+    expect(await acknowledged()).toEqual([2]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("open shows the workspace already on that folder", async () => {
   const s = controller();
   s.receiveSnapshot(folders("/a", "/b"));

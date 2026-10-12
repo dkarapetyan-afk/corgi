@@ -185,17 +185,18 @@ export async function presented(view: Controller): Promise<void> {
       }
       view.marked_unread.delete(p.id);
     }
-    if (!unread(p.agent.observation) && (p.agent.attention === "none" || !focused)) continue;
+    // Splits beside the focused pane stay unread until focus moves onto them.
+    if (!focused || (!unread(p.agent.observation) && p.agent.attention === "none")) continue;
     await call(view.connection, "pane.acknowledge", {
       pane: p.id,
       binding: p.binding,
       conversation: p.agent.conversation,
       session: p.agent.session,
       through: p.agent.observation.completed,
-      attention_at: focused ? p.agent.changed_at : -1,
+      attention_at: p.agent.changed_at,
     });
     acknowledge(p.agent.observation, p.agent.observation.completed);
-    if (focused || p.agent.attention !== "needs_input") p.agent.attention = "none";
+    p.agent.attention = "none";
   }
   for (const id of view.marked_unread.keys()) if (!shown.has(id)) view.marked_unread.delete(id);
 }
