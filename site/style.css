@@ -184,72 +184,21 @@ footer a { color: var(--muted); }
   .btn .ico { display: inline-block; }
   .cmd .btn { padding: 4px 6px; }
 }
-/* ---- The guided session: a split corgi a user drives, with notes that
-   point at what's worth seeing. Notes take the accent as a guide color. */
-/* Notes animate in from a little larger; they never widen the page. */
-.sim-band { gap: 12px; overflow-x: clip; }
+/* ---- The session up top, then the features: each a band whose screen is a
+   slice of corgi, what it's about ringed in the accent. */
+.sim-band { gap: 12px; }
 .band[hidden] { display: none; }
-.sim-host { position: relative; justify-self: center; max-width: 100%; }
 .sim-stage { margin-top: 0; outline: none; }
 #v-sim { outline: none; }
-.sim-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
-.sim-layer > * { position: absolute; }
-.sim-in { animation: sim-in .3s ease-out both; }
-.sim-out { animation: sim-out .22s ease-in both; }
-@keyframes sim-in { from { opacity: 0; translate: 0 3px; } }
-@keyframes sim-out { to { opacity: 0; } }
+.band > .legend { font-size: inherit; color: var(--muted); }
+.stage.marked { position: relative; }
+.stage.marked > .sim-ring, .stage.marked > .sim-dim, .stage.marked > .sim-wire { position: absolute; z-index: 2; pointer-events: none; }
 
-/* A stop pauses the session and darkens all but what the note is about.
-   Then the ring, the wire and the note come in, in that order. */
-/* Sized once its note is placed; until then it takes no room. */
-.sim-dim { width: 0; height: 0; overflow: visible; pointer-events: none; animation: sim-dim .4s ease-out both; }
-.sim-dim > rect { fill: rgb(6 7 9 / .66); }
-@keyframes sim-dim { from { opacity: 0; } }
-.sim-ring.sim-in { animation: sim-ring .35s .2s cubic-bezier(.2, .8, .3, 1.2) both; }
-@keyframes sim-ring { from { opacity: 0; scale: 1.25; } }
-.sim-box.sim-in { animation-delay: .75s; }
-.sim-layer .sim-out { animation: sim-out .22s ease-in both; }
-
-/* A ring on what the note means, and a wire into the note. */
-.sim-ring { border-radius: 4px; outline: 1px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 0 4px rgb(123 241 168 / .08); }
-.sim-wire { left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
-.sim-wire path { fill: none; stroke: var(--accent); stroke-width: 1; stroke-linejoin: miter; stroke-dasharray: var(--len) var(--len); stroke-dashoffset: var(--len); animation: sim-draw .45s .4s ease-out forwards; }
+/* Sized once its rings are placed; until then it takes no room. */
+.sim-dim { width: 0; height: 0; overflow: visible; }
+.sim-dim > rect { fill: rgb(6 7 9 / .55); }
+/* A wire joins rings that go together. */
+.sim-wire { overflow: visible; }
+.sim-wire path { fill: none; stroke: var(--accent); stroke-width: 1; stroke-linejoin: miter; }
 .sim-wire circle { fill: var(--accent); }
-@keyframes sim-draw { to { stroke-dashoffset: 0; } }
-
-/* The note: a title, then one line that shows rather than tells. Set on the
-   terminal's grid at its font size. */
-.sim-box { box-sizing: border-box; display: grid; align-content: center; gap: .2em; white-space: pre; text-align: left; background: color-mix(in srgb, var(--accent) 7%, var(--pane)); border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); border-radius: 4px; box-shadow: 0 8px 24px rgb(0 0 0 / .5); line-height: 1.3; }
-.sim-box b { color: var(--accent); font-weight: 700; }
-.sim-box .ln { color: var(--text); }
-.sim-box .k { color: var(--strong); font-weight: 700; background: var(--line); padding: 0 .4ch; border-radius: 2px; }
-.sim-box .c { color: #a9b1f5; }
-.sim-box .lk { color: var(--strong); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
-.sim-box .ar { color: var(--faint); }
-
-/* Keys the user presses, shown once at the bottom of the screen. */
-.sim-keys { position: absolute; z-index: 4; left: 50%; bottom: 18px; translate: -50% 0; display: flex; gap: 4px; pointer-events: none; opacity: 0; transition: opacity .2s; }
-.sim-keys.on { opacity: 1; }
-.sim-keys kbd { font-size: 13px; padding: 2px 8px; border-radius: 4px; background: var(--selected); box-shadow: 0 0 0 1px var(--line), 0 4px 12px rgb(0 0 0 / .5); }
-.sim-keys kbd.flash { animation: keyflash .25s ease-out; }
-
-/* The tour's pointer glides between stops and dips on a click. */
-#v-sim .sim-cursor { left: 0; top: 0; transition: left .55s cubic-bezier(.3, .7, .2, 1), top .55s cubic-bezier(.3, .7, .2, 1), opacity .3s; transform-origin: 0 0; }
-#v-sim .sim-cursor.press svg { transform: scale(.82); transition: transform .08s; }
-#v-sim .sim-cursor svg { transition: transform .15s; }
-#v-sim .sim-cursor.locate { animation: locate 1.1s cubic-bezier(.3, .6, .2, 1); }
-#v-sim.taken .sim-cursor { opacity: 0; }
-#v-sim.detached .badge { display: none; }
-
-/* Stops: where the tour is, and a way to jump. */
-.sim-chapters { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
-.sim-chapters button { position: relative; font: inherit; color: var(--faint); background: none; border: 0; padding: 3px 1ch 5px; cursor: pointer; }
-.sim-chapters button:hover { color: var(--text); }
-.sim-chapters button::after { content: ""; position: absolute; left: 1ch; right: 1ch; bottom: 1px; height: 1px; background: var(--surface); }
-.sim-chapters button[aria-current="step"] { color: var(--strong); }
-.sim-chapters button[aria-current="step"]::after { background: linear-gradient(90deg, var(--accent) var(--p, 0%), var(--line) var(--p, 0%)); }
-@media (prefers-reduced-motion: reduce) {
-  .sim-in, .sim-out, .sim-dim, .sim-ring.sim-in, .sim-wire path { animation: none; stroke-dashoffset: 0; }
-  #v-sim .sim-cursor { transition: none; }
-}
-
+.sim-ring { border-radius: 4px; outline: 1px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 0 4px rgb(123 241 168 / .08); }

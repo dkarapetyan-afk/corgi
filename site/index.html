@@ -19,7 +19,7 @@
       <h1>corgi</h1>
       <button class="sprite" id="sprite" type="button" aria-label="Throw the ball" title="Throw the ball"></button>
     </div>
-    <p class="lede">Terminal multiplexer for humans and agents.</p>
+    <p class="lede">Terminal multiplexer for humans (and agents).</p>
     <p class="love" id="love" role="img" aria-label="A love letter to the modern terminal.">A love letter to the modern terminal. &lt;3</p>
     <div class="get">
       <div class="cmd">
@@ -31,17 +31,7 @@
   </header>
 
   <section class="band sim-band" aria-label="A corgi session">
-    <div class="sim-host" id="sim-host">
-      <div class="stage sim-stage"><div class="screen" id="v-sim" tabindex="0" aria-label="A simulated corgi session. Hover the agents, click to switch, or type in the shell." style="--cols:124;--max:14px">
-        <div class="cursor sim-cursor" id="sim-cursor" aria-hidden="true">
-          <svg class="arrow" viewBox="0 0 14 20"><path d="M1 1v15.5l4-3.8 2.7 5.8 2.4-1.1-2.6-5.6H13z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>
-          <svg class="hand" viewBox="0 0 18 20"><path d="M6 1.2c.9 0 1.6.7 1.6 1.6V8h.3V7.2c0-.8.7-1.4 1.5-1.4s1.4.6 1.4 1.4V8h.3c0-.7.6-1.3 1.4-1.3s1.4.6 1.4 1.4v.7c.8 0 1.4.6 1.4 1.4v3.6c0 2.8-2.2 5-5 5h-1.4c-1.7 0-3.2-.9-4.1-2.3L2.3 11.6c-.4-.7-.2-1.5.4-1.9.7-.4 1.5-.2 1.9.4l-.2-.1V2.8c0-.9.7-1.6 1.6-1.6z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>
-        </div>
-      </div></div>
-      <div class="sim-layer" id="sim-layer" aria-live="polite"></div>
-      <div class="sim-keys" id="sim-keys" aria-hidden="true"></div>
-    </div>
-    <ol class="sim-chapters" id="sim-chapters" aria-label="Tour stops"></ol>
+    <div class="stage sim-stage"><div class="screen" id="v-sim" tabindex="0" aria-label="A corgi session: Claude and Codex side by side. Hover the agents, click to switch, or type in moonlander's shell." style="--cols:124;--max:14px"></div></div>
   </section>
 
   <section class="band" aria-label="Keeps watch" hidden>
@@ -63,14 +53,55 @@
     </div></div>
   </section>
 
+  <section class="band" data-feature="agents">
+    <h2><span>agent aware</span></h2>
+    <ul class="legend">
+      <li><b class="f-accent">▶</b> working</li>
+      <li><b class="f-warm">●</b> needs you</li>
+      <li><b class="f-accent">●</b> unread</li>
+      <li><span class="f-muted">○</span> clear</li>
+    </ul>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+  </section>
+
   <section class="band">
     <h2><span>new <s>tab</s> agent</span></h2>
-    <p><kbd>Ctrl-T</kbd> to jump into work, new or old.</p>
+    <p><kbd id="ctrl-t">Ctrl-T</kbd> to jump into work, new or old.</p>
     <div id="launcher-stage" tabindex="0" aria-label="The new agent picker. Press / to search past conversations, Enter to open one.">
       <input id="launcher-query" type="text" autocomplete="off" spellcheck="false" aria-label="Search past conversations" hidden>
       <div class="screen bare" id="v-launcher" style="--cols:112;--max:14px"></div>
       <div class="screen bare" id="v-launcher-phone" style="--cols:48;--max:14px" hidden></div>
     </div>
+  </section>
+
+  <section class="band" data-feature="steps">
+    <h2><span>activity tracking</span></h2>
+    <p>Hover an agent to see what it did.</p>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="away">
+    <h2><span>while you were away</span></h2>
+    <p>Finished agents wait for you.</p>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="push">
+    <h2><span>unpushed work</span></h2>
+    <p>Push from the sidebar.</p>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="systems">
+    <h2><span>dev servers</span></h2>
+    <p>Every running server gets a link.</p>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="resources">
+    <h2><span>cpu and memory</span></h2>
+    <p>Per workspace, live.</p>
+    <div class="stage"><div class="screen" style="--max:14px"></div></div>
   </section>
 
   <section class="band" id="overview" aria-label="Top for your tokens">
