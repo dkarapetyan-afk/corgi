@@ -36,6 +36,8 @@ export class Preferences {
   worktree_folder = worktreeFolder.default_template;
   /** The review panel's width, as last dragged. */
   review_width = 80;
+  /** Rows the review panel's file list takes at most, as last dragged. */
+  review_tree_rows = 9;
 }
 export function path(): string {
   if (process.env.XDG_STATE_HOME) return join(process.env.XDG_STATE_HOME, "corgi", "viewer.json");
@@ -124,6 +126,10 @@ export function readExisting(file: string): Preferences | null {
     if ("review_width" in d) {
       if (!Number.isInteger(d.review_width) || d.review_width < 0 || d.review_width > 65535) return null;
       v.review_width = d.review_width;
+    }
+    if ("review_tree_rows" in d) {
+      if (!Number.isInteger(d.review_tree_rows) || d.review_tree_rows < 1 || d.review_tree_rows > 65535) return null;
+      v.review_tree_rows = d.review_tree_rows;
     }
     if ("sidebar_split" in d && d.sidebar_split !== null) {
       if (!Number.isInteger(d.sidebar_split) || d.sidebar_split < 0 || d.sidebar_split > 65535) return null;

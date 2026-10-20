@@ -132,8 +132,12 @@ export interface Ui {
   workspace_offset: number;
   /** Columns the review panel takes at the right edge; 0 while it is closed. */
   review_width: number;
+  /** The row of the rule under the review panel's file list, which drags its height. */
+  review_split: number | null;
   /** The review panel has the keyboard, so no pane shows its cursor. */
   review_focused: boolean;
+  /** The review panel's keys are up, dimming the panes. */
+  review_keys: boolean;
   /** Draws the review panel over its columns. */
   review_draw: ((w: Writer) => void) | null;
 }
@@ -194,7 +198,9 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     workspaces: [],
     workspace_offset: 0,
     review_width: 0,
+    review_split: null,
     review_focused: false,
+    review_keys: false,
     review_draw: null,
     ...fields,
   };
@@ -549,6 +555,8 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         // The sidebar's last column drags its width, ahead of any control there.
         if (side.width > 0 && pointer.x === side.width - 1) resize_hover = "horizontal";
         else if (u.review_width > 0 && pointer.x === width - u.review_width) resize_hover = "horizontal";
+        else if (u.review_width > 0 && pointer.x > width - u.review_width && pointer.y === u.review_split)
+          resize_hover = "vertical";
         else if (side.splitHandle(pointer.x, pointer.y)) resize_hover = "vertical";
         else {
           const hit = view.dividerAt(area, pointer.x, pointer.y);
@@ -606,8 +614,13 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         }
       }
     }
-    // Dialogs, the launcher, Corgi setup and the workspace drawer dim the panes behind them.
-    const dim = u.dialog !== null || u.agent_launcher !== null || u.corgi_setup !== null || u.sidebar_drawer !== null;
+    // Dialogs, the launcher, Corgi setup, the workspace drawer and the review panel's keys dim the panes behind them.
+    const dim =
+      u.dialog !== null ||
+      u.agent_launcher !== null ||
+      u.corgi_setup !== null ||
+      u.sidebar_drawer !== null ||
+      u.review_keys;
     w.write(p.terminal.rows(p.id, r.x, r.y, r.w, r.h, dim, hovered));
     w.write("\x1b[0m");
     if (p.restoring.length > 0) {

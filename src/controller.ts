@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import * as keys from "./keys";
 import * as keyboard from "./keyboard";
+import * as textArea from "./text_area";
 import * as keymap from "./keymap";
 import * as bindings from "./bindings";
 import * as onboarding from "./onboarding";
@@ -106,7 +107,7 @@ interface TabDrag {
 }
 /** A paste goes to the text field that owned the keyboard when it began, or
  * to the focused pane when none did. */
-type Paste = { pane: number } | "launcher" | "setup" | "picker" | "name" | "discard";
+type Paste = { pane: number } | "launcher" | "setup" | "picker" | "name" | "review" | "discard";
 /** Where keys go when no menu or dialog takes them: the focused pane, the
  * sidebar's cursor, or the review panel. */
 type Keyboard = "pane" | "review" | { sidebar: sidebarFocus.State };
@@ -332,6 +333,14 @@ export class Controller {
       this.wake();
     };
     this.review.summarized = (root, runs) => this.review_summaries.put(root, runs);
+    this.review.resized = rows => {
+      this.prefs.review_tree_rows = rows;
+      try {
+        preferences.update({ review_tree_rows: rows });
+      } catch (error) {
+        this.notice((error as Error).message);
+      }
+    };
     this.review_summaries.changed = () => {
       const menu = this.tab_menu,
         p = menu?.agent ? this.pane(menu.tab) : undefined;
@@ -648,6 +657,7 @@ export class Controller {
   }
   loadPreferences(): void {
     this.prefs = preferences.load();
+    this.review.tree_rows = this.prefs.review_tree_rows;
     if (!this.prefs.onboarding_complete)
       this.onboarding = Object.assign(new onboarding.State(), { preset: this.prefs.preset, prefix: this.prefs.prefix });
   }
@@ -3388,6 +3398,7 @@ export class Controller {
     if (this.corgi_setup?.editing) return "setup";
     if (this.agent_picker) return "picker";
     if (this.name_dialog) return "name";
+    if (this.reviewKeys() && this.review.typing) return "review";
     if (this.hasMenu() || this.reviewKeys()) return "discard";
     const p = this.focused();
     return p ? { pane: p.id } : "discard";
@@ -3558,6 +3569,9 @@ export class Controller {
           this.name_dialog.pasteByte(byte);
         }
         break;
+      case "review":
+        this.review.pasteByte(byte);
+        break;
       case "discard":
         break;
     }
@@ -3650,9 +3664,15 @@ export class Controller {
           }
           // Resolve Corgi shortcuts before encoding for the child. A
           // Kitty Ctrl-B/Ctrl-T are otherwise invisible to the byte handlers.
-          const legacy = Array.from(Buffer.from(viewerNative.encodeKey(null, key_event.codepoint, key_event.mods)));
           const owned =
             this.hasMenu() || this.name_dialog !== null || this.copy_mode || this.search_mode || this.reviewKeys();
+          // Corgi's own text boxes read some keys in sequences legacy encoding can't make.
+          const edit = owned ? keyboard.editSequence(key_event) : null;
+          const legacy = Array.from(
+            edit !== null
+              ? Buffer.from(edit, "latin1")
+              : Buffer.from(viewerNative.encodeKey(null, key_event.codepoint, key_event.mods)),
+          );
           if (
             owned ||
             (legacy.length === 1 &&
@@ -5327,9 +5347,11 @@ export class Controller {
           ? this.sidebar_drag === "width"
             ? "horizontal"
             : "vertical"
-          : this.input_state.divider && !this.input_state.divider.cancelled
-            ? this.input_state.divider.hit.axis
-            : null,
+          : this.review.splitting
+            ? "vertical"
+            : this.input_state.divider && !this.input_state.divider.cancelled
+              ? this.input_state.divider.hit.axis
+              : null,
         sidebar_offset: this.agent_picker ? this.agent_picker.offset : this.agentOffset().get(),
         agents: entries,
         conversations: this.runtime.conversations,
@@ -5351,7 +5373,9 @@ export class Controller {
           : this.workspaceEntries(),
         workspace_offset: this.workspace_offset,
         review_width,
+        review_split: review_width > 0 ? this.review.splitRow : null,
         review_focused,
+        review_keys: review_width > 0 && this.review.keysOpen,
         review_draw:
           review_width > 0
             ? (w: Writer) =>
@@ -5526,32 +5550,29 @@ export class Controller {
     this.dirty = true;
   }
 }
-/** Control bytes the review panel reads as keys. */
-const byte_keys: Record<number, panel.Named> = {
-  4: "half_down",
-  8: "backspace",
+/** Control bytes the review panel reads as keys: a text box's, and its own,
+ * whose meaning ctrl+d and ctrl+u take from what has the keys. */
+const byte_keys: Partial<Record<number, panel.Named>> = {
+  ...textArea.byte_edits,
+  4: "ctrl_d",
   9: "tab",
   10: "newline",
   13: "enter",
-  21: "half_up",
+  21: "ctrl_u",
   27: "escape",
-  127: "backspace",
+};
+/** Sequences the review panel reads as keys: a text box's, with its own
+ * moves over the diff. */
+const sequence_keys: Partial<Record<keys.Key, panel.Named>> = {
+  ...textArea.key_edits,
+  home: "home",
+  end: "end",
+  page_up: "page_up",
+  page_down: "page_down",
+  shift_tab: "shift_tab",
 };
 function reviewNamed(key: keys.Key): panel.Named | null {
-  switch (key) {
-    case "up":
-    case "down":
-    case "left":
-    case "right":
-    case "page_up":
-    case "page_down":
-    case "home":
-    case "end":
-    case "shift_tab":
-      return key;
-    default:
-      return null;
-  }
+  return sequence_keys[key] ?? null;
 }
 function direction(key: number): Direction | null {
   switch (key) {

@@ -15,6 +15,7 @@ test("preferences round trip and fall back to defaults", async () => {
     p.agents = "workspace";
     p.sidebar_width = 44;
     p.sidebar_split = 9;
+    p.review_tree_rows = 14;
     p.agent_scroll = { workspace: 2, offset: 7 };
     await write(file, p);
     await updateFile(file, { agents: "all" });
@@ -22,6 +23,7 @@ test("preferences round trip and fall back to defaults", async () => {
       agents: "all",
       sidebar_width: 44,
       sidebar_split: 9,
+      review_tree_rows: 14,
       agent_scroll: { workspace: 2, offset: 7 },
     });
     await writeFile(file, '{"resources":{"enabled":false,"io":false,"alerts":true}}');

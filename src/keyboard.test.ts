@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { decode, encode } from "./keyboard";
+import { decode, editSequence, encode } from "./keyboard";
 test("modified Return uses the pane keyboard protocol", () => {
   for (const seq of ["\x1b[13;2u", "\x1b[13;5u", "\x1b[13;9u", "\x1b[27u"])
     expect(encode(decode(seq)!, { kitty_flags: { disambiguate: true } })).toBe(seq);
@@ -51,4 +51,18 @@ test("F1 to F4 arrive in either host form and leave in the pane's", () => {
     expect(encode(decode(incoming)!)).toBe(expected);
   expect(encode(decode("\x1bOP")!, { kitty_flags: { disambiguate: true } })).toBe("\x1b[P");
   expect(decode("\x1b[R")).toBeNull();
+});
+
+test("keys whose legacy encoding loses an edit get the sequence text boxes read", () => {
+  const key = (codepoint: number, mods: Parameters<typeof editSequence>[0]["mods"]) =>
+    editSequence({ codepoint, mods });
+  expect(key(127, { alt: true })).toBe("\x1b\x7f");
+  expect(key(127, { ctrl: true })).toBe("\x1b\x7f");
+  expect(key(127, { super: true })).toBe("\x15");
+  expect(key(13, { shift: true })).toBe("\x1b\r");
+  expect(key(98, { alt: true })).toBe("\x1bb");
+  expect(key(99, { super: true })).toBe("\x1b[99;9u");
+  expect(key(99, { super: true, shift: true })).toBeNull();
+  expect(key(127, {})).toBeNull();
+  expect(key(97, { ctrl: true })).toBeNull();
 });

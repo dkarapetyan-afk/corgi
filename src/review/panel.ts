@@ -14,13 +14,12 @@ import * as git from "./git";
 import * as notes from "./notes";
 import * as syntax from "./syntax";
 import * as tree from "./tree";
+import * as textArea from "../text_area";
 
 export type Scope = "all" | "uncommitted" | "commits";
+/** A key the panel reads: an edit, as every text box reads it, or one of its own. */
 export type Named =
-  | "up"
-  | "down"
-  | "left"
-  | "right"
+  | textArea.Edit
   | "page_up"
   | "page_down"
   | "home"
@@ -29,11 +28,20 @@ export type Named =
   | "shift_tab"
   | "enter"
   | "escape"
-  | "backspace"
-  | "half_down"
-  | "half_up"
-  | "newline";
+  | "ctrl_d"
+  | "ctrl_u";
 export type Key = { named: Named } | { text: string };
+/** What a key does in the note box or find: its edit, with the panel's own
+ * names for the line's ends and ctrl+d and ctrl+u as text boxes read them. */
+function typed(named: Named): textArea.Edit | null {
+  const aliases: Partial<Record<Named, textArea.Edit>> = {
+    home: "line_start",
+    end: "line_end",
+    ctrl_d: "delete",
+    ctrl_u: "line_backspace",
+  };
+  return aliases[named] ?? (textArea.isEdit(named) ? named : null);
+}
 /** What a key or click asks of the viewer beyond the panel. */
 export type Effect =
   | { kind: "none" }
@@ -52,8 +60,90 @@ export const refresh_ms = 2000;
 /** Rows a long line wraps to at most. */
 const wrap_cap = 6;
 const min_width = 40;
+/** Rows the diff keeps however far the file list is dragged. */
+const min_diff_rows = 5;
+/** Diffs "All files" reads at once. */
+const parallel_reads = 4;
+/** Keys under a heading: what each row does, and its keys. */
+type KeyGroup = [string, [string, string][]];
+const key_groups: KeyGroup[] = [
+  [
+    "Move",
+    [
+      ["Up, down", "j k"],
+      ["Page", "space -"],
+      ["Half page", "ctrl+d ctrl+u"],
+      ["Top, bottom", "home end"],
+      ["Change navigation", "] ["],
+      ["File navigation", "f F"],
+      ["Find", "/"],
+      ["List, diff", "tab"],
+    ],
+  ],
+  [
+    "File list",
+    [
+      ["Open", "enter"],
+      ["Sort, reverse", "o O"],
+      ["Hide, resize", "z < >"],
+    ],
+  ],
+  [
+    "Leave",
+    [
+      ["Back to agent", "esc"],
+      ["Close", "q"],
+    ],
+  ],
+  [
+    "Show",
+    [
+      ["All", "a"],
+      ["Uncommitted", "u"],
+      ["Commit", "g G"],
+      ["Expand lines", "enter"],
+      ["Fold file", "x"],
+      ["Wrap", "w"],
+      ["Pin review", "p"],
+    ],
+  ],
+  [
+    "Notes",
+    [
+      ["Select", "v shift+↑↓"],
+      ["Comment", "c"],
+      ["New line", "shift+enter"],
+      ["Edit, delete", "e d"],
+      ["Navigation", "n N"],
+      ["List", "l"],
+      ["Send to agent", "s"],
+      ["Copy", "y"],
+    ],
+  ],
+];
+/** Columns one group takes: its widest row, indented, with a gap before the keys. */
+const keys_column = Math.max(
+  ...key_groups.flatMap(([heading, rows]) => [
+    heading.length,
+    ...rows.map(([what, k]) => 2 + what.length + 3 + [...k].length),
+  ]),
+);
 
 type Part = "tree" | "diff";
+/** A row of the file list: the "All files" slot above the files. */
+type ListRow = tree.Row | { kind: "all"; id: "all"; depth: 0 };
+const all_row: ListRow = { kind: "all", id: "all", depth: 0 };
+/** A file as the diff area shows it: its change, its diff once read, and the units shown. */
+interface Section {
+  change: git.Change;
+  file: Loaded | null;
+  d: diff.FileDiff | null;
+  /** Folded to its heading on "All files". */
+  collapsed: boolean;
+  units: diff.Unit[];
+}
+/** Where the cursor can stop in a section: each unit, or its one notice or folded heading. */
+const stops = (s: Section) => Math.max(1, s.units.length);
 interface Compose {
   path: string;
   rev: notes.Rev;
@@ -61,43 +151,56 @@ interface Compose {
   start: number;
   end: number;
   snippet: string;
-  text: string;
+  area: textArea.TextArea;
   edit: number | null;
   range: [number, number];
 }
 interface Find {
-  query: string;
-  hits: [number, number, number][];
-  by_row: Map<number, diff.Ranges>;
+  query: textArea.TextArea;
+  hits: { path: string; row: number; start: number; end: number }[];
+  /** The hits' ranges by file and row, keyed `path\0row`. */
+  by_row: Map<string, diff.Ranges>;
   at: number;
 }
 /** One pane's review: what it looks at and the notes it will send. */
 class Review {
   scope: Scope = "all";
+  /** The "All files" slot: every file's diff in one flow, in the list's order. */
+  all = true;
   /** How the files are listed: a tree by name, or one list by last edit. */
   sort: "name" | "edited" = "name";
   /** The other way from how each sort starts: Z to A, or oldest edit first. */
   reversed = false;
   pick: string | null = null;
+  /** The file shown alone, or on "All files" the one the cursor is in. */
   path: string | null = null;
   part: Part = "tree";
-  tree_sel: string | null = null;
+  tree_sel: string | null = "all";
   tree_top = 0;
   /** The wheel scrolled the tree; it follows the selection again when that moves. */
   tree_free = false;
-  tree_rows = 9;
   tree_hidden = false;
   toggled = new Set<string>();
   cur = 0;
   top = 0;
   free = false;
+  /** The flow's top file and where its heading was when last drawn, so files
+   * changing above it leave the screen where it was. */
+  landmark: { path: string; y: number } | null = null;
+  /** The next draw puts the cursor's file heading at the top. */
+  raise = false;
   shift = 0;
   wrap = true;
   /** Opened folds per file, by anchor. */
   opened = new Map<string, Set<number>>();
+  /** Files folded to their heading on "All files". */
+  collapsed = new Set<string>();
   /** Generated files whose diff was asked for. */
   loaded = new Set<string>();
   anchor: number | null = null;
+  /** The selection came from v, so moving extends it; one made with shift
+   * or a drag ends at the next plain move. */
+  visual = false;
   compose: Compose | null = null;
   notes: notes.Note[] = [];
   seq = 1;
@@ -131,6 +234,17 @@ class Checkout {
   read = false;
   constructor(readonly root: string) {}
 }
+/** The followed pane's review as it stands: its listing, and the selected
+ * file or the one the cursor is in. */
+interface Now {
+  co: Checkout;
+  r: Review;
+  source: git.Source;
+  changes: git.Change[];
+  edited: Map<string, number> | null;
+  change: git.Change | null;
+  file: Loaded | null;
+}
 const sourceKey = (s: git.Source) => (s.kind === "worktree" ? `w:${s.against}` : `c:${s.hash}`);
 const revOf = (s: git.Source): notes.Rev =>
   s.kind === "worktree" ? { kind: "worktree" } : { kind: "commit", hash: s.hash };
@@ -158,7 +272,17 @@ interface Cell {
   bg: palette.Rgb | null;
   bold: boolean;
 }
-type Hit = { x: number; y: number; w: number; h: number; act?: () => void; unit?: number; wheel?: "tree" | "diff" };
+type Hit = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  act?: () => void;
+  unit?: number;
+  /** The file a unit is in. */
+  path?: string;
+  wheel?: "tree" | "diff";
+};
 /** Control characters never reach the terminal. */
 const safe = (ch: string) => {
   const cp = ch.codePointAt(0) ?? 32;
@@ -218,6 +342,11 @@ class Canvas {
     if (bg !== undefined) cell.bg = bg;
     cell.bold = bold;
   }
+  /** Every cell halfway to black, or to white on a light background, as panes dim behind a dialog. */
+  fade(): void {
+    for (const row of this.cells)
+      for (const cell of row) [cell.fg, cell.bg] = [fade(cell.fg), fade(cell.bg ?? palette.colors.bg)];
+  }
   hit(x: number, y: number, w: number, h: number, extra: Omit<Hit, "x" | "y" | "w" | "h">): void {
     this.hits.push({ x: this.x + x, y: this.y + y, w, h, ...extra });
   }
@@ -238,6 +367,22 @@ class Canvas {
     });
     w.write("\x1b[0m");
   }
+}
+function fade(color: palette.Rgb): palette.Rgb {
+  const [r, g, b] = palette.colors.bg,
+    light = r * 299 + g * 587 + b * 114 > 127_500;
+  return palette.mix(color, light ? [255, 255, 255] : [0, 0, 0], 50);
+}
+/** A change's letter in the file list and on its heading, and its color. */
+function mark(ch: git.Change): [string, palette.Rgb] {
+  const colors = palette.colors;
+  return ch.kind === "added" || ch.kind === "untracked"
+    ? ["A", colors.accent]
+    : ch.kind === "deleted"
+      ? ["D", colors.hot]
+      : ch.kind === "renamed"
+        ? ["R", colors.muted]
+        : ["M", colors.muted];
 }
 function plural(n: number, word: string): string {
   return `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
@@ -261,9 +406,85 @@ export class Panel {
   /** The refresh under way; another asked for meanwhile runs after it. */
   private flight: Promise<void> | null = null;
   private again = false;
-  private loading_file = 0;
+  /** The latest read asked for per diff, so an older one never replaces it. */
+  private reading = new Map<string, number>();
+  /** Diffs read so far, so a refresh can tell it read one. */
+  private loads = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private selecting: { from: number } | null = null;
+  private selecting: { from: number; path: string | null } | null = null;
+  /** Rows the file list takes at most, as last dragged or set with < and >. */
+  tree_rows = 9;
+  /** Called with `tree_rows` after the user changes it. */
+  resized: (rows: number) => void = () => {};
+  /** The rule under the file list as last drawn: its row, the list's first
+   * row, and the most rows the list may take. */
+  private split: { y: number; top: number; room: number } | null = null;
+  /** The rule under the file list is being dragged. */
+  splitting = false;
+  /** The keys overlay is up, dimming everything but itself. */
+  get keysOpen(): boolean {
+    return this.open && this.target !== null && this.review(this.target.pane).keys;
+  }
+  /** A note or a find is being typed, so a paste goes to it. */
+  get typing(): boolean {
+    return this.typingArea() !== null;
+  }
+  /** The text box being typed in: a note, or a find. */
+  typingArea(): textArea.TextArea | null {
+    if (!this.open || !this.target) return null;
+    const r = this.review(this.target.pane);
+    return r.compose?.area ?? r.find?.query ?? null;
+  }
+  /** The note box's text as last drawn: its first cell, and how many rows and columns it shows. */
+  private compose_at: { x: number; y: number; rows: number; w: number } | null = null;
+  /** A press in the note box is dragging a selection. */
+  private placing = false;
+  /** A pasted character's bytes so far, and whether the last was a carriage return. */
+  private pasted: number[] = [];
+  private pasted_cr = false;
+  /** A byte of a paste while typing. Whole characters go in at the caret;
+   * a line break, however it's spelled, as one. */
+  pasteByte(byte: number): void {
+    const t = this.target;
+    if (!t) return;
+    const r = this.review(t.pane),
+      cr = this.pasted_cr;
+    this.pasted_cr = byte === 13;
+    if (byte === 10 && cr) return;
+    let text: string | null = null;
+    if (byte < 0x80) {
+      this.pasted = [];
+      text =
+        byte === 10 || byte === 13
+          ? "\n"
+          : byte === 9
+            ? "    "
+            : byte >= 32 && byte !== 127
+              ? String.fromCharCode(byte)
+              : null;
+    } else {
+      this.pasted.push(byte);
+      const lead = this.pasted[0],
+        size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+      if (this.pasted.length < size) return;
+      text = Buffer.from(this.pasted).toString();
+      this.pasted = [];
+      if (text.includes("\ufffd")) text = null;
+    }
+    if (text === null) return;
+    if (r.compose) r.compose.area.insert(text);
+    else if (r.find) {
+      r.find.query.insert(text === "\n" ? " " : text);
+      const now = this.current(),
+        flow = now ? this.sections(r, now) : [];
+      this.findIndex(r, flow);
+      this.findStep(r, flow, 1);
+    }
+  }
+  /** The row of the rule under the file list, which drags its height; null without one. */
+  get splitRow(): number | null {
+    return this.split?.y ?? null;
+  }
   /** Where the commits chip was last drawn, and the menu under it. */
   private commits_chip: { x: number; y: number; w: number } | null = null;
   private menu: { rect: Rect; first: number; count: number; heading: boolean } | null = null;
@@ -310,6 +531,7 @@ export class Panel {
   hide(): void {
     this.open = false;
     this.pinned = false;
+    this.splitting = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -367,8 +589,7 @@ export class Panel {
     const co = root ? this.checkouts.get(root) : undefined;
     if (!co) return String(root);
     const r = this.review(t.pane),
-      listed = this.listing(co, r),
-      file = listed && r.path ? co.files.get(`${sourceKey(listed.source)}\0${r.path}`) : undefined;
+      listed = this.listing(co, r);
     return JSON.stringify([
       co.read,
       co.head,
@@ -383,8 +604,7 @@ export class Panel {
       r.reversed,
       this.pinned,
       this.dest?.pane,
-      file?.sig,
-      co.files.size,
+      this.loads,
     ]);
   }
   private async read(): Promise<void> {
@@ -420,29 +640,49 @@ export class Panel {
       co.error = (error as Error).message;
     }
     co.read = true;
-    await this.loadFile(co, r);
+    await this.loadFiles(co, r);
   }
-  /** Loads the selected file's diff unless it is current. */
-  private async loadFile(co: Checkout, r: Review): Promise<void> {
+  /** Reads the diffs on show that aren't current: the selected file's, or on
+   * "All files" every file's, the cursor's first, a few at a time. */
+  private async loadFiles(co: Checkout, r: Review): Promise<void> {
     const listed = this.listing(co, r);
     if (!listed) return;
-    const paths = listed.changes.map(c => c.path);
-    if (!r.path || !paths.includes(r.path))
-      this.select(r, this.fileOrder(r, paths, listed.edited)[0] ?? null, paths, false);
-    const change = listed.changes.find(c => c.path === r.path);
-    if (!change || (change.generated && !r.loaded.has(change.path))) return;
+    const paths = listed.changes.map(c => c.path),
+      order = this.fileOrder(r, paths, listed.edited);
+    if (!r.path || !paths.includes(r.path)) {
+      if (r.all) [r.path, r.cur, r.anchor] = [order[0] ?? null, 0, null];
+      else this.select(r, order[0] ?? null, paths, false);
+    }
+    const changes = new Map(listed.changes.map(c => [c.path, c]));
+    if (!r.all) {
+      const change = r.path ? changes.get(r.path) : undefined;
+      if (change) await this.loadFile(co, r, listed.source, change);
+      return;
+    }
+    const from = Math.max(0, order.indexOf(r.path ?? "")),
+      queue = [...order.slice(from), ...order.slice(0, from)].map(path => changes.get(path)!);
+    const reader = async () => {
+      for (let change = queue.shift(); change; change = queue.shift())
+        await this.loadFile(co, r, listed.source, change);
+    };
+    await Promise.all(Array.from({ length: parallel_reads }, reader));
+  }
+  /** Reads one file's diff unless it is current. */
+  private async loadFile(co: Checkout, r: Review, source: git.Source, change: git.Change): Promise<void> {
+    if (change.generated && !r.loaded.has(change.path)) return;
     let stamp = "";
-    if (listed.source.kind === "worktree" && change.kind !== "deleted")
+    if (source.kind === "worktree" && change.kind !== "deleted")
       try {
         const info = await stat(join(co.root, change.path));
         stamp = `${info.size}:${info.mtimeMs}`;
       } catch {}
     const sig = `${change.kind}|${change.from}|${change.adds}|${change.dels}|${stamp}`;
-    const key = `${sourceKey(listed.source)}\0${change.path}`;
+    const key = `${sourceKey(source)}\0${change.path}`;
     if (co.files.get(key)?.sig === sig) return;
-    const ticket = ++this.loading_file;
-    const loaded = await git.fileDiff(co.root, listed.source, change);
-    if (ticket !== this.loading_file && co.files.has(key)) return;
+    const ticket = (this.reading.get(key) ?? 0) + 1;
+    this.reading.set(key, ticket);
+    const loaded = await git.fileDiff(co.root, source, change);
+    if (this.reading.get(key) !== ticket && co.files.has(key)) return;
     const lang = syntax.language(change.path);
     co.files.set(key, {
       sig,
@@ -450,25 +690,21 @@ export class Panel {
       old: new syntax.Highlighter(lang, loaded.kind === "diff" ? loaded.diff.old : []),
       new: new syntax.Highlighter(lang, loaded.kind === "diff" ? loaded.diff.new : []),
     });
-    const fresh = co.files.get(key);
-    if (fresh?.loaded.kind === "diff" && r.path === change.path && r.cur === 0)
-      r.cur = this.firstChange(r, fresh.loaded.diff, change.path);
+    this.loads++;
+    if (loaded.kind === "diff" && r.path === change.path && r.cur === 0)
+      r.cur = this.firstChange(r, loaded.diff, change.path);
+    this.changed();
   }
   private loadSelected(): void {
     const co = this.checkout(),
       t = this.target;
     if (!co || !t) return;
-    void this.loadFile(co, this.review(t.pane)).then(() => this.changed());
+    const r = this.review(t.pane),
+      listed = this.listing(co, r),
+      change = listed?.changes.find(c => c.path === r.path);
+    if (listed && change) void this.loadFile(co, r, listed.source, change);
   }
-  private current(): {
-    co: Checkout;
-    r: Review;
-    source: git.Source;
-    changes: git.Change[];
-    edited: Map<string, number> | null;
-    change: git.Change | null;
-    file: Loaded | null;
-  } | null {
+  private current(): Now | null {
     const co = this.checkout(),
       t = this.target;
     if (!co || !t) return null;
@@ -479,11 +715,109 @@ export class Panel {
     const file = change ? (co.files.get(`${sourceKey(listed.source)}\0${change.path}`) ?? null) : null;
     return { co, r, source: listed.source, changes: listed.changes, edited: listed.edited, change, file };
   }
-  /** The file rows: a tree by name, or one list newest edit first. */
-  private fileRows(r: Review, paths: string[], edited: Map<string, number> | null): tree.Row[] {
-    return r.sort === "edited" && edited
-      ? tree.flat(tree.byEdited(paths, edited, r.reversed))
-      : tree.rows(paths, r.toggled, false, r.sort === "name" && r.reversed);
+  /** The list's rows: "All files", then a tree by name or one list newest edit first. */
+  private listRows(r: Review, paths: string[], edited: Map<string, number> | null): ListRow[] {
+    return [
+      all_row,
+      ...(r.sort === "edited" && edited
+        ? tree.flat(tree.byEdited(paths, edited, r.reversed))
+        : tree.rows(paths, r.toggled, false, r.sort === "name" && r.reversed)),
+    ];
+  }
+  /** The files the diff area shows: on "All files" every one in the list's
+   * order, else the selected one. */
+  private sections(r: Review, now: Now): Section[] {
+    const changes = new Map(now.changes.map(ch => [ch.path, ch])),
+      paths = r.all ? this.fileOrder(r, [...changes.keys()], now.edited) : now.change ? [now.change.path] : [];
+    return paths.map(path => {
+      const change = changes.get(path)!,
+        file =
+          change.generated && !r.loaded.has(path)
+            ? null
+            : (now.co.files.get(`${sourceKey(now.source)}\0${path}`) ?? null),
+        d = file?.loaded.kind === "diff" ? file.loaded.diff : null,
+        collapsed = r.all && r.collapsed.has(path);
+      return { change, file, d, collapsed, units: d && !collapsed ? this.units(r, d, path) : [] };
+    });
+  }
+  /** The cursor as one index over every section's stops. */
+  private position(r: Review, sections: Section[]): number {
+    let at = 0;
+    for (const s of sections) {
+      if (s.change.path === r.path) return at + Math.min(r.cur, stops(s) - 1);
+      at += stops(s);
+    }
+    return 0;
+  }
+  /** Puts the cursor on stop `at` of the sections; a selection doesn't follow it out of its file. */
+  private place(r: Review, sections: Section[], at: number): void {
+    for (const s of sections) {
+      if (at < stops(s)) {
+        if (s.change.path !== r.path) r.anchor = null;
+        r.path = s.change.path;
+        r.cur = at;
+        return;
+      }
+      at -= stops(s);
+    }
+  }
+  /** In the flow, the cursor to `path`'s first change and its heading to the top. */
+  private reach(r: Review, sections: Section[], path: string): void {
+    const s = sections.find(x => x.change.path === path);
+    if (path !== r.path) r.anchor = null;
+    r.path = path;
+    r.cur = s?.d && s.units.length ? this.firstChange(r, s.d, path) : 0;
+    r.free = false;
+    r.raise = true;
+  }
+  /** Folds file `path` on "All files" to its heading, or opens it again,
+   * and puts the cursor on it. */
+  private collapse(r: Review, now: Now, path: string): void {
+    if (path !== r.path) r.anchor = null;
+    r.part = "diff";
+    r.path = path;
+    r.cur = 0;
+    r.free = false;
+    if (!r.collapsed.delete(path)) {
+      r.collapsed.add(path);
+      r.anchor = null;
+      return;
+    }
+    const file = now.co.files.get(`${sourceKey(now.source)}\0${path}`);
+    if (file?.loaded.kind === "diff") r.cur = this.firstChange(r, file.loaded.diff, path);
+  }
+  /** The flow's next or previous hunk, across files. A file not read yet
+   * stops the walk until it is. */
+  private hunk(r: Review, sections: Section[], step: 1 | -1): void {
+    const here = this.position(r, sections),
+      starts: number[] = [];
+    let at = 0;
+    // Folded files are passed over.
+    for (const s of sections) {
+      if (s.d && !s.collapsed) for (const start of diff.hunkStarts(s.d, s.units)) starts.push(at + start);
+      else if (!s.file && !s.collapsed && !(s.change.generated && !r.loaded.has(s.change.path))) starts.push(at);
+      at += stops(s);
+    }
+    const next = step > 0 ? starts.find(s => s > here) : starts.filter(s => s < here).pop();
+    if (next === undefined) return;
+    this.place(r, sections, next);
+    r.free = false;
+  }
+  /** Shows every file in one flow, the cursor's file at the top. */
+  private showAll(r: Review): void {
+    r.tree_sel = "all";
+    if (r.all) return;
+    r.all = true;
+    r.anchor = null;
+    r.free = false;
+    r.raise = true;
+    void this.refresh();
+  }
+  /** Shows file `path` alone. */
+  private choose(r: Review, path: string, paths: string[]): void {
+    r.all = false;
+    r.landmark = null;
+    this.select(r, path, paths);
   }
   /** Every file in the order the rows show, as `]` and `f` walk them. */
   private fileOrder(r: Review, paths: string[], edited: Map<string, number> | null): string[] {
@@ -528,6 +862,7 @@ export class Panel {
     r.scope = scope;
     r.top = 0;
     r.cur = 0;
+    r.landmark = null;
     void this.refresh();
   }
   private pickable(co: Checkout): git.Commit[] {
@@ -553,15 +888,17 @@ export class Panel {
     const r = this.review(t.pane),
       now = this.current(),
       d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null,
-      units = d && r.path ? this.units(r, d, r.path) : [],
+      flow = now ? this.sections(r, now) : [],
+      units = flow.find(s => s.change.path === r.path)?.units ?? [],
       named = "named" in k ? k.named : null,
       text = "text" in k ? k.text : "";
     if (r.compose) {
-      const c = r.compose;
+      const c = r.compose,
+        edit = named && typed(named);
       if (named === "escape") r.compose = null;
-      else if (named === "newline") c.text += "\n";
+      else if (edit) c.area.apply(edit);
       else if (named === "enter") {
-        const body = c.text.trim();
+        const body = c.area.text.trim();
         if (body) {
           if (c.edit !== null) {
             const n = r.notes.find(x => x.id === c.edit);
@@ -579,23 +916,21 @@ export class Panel {
             });
         }
         r.compose = null;
-      } else if (named === "backspace") c.text = [...c.text].slice(0, -1).join("");
-      else if (text) c.text += text;
+      } else if (text) c.area.insert(text);
       return { kind: "none" };
     }
     if (r.find) {
-      const f = r.find;
+      const f = r.find,
+        edit = named && typed(named),
+        before = f.query.text;
       if (named === "escape") r.find = null;
-      else if (named === "enter") this.findStep(r, d, 1);
-      else if (named === "shift_tab" || named === "up") this.findStep(r, d, -1);
-      else if (named === "down") this.findStep(r, d, 1);
-      else if (named === "backspace") {
-        f.query = [...f.query].slice(0, -1).join("");
-        this.findIndex(r, d);
-      } else if (text) {
-        f.query += text;
-        this.findIndex(r, d);
-        this.findStep(r, d, 1);
+      else if (named === "enter" || named === "down") this.findStep(r, flow, 1);
+      else if (named === "shift_tab" || named === "up") this.findStep(r, flow, -1);
+      else if (edit) f.query.apply(edit);
+      else if (text) f.query.insert(text);
+      if (r.find && f.query.text !== before) {
+        this.findIndex(r, flow);
+        if (text) this.findStep(r, flow, 1);
       }
       return { kind: "none" };
     }
@@ -635,15 +970,31 @@ export class Panel {
       order = this.fileOrder(r, paths, now.edited),
       at = r.path ? order.indexOf(r.path) : -1;
     const toFile = (i: number) => {
-      if (i >= 0 && i < order.length) this.select(r, order[i], paths);
+      if (i < 0 || i >= order.length) return;
+      if (r.all) this.reach(r, flow, order[i]);
+      else this.select(r, order[i], paths);
     };
-    const move = (delta: number) => {
-      r.cur = Math.min(Math.max(r.cur + delta, 0), Math.max(0, units.length - 1));
+    const move = (delta: number, extend = r.visual) => {
+      if (!extend) r.anchor = null;
       r.free = false;
+      if (!r.all) {
+        r.cur = Math.min(Math.max(r.cur + delta, 0), Math.max(0, units.length - 1));
+        return;
+      }
+      // In the flow the cursor crosses files, but a selection keeps to its own.
+      let start = 0,
+        total = 0;
+      for (const s of flow) {
+        if (s.change.path === r.path) start = total;
+        total += stops(s);
+      }
+      const mine = flow.find(s => s.change.path === r.path),
+        [lo, hi] = r.anchor !== null && mine ? [start, start + stops(mine) - 1] : [0, total - 1];
+      this.place(r, flow, Math.min(Math.max(this.position(r, flow) + delta, lo), hi));
     };
     if (r.part === "tree" && !r.tree_hidden) {
       r.tree_free = false;
-      const rows = this.fileRows(r, paths, now.edited),
+      const rows = this.listRows(r, paths, now.edited),
         i = Math.max(
           0,
           rows.findIndex(row => row.id === r.tree_sel),
@@ -653,7 +1004,8 @@ export class Panel {
         const next = rows[Math.min(Math.max(j, 0), rows.length - 1)];
         if (!next) return;
         r.tree_sel = next.id;
-        if (next.kind === "file" && next.path !== r.path) this.select(r, next.path, paths);
+        if (next.kind === "all") this.showAll(r);
+        else if (next.kind === "file" && (r.all || next.path !== r.path)) this.choose(r, next.path, paths);
       };
       if (named === "down" || text === "j") return (goTo(i + 1), { kind: "none" });
       if (named === "up" || text === "k") return (goTo(i - 1), { kind: "none" });
@@ -676,8 +1028,8 @@ export class Panel {
         return { kind: "none" };
       }
     }
-    if (named === "half_down" || named === "half_up") {
-      move((named === "half_down" ? 1 : -1) * Math.max(1, Math.floor(this.page / 2)));
+    if (named === "ctrl_d" || named === "ctrl_u") {
+      move((named === "ctrl_d" ? 1 : -1) * Math.max(1, Math.floor(this.page / 2)));
       return { kind: "none" };
     }
     switch (named ?? text) {
@@ -693,29 +1045,34 @@ export class Panel {
       case "k":
         move(-1);
         break;
+      // Space and - page as in tig.
       case "page_down":
+      case " ":
         move(Math.max(1, this.page - 2));
         break;
       case "page_up":
+      case "-":
         move(-Math.max(1, this.page - 2));
         break;
       case "home":
-        r.cur = 0;
-        r.free = false;
+        move(-Infinity);
         break;
       case "end":
-        r.cur = Math.max(0, units.length - 1);
-        r.free = false;
+        move(Infinity);
         break;
       case "enter":
       case "right": {
+        if (r.all && r.path && r.collapsed.has(r.path)) {
+          this.collapse(r, now, r.path);
+          break;
+        }
         if (now.change?.generated && !r.loaded.has(now.change.path)) {
           r.loaded.add(now.change.path);
           this.loadSelected();
           break;
         }
         const unit = units[r.cur];
-        if (d && unit?.kind === "fold") this.openFold(r, d, unit);
+        if (d && r.path && unit?.kind === "fold") this.openFold(r, r.path, d, unit);
         else if (named === "right" && !r.wrap) r.shift += 8;
         break;
       }
@@ -725,6 +1082,11 @@ export class Panel {
       case "]":
       case "[": {
         r.part = "diff";
+        if (!r.visual) r.anchor = null;
+        if (r.all) {
+          this.hunk(r, flow, text === "]" ? 1 : -1);
+          break;
+        }
         const starts = d ? diff.hunkStarts(d, units) : [];
         const next = named === null && text === "]" ? starts.find(s => s > r.cur) : starts.filter(s => s < r.cur).pop();
         if (next !== undefined) {
@@ -743,6 +1105,9 @@ export class Panel {
       case "F":
         toFile(at - 1);
         break;
+      case "x":
+        if (r.all && r.path) this.collapse(r, now, r.path);
+        break;
       case "w":
         r.wrap = !r.wrap;
         r.shift = 0;
@@ -750,6 +1115,15 @@ export class Panel {
       case "v":
         r.part = "diff";
         r.anchor = r.anchor === null ? r.cur : null;
+        r.visual = true;
+        break;
+      // Shift and an arrow select as a drag does: from where the cursor was, back to it clears.
+      case "select_up":
+      case "select_down":
+        r.part = "diff";
+        if (r.anchor === null) [r.anchor, r.visual] = [r.cur, false];
+        move(named === "select_down" ? 1 : -1, true);
+        if (r.anchor === r.cur) r.anchor = null;
         break;
       case "c":
         r.part = "diff";
@@ -766,7 +1140,7 @@ export class Panel {
             start: n.start,
             end: n.end,
             snippet: n.snippet,
-            text: n.text,
+            area: new textArea.TextArea(n.text),
             edit: n.id,
             range,
           };
@@ -783,14 +1157,15 @@ export class Panel {
       }
       case "n":
       case "N":
+        if (!r.visual) r.anchor = null;
         this.nextNote(r, d, units, text === "n" ? 1 : -1);
         break;
       case "l":
         r.list = { at: 0 };
         break;
       case "/":
-        if (d) {
-          r.find = { query: "", hits: [], by_row: new Map(), at: -1 };
+        if (d || r.all) {
+          r.find = { query: new textArea.TextArea("", false), hits: [], by_row: new Map(), at: -1 };
           r.part = "diff";
         }
         break;
@@ -824,10 +1199,9 @@ export class Panel {
         if (r.tree_hidden) r.part = "diff";
         break;
       case "<":
-        r.tree_rows = Math.min(r.tree_rows + 2, 30);
-        break;
       case ">":
-        r.tree_rows = Math.max(r.tree_rows - 2, 3);
+        this.tree_rows = Math.max(Math.min(this.tree_rows + (text === "<" ? 2 : -2), 30), 3);
+        this.resized(this.tree_rows);
         break;
       case "?":
         r.keys = true;
@@ -849,11 +1223,10 @@ export class Panel {
     r.part = "diff";
     this.setScope(r, "commits");
   }
-  private openFold(r: Review, d: diff.FileDiff, unit: diff.Unit): void {
-    if (!r.path) return;
-    const opened = new Set(r.opened.get(r.path) ?? []);
+  private openFold(r: Review, path: string, d: diff.FileDiff, unit: diff.Unit): void {
+    const opened = new Set(r.opened.get(path) ?? []);
     opened.add(diff.foldAnchor(d, unit));
-    r.opened.set(r.path, opened);
+    r.opened.set(path, opened);
   }
   private startCompose(r: Review, d: diff.FileDiff, units: diff.Unit[], path: string, rev: notes.Rev): void {
     if (units.length === 0) return;
@@ -869,7 +1242,7 @@ export class Panel {
       r.status = { text: "Folded lines take no notes; → opens them.", warm: false };
       return;
     }
-    r.compose = { path, rev, ...anchor, text: "", edit: null, range: [a, b] };
+    r.compose = { path, rev, ...anchor, area: new textArea.TextArea(), edit: null, range: [a, b] };
     r.anchor = null;
   }
   private noteAt(r: Review, d: diff.FileDiff, units: diff.Unit[], now: { source: git.Source }): notes.Note | null {
@@ -894,19 +1267,23 @@ export class Panel {
     const wanted: Scope = n.rev.kind === "commit" ? "commits" : r.scope === "commits" ? "all" : r.scope;
     if (n.rev.kind === "commit") r.pick = n.rev.hash;
     if (wanted !== r.scope) r.scope = wanted;
+    if (n.path !== r.path) r.anchor = null;
+    r.collapsed.delete(n.path);
     r.path = n.path;
     r.part = "diff";
     r.free = false;
     r.tree_free = false;
     const co = this.checkout();
     const listed = co && this.listing(co, r);
-    if (listed)
-      r.toggled = tree.reveal(
-        listed.changes.map(c => c.path),
-        r.toggled,
-        n.path,
-      );
-    r.tree_sel = "f:" + n.path;
+    if (!r.all) {
+      if (listed)
+        r.toggled = tree.reveal(
+          listed.changes.map(c => c.path),
+          r.toggled,
+          n.path,
+        );
+      r.tree_sel = "f:" + n.path;
+    }
     const file = co && listed ? co.files.get(`${sourceKey(listed.source)}\0${n.path}`) : undefined;
     if (file?.loaded.kind === "diff") {
       const range = this.rangeOf(r, file.loaded.diff, this.units(r, file.loaded.diff, n.path), n);
@@ -927,59 +1304,74 @@ export class Panel {
       before = sorted.filter(n => n.path < path || (n.path === path && n.start < line));
     this.jumpToNote(r, step > 0 ? (after[0] ?? sorted[0]) : (before[before.length - 1] ?? sorted[sorted.length - 1]));
   }
-  private findIndex(r: Review, d: diff.FileDiff | null): void {
+  /** Finds the query in every section read, in the flow's order. */
+  private findIndex(r: Review, sections: Section[]): void {
     const f = r.find;
     if (!f) return;
     f.hits = [];
     f.by_row = new Map();
     f.at = -1;
-    const query = f.query.toLowerCase();
-    if (!query || !d) return;
-    d.rows.forEach((row, i) => {
-      const line = d.text(row).toLowerCase();
-      for (
-        let at = line.indexOf(query), guard = 0;
-        at >= 0 && guard < 100;
-        at = line.indexOf(query, at + query.length), guard++
-      ) {
-        f.hits.push([i, at, at + query.length]);
-        const ranges = f.by_row.get(i) ?? [];
-        ranges.push([at, at + query.length]);
-        f.by_row.set(i, ranges);
-      }
-    });
+    const query = f.query.text.toLowerCase();
+    if (!query) return;
+    for (const { change, d } of sections)
+      d?.rows.forEach((row, i) => {
+        const line = d.text(row).toLowerCase();
+        for (
+          let at = line.indexOf(query), guard = 0;
+          at >= 0 && guard < 100;
+          at = line.indexOf(query, at + query.length), guard++
+        ) {
+          f.hits.push({ path: change.path, row: i, start: at, end: at + query.length });
+          const key = `${change.path}\0${i}`,
+            ranges = f.by_row.get(key) ?? [];
+          ranges.push([at, at + query.length]);
+          f.by_row.set(key, ranges);
+        }
+      });
   }
-  private findStep(r: Review, d: diff.FileDiff | null, step: 1 | -1): void {
+  private findStep(r: Review, sections: Section[], step: 1 | -1): void {
     const f = r.find;
-    if (!f || !d || !r.path || f.hits.length === 0) return;
-    let units = this.units(r, d, r.path);
-    const here = units[r.cur],
+    if (!f || !r.path || f.hits.length === 0) return;
+    const files = new Map(sections.map((s, i) => [s.change.path, i])),
+      file = files.get(r.path) ?? 0,
+      here = sections[file]?.units[r.cur],
       row = here ? (here.kind === "row" ? here.row : here.start) : 0;
+    // A hit before (-1), on (0) or after (1) the cursor's row.
+    const side = (h: Find["hits"][number]) => {
+      const at = files.get(h.path) ?? 0;
+      return Math.sign(at === file ? h.row - row : at - file);
+    };
     let next = -1;
     if (step > 0) {
-      next = f.hits.findIndex((h, i) => h[0] > row || (h[0] === row && i > f.at));
+      next = f.hits.findIndex((h, i) => side(h) > 0 || (side(h) === 0 && i > f.at));
       if (next < 0) next = 0;
     } else {
       for (let i = f.hits.length - 1; i >= 0; i--)
-        if (f.hits[i][0] < row || (f.hits[i][0] === row && f.at >= 0 && i < f.at)) {
+        if (side(f.hits[i]) < 0 || (side(f.hits[i]) === 0 && f.at >= 0 && i < f.at)) {
           next = i;
           break;
         }
       if (next < 0) next = f.hits.length - 1;
     }
     f.at = next;
-    const target = f.hits[next][0];
-    const fold = units.find(u => u.kind === "fold" && target >= u.start && target < u.end);
+    const hit = f.hits[next],
+      d = sections[files.get(hit.path) ?? -1]?.d;
+    if (!d) return;
+    let units = this.units(r, d, hit.path);
+    r.collapsed.delete(hit.path);
+    const fold = units.find(u => u.kind === "fold" && hit.row >= u.start && hit.row < u.end);
     if (fold) {
-      this.openFold(r, d, fold);
-      units = this.units(r, d, r.path);
+      this.openFold(r, hit.path, d, fold);
+      units = this.units(r, d, hit.path);
     }
-    const index = units.findIndex(u => u.kind === "row" && u.row === target);
+    const index = units.findIndex(u => u.kind === "row" && u.row === hit.row);
     if (index >= 0) {
+      if (hit.path !== r.path) r.anchor = null;
+      r.path = hit.path;
       r.cur = index;
       r.free = false;
     }
-    if (!r.wrap) r.shift = Math.max(0, f.hits[next][1] - 10);
+    if (!r.wrap) r.shift = Math.max(0, hit.start - 10);
   }
   /** Where notes go: the focused pane while pinned, else the reviewed one. */
   private destination(): Target | null {
@@ -1027,7 +1419,7 @@ export class Panel {
   /** Gives keys to the file list, on the file shown, or to the diff. */
   private focusPart(r: Review, part: Part): void {
     r.part = part;
-    if (part === "tree" && r.path) r.tree_sel = "f:" + r.path;
+    if (part === "tree" && (r.all || r.path)) r.tree_sel = r.all ? "all" : "f:" + r.path;
     r.tree_free = false;
   }
   /** What the last click asked of the viewer, once. */
@@ -1041,6 +1433,16 @@ export class Panel {
   mouse(kind: "press" | "drag" | "move" | "release" | "wheel_up" | "wheel_down", x: number, y: number): void {
     if (kind === "release") {
       this.selecting = null;
+      this.placing = false;
+      if (this.splitting) {
+        this.splitting = false;
+        this.resized(this.tree_rows);
+      }
+      return;
+    }
+    if (this.splitting) {
+      const split = this.split;
+      if (kind === "drag" && split) this.tree_rows = Math.max(2, Math.min(y - split.top, split.room));
       return;
     }
     const under = [...this.hits].reverse().filter(h => x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h),
@@ -1048,6 +1450,25 @@ export class Panel {
     const t = this.target;
     if (!t) return;
     const r = this.review(t.pane);
+    // A click anywhere closes the keys.
+    if (r.keys) {
+      if (kind === "press") r.keys = false;
+      return;
+    }
+    // In the note box a press places the caret and a drag selects.
+    const box = this.compose_at;
+    if (r.compose && box && (this.placing || kind === "press")) {
+      const inside = y >= box.y && y < box.y + box.rows && x >= box.x - 1 && x <= box.x + box.w;
+      if (kind === "press" && inside) {
+        r.compose.area.place(y - box.y, x - box.x);
+        this.placing = true;
+        return;
+      }
+      if (kind === "drag" && this.placing) {
+        r.compose.area.place(y - box.y, x - box.x, true);
+        return;
+      }
+    }
     const co = this.checkout();
     if (r.picker && co) {
       const menu = this.menu,
@@ -1071,6 +1492,10 @@ export class Panel {
       return;
     }
     if (kind === "move") return;
+    if (kind === "press" && y === this.split?.y) {
+      this.splitting = true;
+      return;
+    }
     if (kind === "wheel_up" || kind === "wheel_down") {
       const step = kind === "wheel_down" ? 3 : -3;
       // The area under the pointer scrolls, past the rows that click inside it.
@@ -1084,7 +1509,8 @@ export class Panel {
       return;
     }
     if (kind === "drag") {
-      if (this.selecting && hit?.unit !== undefined) {
+      // A selection keeps to the file it started in.
+      if (this.selecting && hit?.unit !== undefined && hit.path === this.selecting.path) {
         r.anchor = hit.unit === this.selecting.from ? null : this.selecting.from;
         r.cur = hit.unit;
       }
@@ -1094,9 +1520,11 @@ export class Panel {
     if (hit.unit !== undefined) {
       r.part = "diff";
       r.anchor = null;
+      if (hit.path !== undefined) r.path = hit.path;
       r.cur = hit.unit;
       r.free = false;
-      this.selecting = { from: hit.unit };
+      this.selecting = { from: hit.unit, path: r.path };
+      r.visual = false;
     }
     hit.act?.();
   }
@@ -1106,12 +1534,14 @@ export class Panel {
   /** Draws the panel; `focused` while it has the keyboard. */
   draw(w: Writer, x: number, y: number, width: number, height: number, focused: boolean): void {
     const c = new Canvas(x, y, width, height),
-      colors = palette.colors;
+      colors = palette.colors,
+      keys = this.keysOpen,
+      edge = focused ? palette.outline : colors.line;
     // A pinned panel stands apart from the panes it no longer follows.
-    for (let row = 0; row < height; row++)
-      c.put(0, row, this.pinned ? "┃" : "│", focused ? palette.outline : colors.line, null);
+    for (let row = 0; row < height; row++) c.put(0, row, this.pinned ? "┃" : "│", keys ? fade(edge) : edge, null);
     const inner = new Canvas(x + 1, y, width - 1, height);
     this.drawInside(inner, focused);
+    if (keys) this.drawKeys(inner);
     for (let row = 0; row < height; row++)
       for (let col = 0; col < width - 1; col++) c.cells[row][col + 1] = inner.cells[row][col];
     c.flush(w);
@@ -1332,6 +1762,7 @@ export class Panel {
     let ty = head + 2;
     const changes = listed?.changes ?? [];
     const paths = changes.map(ch => ch.path);
+    this.split = null;
     if (!listed) {
       c.text(2, ty, r.scope === "commits" ? "Pick a commit with g." : "Reading git…", colors.muted);
       ty += 1;
@@ -1347,21 +1778,21 @@ export class Panel {
         colors.muted,
       );
       ty += 1;
-    } else if (!r.tree_hidden) ty = this.drawTree(c, r, changes, paths, listed.edited, ty, focused);
+    } else if (!r.tree_hidden) {
+      // The rule under the list drags its height, keeping some of the diff in view.
+      const room = Math.max(2, c.h - ty - 2 - min_diff_rows),
+        top = ty;
+      ty = this.drawTree(c, r, changes, paths, listed.edited, ty, room, focused);
+      this.split = { y: c.y + ty, top: c.y + top, room };
+    }
     for (let i = 0; i < c.w; i++) c.put(i, ty, "─", colors.line);
     const now = this.current();
-    if (now?.change) {
+    // On "All files" each file has its own heading.
+    if (now?.change && !r.all) {
       const ch = now.change;
       const label = ch.from ? `${ch.from} → ${ch.path}` : ch.path;
       const end = c.text(2, ty, ` ${label} `, colors.strong, null, true, c.w - 16);
-      const origin =
-        now.source.kind === "commit"
-          ? now.source.hash.slice(0, 7)
-          : ch.kind === "untracked"
-            ? "untracked"
-            : r.scope === "uncommitted"
-              ? "working copy"
-              : this.origin(co, ch.path);
+      const origin = this.originOf(co, r, now.source, ch);
       if (origin && end + origin.length + 3 < c.w) c.text(c.w - origin.length - 3, ty, ` ${origin} `, colors.faint);
     }
     if (r.tree_hidden && changes.length) c.text(c.w - 12, ty, " z: files ", colors.faint);
@@ -1369,9 +1800,19 @@ export class Panel {
       dh = c.h - 1 - dy;
     this.page = dh;
     if (now && dh > 0) this.drawDiff(c, r, now, dy, dh, focused);
-    if (r.keys) this.drawKeys(c, dy, dh);
     if (r.list) this.drawList(c, r, dy, dh, now?.source ?? null);
     this.drawFooter(c, r, now, focused);
+  }
+  /** Where a file's change is: the commit reviewed, untracked, or for the
+   * branch in its commits, the working copy, or both. */
+  private originOf(co: Checkout, r: Review, source: git.Source, ch: git.Change): string {
+    return source.kind === "commit"
+      ? source.hash.slice(0, 7)
+      : ch.kind === "untracked"
+        ? "untracked"
+        : r.scope === "uncommitted"
+          ? "working copy"
+          : this.origin(co, ch.path);
   }
   /** Where a branch file's change is: in its commits, the working copy, or both. */
   private origin(co: Checkout, path: string): string {
@@ -1398,14 +1839,15 @@ export class Panel {
     paths: string[],
     edited: Map<string, number> | null,
     ty: number,
+    room: number,
     focused: boolean,
   ): number {
     const colors = palette.colors,
-      rows = this.fileRows(r, paths, edited),
+      rows = this.listRows(r, paths, edited),
       now = Date.now(),
-      height = Math.max(1, Math.min(r.tree_rows, rows.length, Math.max(3, Math.floor((c.h - 8) / 2))));
+      height = Math.max(1, Math.min(this.tree_rows, rows.length, room));
     let sel = rows.findIndex(row => row.id === r.tree_sel);
-    if (sel < 0 && r.path) sel = rows.findIndex(row => row.id === "f:" + r.path);
+    if (sel < 0) sel = rows.findIndex(row => row.id === (r.all ? "all" : "f:" + r.path));
     if (sel >= 0 && !r.tree_free) {
       if (sel < r.tree_top) r.tree_top = sel;
       if (sel >= r.tree_top + height) r.tree_top = sel - height + 1;
@@ -1415,14 +1857,23 @@ export class Panel {
     const byPath = new Map(changes.map(ch => [ch.path, ch]));
     rows.slice(r.tree_top, r.tree_top + height).forEach((row, i) => {
       const y = ty + i,
-        on = row.id === r.tree_sel || (sel < 0 && row.kind === "file" && row.path === r.path),
+        on = i + r.tree_top === sel,
         active = on && focused && r.part === "tree",
         bg = active ? colors.selected : on ? palette.mix(colors.bg, colors.selected, 50) : null;
       c.fill(y, bg);
       if (active) c.put(0, y, "▌", colors.accent, bg);
       const indent = 1 + row.depth * 2;
       const right: [string, palette.Rgb][] = [];
-      if (row.kind === "dir") {
+      if (row.kind === "all") {
+        c.text(indent, y, "≡", on ? colors.strong : colors.muted, bg, true);
+        c.text(indent + 2, y, "All files", on ? colors.strong : colors.text, bg, on);
+        c.hit(0, y, c.w, 1, {
+          act: () => {
+            r.part = "tree";
+            this.showAll(r);
+          },
+        });
+      } else if (row.kind === "dir") {
         c.text(indent, y, row.open ? "▾" : "▸", colors.faint, bg);
         if (!row.open) {
           let adds = 0,
@@ -1447,16 +1898,11 @@ export class Panel {
           },
         });
       } else {
-        const ch = byPath.get(row.path)!;
-        const mark =
-          ch.kind === "added" || ch.kind === "untracked"
-            ? ["A", colors.accent]
-            : ch.kind === "deleted"
-              ? ["D", colors.hot]
-              : ch.kind === "renamed"
-                ? ["R", colors.muted]
-                : ["M", colors.muted];
-        c.text(indent, y, mark[0] as string, mark[1] as palette.Rgb, bg, true);
+        const ch = byPath.get(row.path)!,
+          [letter, fg] = mark(ch),
+          // On "All files", the file the cursor is in.
+          here = r.all && row.path === r.path;
+        c.text(indent, y, letter, fg, bg, true);
         if (r.notes.some(n => n.path === row.path)) right.push(["•", colors.warm]);
         if (ch.binary) right.push(["bin", colors.faint]);
         else {
@@ -1467,22 +1913,24 @@ export class Panel {
         const at = edited?.get(row.path);
         if (edited) right.push([(at === undefined ? "" : age((now - at) / 1000)).padStart(5), colors.faint]);
         const room = c.w - 1 - right.reduce((s, p) => s + [...p[0]].length + 1, 0) - (indent + 2);
-        const end = c.text(indent + 2, y, row.name, on ? colors.strong : colors.text, bg, on, room);
+        const end = c.text(indent + 2, y, row.name, on || here ? colors.strong : colors.text, bg, on, room);
         if (row.dir) c.text(end + 2, y, row.dir, colors.faint, bg, false, indent + 2 + room - end - 2);
         c.hit(0, y, c.w, 1, {
           act: () => {
             r.part = "tree";
             r.tree_sel = row.id;
-            if (r.path !== row.path) this.select(r, row.path, paths);
+            if (r.all || r.path !== row.path) this.choose(r, row.path, paths);
           },
         });
       }
       let px = c.w - right.reduce((s, p) => s + [...p[0]].length + 1, 0);
       for (const [s, fg] of right) px = c.text(px, y, s, fg, bg) + 1;
     });
+    // The rule under the list takes its row, so a thumb at the edge says where the list is.
     if (rows.length > height) {
-      const shown = `${Math.min(rows.length, r.tree_top + height)}/${rows.length}`;
-      c.text(c.w - shown.length - 2, ty + height, ` ${shown} `, colors.faint);
+      const thumb = Math.max(1, Math.round((height * height) / rows.length)),
+        at = ty + Math.round(((height - thumb) * r.tree_top) / Math.max(1, rows.length - height));
+      for (let j = 0; j < thumb; j++) c.put(c.w - 1, at + j, "▐", colors.line);
     }
     return ty + height;
   }
@@ -1500,75 +1948,60 @@ export class Panel {
     lines.forEach(([s, fg], i) => c.text(5, dy + 2 + i, s, fg, colors.surface, false, width - 6));
     if (act) c.hit(2, dy + 1, width, height, { act });
   }
-  private drawDiff(
-    c: Canvas,
-    r: Review,
-    now: NonNullable<ReturnType<Panel["current"]>>,
-    dy: number,
-    dh: number,
-    focused: boolean,
-  ): void {
-    const colors = palette.colors,
-      ch = now.change;
-    if (!ch) return;
+  private drawDiff(c: Canvas, r: Review, now: Now, dy: number, dh: number, focused: boolean): void {
+    const colors = palette.colors;
     c.hit(0, dy, c.w, dh, { wheel: "diff" });
-    if (ch.generated && !r.loaded.has(ch.path))
-      return this.notice(
-        c,
-        dy,
-        [
+    // A file alone without lines to show says why in a box.
+    const ch = now.change;
+    if (!r.all) {
+      if (!ch) return;
+      if (ch.generated && !r.loaded.has(ch.path))
+        return this.notice(
+          c,
+          dy,
           [
-            `Generated file · +${(ch.adds ?? 0).toLocaleString("en-US")} −${(ch.dels ?? 0).toLocaleString("en-US")}`,
-            colors.text,
+            [
+              `Generated file · +${(ch.adds ?? 0).toLocaleString("en-US")} −${(ch.dels ?? 0).toLocaleString("en-US")}`,
+              colors.text,
+            ],
+            ["Its diff starts collapsed. Enter loads it.", colors.faint],
           ],
-          ["Its diff starts collapsed. Enter loads it.", colors.faint],
-        ],
-        () => {
-          r.loaded.add(ch.path);
-          this.loadSelected();
-        },
-      );
-    const file = now.file;
-    if (!file) return void c.text(2, dy + 1, "Reading the diff…", colors.faint);
-    const loaded = file.loaded;
-    if (loaded.kind === "binary")
-      return this.notice(c, dy, [
-        ["Binary file", colors.text],
-        ["No text diff and no line notes.", colors.faint],
-      ]);
-    if (loaded.kind === "too_large")
-      return this.notice(c, dy, [
-        [`Too large to show here · ${(loaded.bytes / 1e6).toFixed(1)} MB`, colors.text],
-        ["The limit is 2 MB or 50,000 lines.", colors.faint],
-        [
-          `git counts +${(ch.adds ?? 0).toLocaleString("en-US")} −${(ch.dels ?? 0).toLocaleString("en-US")}.`,
-          colors.faint,
-        ],
-      ]);
-    if (loaded.kind === "failed")
-      return this.notice(c, dy, [
-        ["git couldn't diff this file", colors.text],
-        [loaded.message, colors.faint],
-      ]);
-    const d = loaded.diff,
-      path = ch.path,
-      units = this.units(r, d, path);
-    if (r.cur >= units.length) r.cur = Math.max(0, units.length - 1);
-    const gutter = d.gutter(),
+          () => {
+            r.loaded.add(ch.path);
+            this.loadSelected();
+          },
+        );
+      const file = now.file;
+      if (!file) return void c.text(2, dy + 1, "Reading the diff…", colors.faint);
+      const loaded = file.loaded;
+      if (loaded.kind === "binary")
+        return this.notice(c, dy, [
+          ["Binary file", colors.text],
+          ["No text diff and no line notes.", colors.faint],
+        ]);
+      if (loaded.kind === "too_large")
+        return this.notice(c, dy, [
+          [`Too large to show here · ${(loaded.bytes / 1e6).toFixed(1)} MB`, colors.text],
+          ["The limit is 2 MB or 50,000 lines.", colors.faint],
+          [
+            `git counts +${(ch.adds ?? 0).toLocaleString("en-US")} −${(ch.dels ?? 0).toLocaleString("en-US")}.`,
+            colors.faint,
+          ],
+        ]);
+      if (loaded.kind === "failed")
+        return this.notice(c, dy, [
+          ["git couldn't diff this file", colors.text],
+          [loaded.message, colors.faint],
+        ]);
+    }
+    const sections = this.sections(r, now);
+    if (sections.length === 0) return;
+    const gutter = Math.max(3, ...sections.map(s => s.d?.gutter() ?? 0)),
       code_x = gutter + 2,
       code_w = Math.max(10, c.w - code_x - 1),
       box_x = code_x,
       box_w = c.w - box_x - 1;
     const rev = revOf(now.source);
-    const mine = r.notes.filter(n => n.path === path && notes.sameRev(n.rev, rev));
-    const after = new Map<string, notes.Note[]>();
-    const noted = new Set<string>();
-    for (const n of mine) {
-      if (r.compose?.edit === n.id) continue;
-      const k = `${n.side}:${n.end}`;
-      after.set(k, [...(after.get(k) ?? []), n]);
-      for (let line = n.start; line <= n.end; line++) noted.add(`${n.side}:${line}`);
-    }
     const wrapText = (s: string, width: number) => {
       const out: string[] = [];
       for (const para of s.split("\n")) {
@@ -1589,36 +2022,88 @@ export class Panel {
       }
       return out;
     };
-    const heightOf = (unit: diff.Unit) =>
-      unit.kind === "fold" || !r.wrap
-        ? 1
-        : Math.min(wrap_cap, Math.max(1, Math.ceil(d.text(d.rows[unit.row]).length / code_w)));
+    // The note being written, in the lines its box shows, and where its caret is.
+    if (r.compose) r.compose.area.width = box_w - 4;
+    const composed = r.compose ? r.compose.area.lines() : [],
+      caret = r.compose && focused ? r.compose.area.position() : null;
+    this.compose_at = null;
     type Item =
-      | { kind: "unit"; unit: diff.Unit; at: number; h: number }
-      | { kind: "note"; note: notes.Note; h: number }
-      | { kind: "compose"; h: number };
-    const items: Item[] = [];
-    units.forEach((unit, at) => {
-      items.push({ kind: "unit", unit, at, h: heightOf(unit) });
-      if (unit.kind !== "row") return;
-      const row = d.rows[unit.row];
-      for (const side of ["new", "old"] as const) {
-        const line = notes.lineOn(row, side);
-        if (line === 0) continue;
-        for (const n of after.get(`${side}:${line}`) ?? [])
-          items.push({ kind: "note", note: n, h: 2 + wrapText(n.text, box_w - 4).length });
-        if (r.compose && r.compose.path === path && r.compose.side === side && r.compose.end === line)
-          items.push({ kind: "compose", h: 2 + Math.max(1, wrapText(r.compose.text, box_w - 4).length) });
+      | { kind: "head"; s: Section; h: number }
+      | { kind: "notice"; s: Section; h: number }
+      | { kind: "unit"; s: Section; d: diff.FileDiff; unit: diff.Unit; at: number; h: number }
+      | { kind: "note"; s: Section; note: notes.Note; h: number }
+      | { kind: "compose"; s: Section; h: number };
+    const items: Item[] = [],
+      // Each file's heading among the items, and its lines with a note.
+      heads = new Map<string, number>(),
+      noted = new Map<string, Set<string>>();
+    for (const s of sections) {
+      const path = s.change.path;
+      if (path === r.path && r.cur >= stops(s)) r.cur = stops(s) - 1;
+      if (r.all) {
+        heads.set(path, items.length);
+        items.push({ kind: "head", s, h: items.length ? 2 : 1 });
       }
-    });
+      if (s.collapsed) continue;
+      const d = s.d;
+      if (!d || s.units.length === 0) {
+        if (r.all) items.push({ kind: "notice", s, h: 1 });
+        continue;
+      }
+      const after = new Map<string, notes.Note[]>(),
+        lines = new Set<string>();
+      for (const n of r.notes) {
+        if (n.path !== path || !notes.sameRev(n.rev, rev) || r.compose?.edit === n.id) continue;
+        const k = `${n.side}:${n.end}`;
+        after.set(k, [...(after.get(k) ?? []), n]);
+        for (let line = n.start; line <= n.end; line++) lines.add(`${n.side}:${line}`);
+      }
+      noted.set(path, lines);
+      s.units.forEach((unit, at) => {
+        items.push({
+          kind: "unit",
+          s,
+          d,
+          unit,
+          at,
+          h:
+            unit.kind === "fold" || !r.wrap
+              ? 1
+              : Math.min(wrap_cap, Math.max(1, Math.ceil(d.text(d.rows[unit.row]).length / code_w))),
+        });
+        if (unit.kind !== "row") return;
+        const row = d.rows[unit.row];
+        for (const side of ["new", "old"] as const) {
+          const line = notes.lineOn(row, side);
+          if (line === 0) continue;
+          for (const n of after.get(`${side}:${line}`) ?? [])
+            items.push({ kind: "note", s, note: n, h: 2 + wrapText(n.text, box_w - 4).length });
+          if (r.compose && r.compose.path === path && r.compose.side === side && r.compose.end === line)
+            items.push({ kind: "compose", s, h: 2 + composed.length });
+        }
+      });
+    }
     const ys: number[] = [];
     let total = 0;
     for (const item of items) {
       ys.push(total);
       total += item.h;
     }
-    const cur_item = items.findIndex(it => it.kind === "unit" && it.at === r.cur);
+    // On "All files" the top row holds the heading of the file scrolled into.
+    const lead = r.all ? 1 : 0;
+    // A folded file's cursor stop is its heading.
+    const cur_item = items.findIndex(
+      it =>
+        it.s.change.path === r.path &&
+        (it.kind === "notice" || (it.kind === "head" && it.s.collapsed) || (it.kind === "unit" && it.at === r.cur)),
+    );
     let top = r.top;
+    // Files above the top that changed size since the last draw don't move it.
+    const landmark = r.landmark ? heads.get(r.landmark.path) : undefined;
+    if (r.landmark && landmark !== undefined) top += ys[landmark] - r.landmark.y;
+    const raised = r.raise && r.path !== null ? heads.get(r.path) : undefined;
+    r.raise = false;
+    if (raised !== undefined) top = ys[raised] + items[raised].h - 1;
     if (r.compose) {
       const ci = items.findIndex(it => it.kind === "compose");
       if (ci >= 0) {
@@ -1626,26 +2111,56 @@ export class Panel {
         if (bottom > top + dh) top = bottom - dh;
       }
     } else if (!r.free && cur_item >= 0) {
-      const cy = ys[cur_item],
-        h = items[cur_item].h;
-      if (cy < top) top = Math.max(0, cy - 2);
+      const heading = items[cur_item].kind === "head",
+        cy = ys[cur_item] + (heading ? items[cur_item].h - 1 : 0),
+        h = heading ? 1 : items[cur_item].h;
+      if (cy < top + lead) top = Math.max(0, cy - lead - 2);
       if (cy + h > top + dh) top = cy + h - dh + 2;
     }
     top = Math.min(Math.max(0, top), Math.max(0, total - dh));
     r.top = top;
-    const sel = r.compose
-      ? r.compose.range
-      : r.anchor !== null
-        ? [Math.min(r.anchor, r.cur), Math.max(r.anchor, r.cur)]
-        : null;
     let first = 0;
     while (first < items.length && ys[first] + items[first].h <= top) first++;
-    const hl = { old: now.file!.old, new: now.file!.new };
+    const shown = items[first]?.s.change.path,
+      shown_head = shown === undefined ? undefined : heads.get(shown);
+    r.landmark = shown !== undefined && shown_head !== undefined ? { path: shown, y: ys[shown_head] } : null;
+    const sel = r.compose
+        ? r.compose.range
+        : r.anchor !== null
+          ? [Math.min(r.anchor, r.cur), Math.max(r.anchor, r.cur)]
+          : null,
+      sel_path = r.compose ? r.compose.path : r.path;
     for (let i = first; i < items.length && ys[i] < top + dh; i++) {
       const item = items[i],
+        s = item.s,
+        path = s.change.path,
         y0 = dy + ys[i] - top;
+      if (item.kind === "head") {
+        this.drawHead(c, r, now, s, y0 + item.h - 1, dy, dy + dh, focused);
+        continue;
+      }
+      if (item.kind === "notice") {
+        if (y0 < dy) continue;
+        const cursor = path === r.path && focused && r.part === "diff",
+          bg = cursor ? tint.cursor : null;
+        c.fill(y0, bg, 0, c.w - 1);
+        c.text(code_x, y0, this.flowNotice(r, s), cursor ? colors.muted : colors.faint, bg);
+        const held = s.change.generated && !r.loaded.has(path);
+        c.hit(0, y0, c.w, 1, {
+          unit: 0,
+          path,
+          wheel: "diff",
+          act: () => {
+            if (!held) return;
+            r.loaded.add(path);
+            this.loadSelected();
+          },
+        });
+        continue;
+      }
       if (item.kind === "unit") {
-        const cursor = item.at === r.cur && focused && r.part === "diff";
+        const d = item.d,
+          cursor = path === r.path && item.at === r.cur && focused && r.part === "diff";
         if (item.unit.kind === "fold") {
           if (y0 < dy) continue;
           const bg = cursor ? tint.cursor : tint.fold;
@@ -1659,14 +2174,37 @@ export class Panel {
           );
           const unit = item.unit,
             at = item.at;
-          c.hit(0, y0, c.w, 1, { act: () => (r.cur === at ? this.openFold(r, d, unit) : (r.cur = at)) });
+          c.hit(0, y0, c.w, 1, {
+            act: () => {
+              if (r.path === path && r.cur === at) return this.openFold(r, path, d, unit);
+              if (r.path !== path) r.anchor = null;
+              r.path = path;
+              r.cur = at;
+            },
+          });
           continue;
         }
-        const in_sel = sel !== null && item.at >= sel[0] && item.at <= sel[1];
-        this.drawRow(c, r, d, item.unit.row, y0, dy, dy + dh, gutter, code_x, code_w, cursor, in_sel, noted, hl);
+        const in_sel = sel !== null && path === sel_path && item.at >= sel[0] && item.at <= sel[1];
+        this.drawRow(
+          c,
+          r,
+          d,
+          path,
+          item.unit.row,
+          y0,
+          dy,
+          dy + dh,
+          gutter,
+          code_x,
+          code_w,
+          cursor,
+          in_sel,
+          noted.get(path) ?? new Set(),
+          { old: s.file!.old, new: s.file!.new },
+        );
         const vy = Math.max(y0, dy),
           vh = Math.min(y0 + item.h, dy + dh) - vy;
-        if (vh > 0) c.hit(0, vy, c.w, vh, { unit: item.at, wheel: "diff" });
+        if (vh > 0) c.hit(0, vy, c.w, vh, { unit: item.at, path, wheel: "diff" });
         continue;
       }
       const is_note = item.kind === "note";
@@ -1674,7 +2212,8 @@ export class Panel {
         ? notes.location(item.note)
         : `${r.compose!.edit !== null ? "edit note" : "note"} · ${r.compose!.path}:${r.compose!.start}`;
       const border = is_note ? colors.line : palette.outline;
-      const body = wrapText(is_note ? item.note.text : r.compose!.text, box_w - 4);
+      const body = is_note ? wrapText(item.note.text, box_w - 4) : [];
+      if (!is_note) this.compose_at = { x: c.x + box_x + 2, y: c.y + y0 + 1, rows: composed.length, w: box_w - 4 };
       for (let j = 0; j < item.h; j++) {
         const ly = y0 + j;
         if (ly < dy || ly >= dy + dh) continue;
@@ -1697,10 +2236,15 @@ export class Panel {
           c.fill(ly, colors.surface, box_x, box_x + box_w);
           c.put(box_x, ly, "│", border, colors.surface);
           c.put(box_x + box_w - 1, ly, "│", border, colors.surface);
-          const end = c.text(box_x + 2, ly, body[j - 1] ?? "", colors.text, colors.surface, false, box_w - 4);
-          if (!is_note && j === item.h - 2 && focused) c.put(end, ly, " ", colors.surface, colors.text);
+          if (is_note) c.text(box_x + 2, ly, body[j - 1] ?? "", colors.text, colors.surface, false, box_w - 4);
+          else
+            this.drawTyped(c, r.compose!.area, composed[j - 1], box_x + 2, ly, caret?.row === j - 1 ? caret.col : null);
         }
       }
+    }
+    // The heading of a file scrolled into stays at the top while its lines pass.
+    if (shown !== undefined && shown_head !== undefined && ys[shown_head] + items[shown_head].h - 1 < top) {
+      this.drawHead(c, r, now, items[shown_head].s, dy, dy, dy + dh, focused);
     }
     if (total > dh) {
       const thumb = Math.max(1, Math.round((dh * dh) / total)),
@@ -1708,10 +2252,102 @@ export class Panel {
       for (let j = 0; j < thumb; j++) c.put(c.w - 1, at + j, "▐", colors.line);
     }
   }
+  /** A file's heading on "All files": a fold marker, its letter and path,
+   * where it changed and its counts; folded, how many hunks it hides. A
+   * click folds or unfolds it. */
+  private drawHead(
+    c: Canvas,
+    r: Review,
+    now: Now,
+    s: Section,
+    y: number,
+    top: number,
+    bottom: number,
+    focused: boolean,
+  ): void {
+    if (y < top || y >= bottom) return;
+    const colors = palette.colors,
+      ch = s.change,
+      cursor = s.collapsed && ch.path === r.path && focused && r.part === "diff",
+      bg = cursor ? tint.cursor : colors.surface,
+      [letter, fg] = mark(ch);
+    c.fill(y, bg, 0, c.w - 1);
+    c.text(1, y, s.collapsed ? "▸" : "▾", colors.faint, bg);
+    c.text(3, y, letter, fg, bg, true);
+    // Said only while there's room, the origin going first; each set apart from the counts.
+    const extra: [string, palette.Rgb][] = [];
+    if (s.collapsed && s.d) extra.push([plural(diff.hunkStarts(s.d, s.d.units).length, "hunk") + " ", colors.muted]);
+    // Every file has the same origin outside the branch's "all", so only there is it said.
+    const origin = r.scope === "all" || ch.kind === "untracked" ? this.originOf(now.co, r, now.source, ch) : "";
+    if (origin) extra.push([origin + " ", colors.faint]);
+    const counts: [string, palette.Rgb][] = [];
+    if (r.notes.some(n => n.path === ch.path && notes.sameRev(n.rev, revOf(now.source))))
+      counts.push(["•", colors.warm]);
+    if (ch.binary) counts.push(["bin", colors.faint]);
+    else {
+      if (ch.generated) counts.push(["gen", colors.faint]);
+      if (ch.adds) counts.push(["+" + ch.adds.toLocaleString("en-US"), colors.accent]);
+      if (ch.dels) counts.push(["−" + ch.dels.toLocaleString("en-US"), colors.hot]);
+    }
+    const width = (parts: [string, palette.Rgb][]) => parts.reduce((sum, [part]) => sum + [...part].length + 1, 0);
+    while (extra.length && c.w - 6 - width(extra) - width(counts) < 24) extra.pop();
+    const right = [...extra, ...counts];
+    let px = c.w - 1 - width(right);
+    const label = ch.from ? `${ch.from} → ${ch.path}` : ch.path;
+    c.text(5, y, label, colors.strong, bg, true, px - 6);
+    for (const [part, color] of right) px = c.text(px, y, part, color, bg) + 1;
+    c.hit(0, y, c.w, 1, { act: () => this.collapse(r, now, ch.path) });
+  }
+  /** What a file without lines to show says in the flow. */
+  private flowNotice(r: Review, s: Section): string {
+    const loaded = s.file?.loaded;
+    if (s.change.generated && !r.loaded.has(s.change.path)) return "Generated file · enter loads its diff";
+    if (!loaded) return "Reading the diff…";
+    switch (loaded.kind) {
+      case "binary":
+        return "Binary file · no text diff";
+      case "too_large":
+        return `Too large to show here · ${(loaded.bytes / 1e6).toFixed(1)} MB`;
+      case "failed":
+        return `git couldn't diff this file: ${loaded.message}`;
+      case "diff":
+        return "No lines changed";
+    }
+  }
+  /** A line of a text box: its text in `fg` on `bg`, its selection as every
+   * text box shows one, and the caret, at column `caret`, as an inverted
+   * cell. Returns the column after the text. */
+  private drawTyped(
+    c: Canvas,
+    a: textArea.TextArea,
+    line: textArea.Line | undefined,
+    x: number,
+    y: number,
+    caret: number | null,
+    fg = palette.colors.text,
+    bg: palette.Rgb | null = palette.colors.surface,
+  ): number {
+    if (!line) return x;
+    const colors = palette.colors,
+      sel = a.selection(),
+      chosen = (at: number) => sel !== null && at >= sel[0] && at < sel[1];
+    let col = x;
+    for (let at = line.start; at < line.end;) {
+      const ch = String.fromCodePoint(a.text.codePointAt(at)!);
+      col = chosen(at) ? c.text(col, y, ch, colors.strong, palette.selection_bg) : c.text(col, y, ch, fg, bg);
+      at += ch.length;
+    }
+    // A selected line break shows as one selected cell.
+    if (a.text[line.end] === "\n" && chosen(line.end)) c.put(col, y, " ", colors.strong, palette.selection_bg);
+    const cell = caret === null ? undefined : c.cells[y]?.[x + caret];
+    if (cell) [cell.fg, cell.bg] = [bg ?? colors.bg, fg];
+    return col;
+  }
   private drawRow(
     c: Canvas,
     r: Review,
     d: diff.FileDiff,
+    path: string,
     index: number,
     y0: number,
     top: number,
@@ -1734,7 +2370,7 @@ export class Panel {
       spans = del ? hl.old.spans(row.old_at) : hl.new.spans(row.new_at),
       em = cursor || selected ? null : d.emphasis(index),
       em_bg = add ? tint.add_em : tint.del_em,
-      found = r.find?.by_row.get(index) ?? null,
+      found = r.find?.by_row.get(`${path}\0${index}`) ?? null,
       chars = [...text],
       lines = r.wrap ? Math.min(wrap_cap, Math.max(1, Math.ceil(chars.length / code_w))) : 1,
       number = diff.FileDiff.number(row),
@@ -1791,55 +2427,41 @@ export class Panel {
       }
     }
   }
-  private drawKeys(c: Canvas, dy: number, dh: number): void {
-    const colors = palette.colors;
-    const groups: [string, string[]][] = [
-      [
-        "Move",
-        [
-          "j k  file in the tree, line in the diff",
-          "tab  tree ⇄ diff",
-          "] [  hunk, across files",
-          "f F  next, previous file",
-          "→ enter  open a fold, folder or generated diff",
-          "← →  scroll sideways when unwrapped",
-          "pgdn ctrl+d  page, half page",
-        ],
-      ],
-      [
-        "View",
-        [
-          "a u  all (default), uncommitted",
-          "g G  commits: switch, pick another",
-          "w  wrap   /  find in file",
-          "o O  sort files by name or last edit, reverse",
-          "p  pin to this checkout; notes go to the focused pane",
-          "z < >  hide, grow, shrink the tree",
-        ],
-      ],
-      [
-        "Notes",
-        [
-          "v c  select, comment   ctrl+j  newline",
-          "e d  edit, delete   n N  next, previous",
-          "l  list   s  paste into the pane   y  copy",
-        ],
-      ],
-      ["Leave", ["esc  back to the pane   q  hide the panel"]],
-    ];
-    const lines: [string, boolean][] = [];
-    for (const [head, rows] of groups) {
-      lines.push([head, true]);
-      for (const row of rows) lines.push([row, false]);
+  /** Every key in one box over the dimmed panel: groups under their
+   * headings in two columns, or one when narrow, each key at the end of what
+   * it does. */
+  private drawKeys(c: Canvas): void {
+    const colors = palette.colors,
+      columns = c.w >= 2 * keys_column + 10 ? [key_groups.slice(0, 3), key_groups.slice(3)] : [key_groups],
+      tall = (groups: KeyGroup[]) => groups.reduce((sum, [, rows]) => sum + 2 + rows.length, -1),
+      body = Math.max(...columns.map(tall)),
+      w = Math.min(c.w, columns.length * keys_column + (columns.length - 1) * 4 + 6),
+      h = body + 4,
+      x = Math.floor((c.w - w) / 2),
+      y = Math.max(0, Math.floor((c.h - h) / 2));
+    c.fade();
+    for (let row = 0; row < h; row++) {
+      const [l, r] = row === 0 ? ["╭", "╮"] : row === h - 1 ? ["╰", "╯"] : ["│", "│"];
+      c.fill(y + row, colors.surface, x, x + w);
+      c.put(x, y + row, l, colors.line, colors.surface);
+      c.put(x + w - 1, y + row, r, colors.line, colors.surface);
+      if (row === 0 || row === h - 1)
+        for (let i = x + 1; i < x + w - 1; i++) c.put(i, y + row, "─", colors.line, colors.surface);
     }
-    const height = Math.min(dh, lines.length + 2),
-      width = Math.min(c.w - 2, 52);
-    this.box(c, 1, dy, width, height, " Keys ");
-    lines
-      .slice(0, height - 2)
-      .forEach(([s, head], i) =>
-        c.text(3, dy + 1 + i, s, head ? colors.faint : colors.text, colors.surface, head, width - 4),
-      );
+    c.text(x + 2, y, " Keys ", colors.strong, colors.surface, true);
+    c.text(x + w - 18, y + h - 1, " any key closes ", colors.faint, colors.surface);
+    columns.forEach((groups, i) => {
+      const left = x + 3 + i * (keys_column + 4);
+      let row = y + 2;
+      for (const [heading, rows] of groups) {
+        c.text(left, row++, heading, colors.strong, colors.surface, true);
+        for (const [what, keys] of rows) {
+          c.text(left + 2, row, what, colors.muted, colors.surface);
+          c.text(left + keys_column - [...keys].length, row++, keys, colors.strong, colors.surface);
+        }
+        row++;
+      }
+    });
   }
   private box(c: Canvas, x: number, y: number, w: number, h: number, title: string): void {
     const colors = palette.colors;
@@ -1879,7 +2501,7 @@ export class Panel {
       });
     });
   }
-  private drawFooter(c: Canvas, r: Review, now: ReturnType<Panel["current"]>, focused: boolean): void {
+  private drawFooter(c: Canvas, r: Review, now: Now | null, focused: boolean): void {
     const colors = palette.colors,
       y = c.h - 1;
     c.fill(y, null);
@@ -1902,15 +2524,15 @@ export class Panel {
       }
     };
     if (r.find) {
-      let x = keycap(1, "/");
-      x = c.text(x + 1, y, r.find.query, colors.strong, null, true);
-      if (focused) c.put(x, y, " ", colors.bg, colors.text);
-      const count = r.find.query
+      const q = r.find.query,
+        caret = focused ? q.position().col : null,
+        x = this.drawTyped(c, q, q.lines()[0], keycap(1, "/") + 1, y, caret, colors.strong, null) + 1;
+      const count = q.text
         ? r.find.hits.length
           ? `${r.find.at + 1}/${r.find.hits.length}`
           : "no match"
         : "type to find";
-      c.text(x + 2, y, count, r.find.query && !r.find.hits.length ? colors.hot : colors.faint);
+      c.text(x + 1, y, count, q.text && !r.find.hits.length ? colors.hot : colors.faint);
       return;
     }
     if (r.status)
@@ -1919,8 +2541,8 @@ export class Panel {
     if (r.compose)
       return hints([
         ["enter", "save"],
+        ["shift+enter", "new line"],
         ["esc", "cancel"],
-        ["ctrl+j", "newline"],
       ]);
     if (r.list)
       return hints([
@@ -1951,6 +2573,8 @@ export class Panel {
       return hints([["j/k", "file"], ["enter", "open"], ["tab", "diff"], ["]", "hunk"], send, ["?", "keys"]], close);
     const d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null;
     const units = d && r.path ? this.units(r, d, r.path) : [];
+    if (r.all && r.path && r.collapsed.has(r.path))
+      return hints([["enter", "unfold"], ["]/[", "hunk"], send, ["?", "keys"]], close);
     if (now?.change?.generated && !r.loaded.has(now.change.path))
       return hints([["enter", "load the diff"], ["f", "next file"], send, ["?", "keys"]], close);
     if (units[r.cur]?.kind === "fold") return hints([["→", "expand"], ["]/[", "hunk"], send, ["?", "keys"]], close);

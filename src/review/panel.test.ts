@@ -89,6 +89,7 @@ test("opens on all: commits and working copy together", async () => {
   expect(narrow.at(-2)).toMatch(/q close $/);
   expect(narrow.at(-2)).not.toContain("? keys");
   const tree = rows.slice(3, 7).join("\n");
+  expect(rows[3]).toContain("≡ All files");
   expect(tree).toContain("app.ts");
   expect(tree).toContain("bun.lock");
   expect(tree).toContain("gen");
@@ -138,6 +139,7 @@ test("a generated file waits for Enter, and scopes and commits switch", async ()
   p.follow({ pane: 2, cwd: root, name: "Fix app" });
   p.show();
   await settle(p);
+  key(p, "j");
   key(p, "j");
   await settle(p);
   expect(screen(p).join("\n")).toContain("Its diff starts collapsed. Enter loads it.");
@@ -280,6 +282,7 @@ test("the wheel scrolls the file list under the pointer", async () => {
   for (const name of extra) write(name, "new\n");
   try {
     const p = new panel.Panel();
+    p.tree_rows = 6;
     p.follow({ pane: 13, cwd: root, name: "Fix app" });
     p.show();
     await settle(p);
@@ -288,13 +291,263 @@ test("the wheel scrolls the file list under the pointer", async () => {
     expect(list()).not.toContain("z5.txt");
     // Over a file's row, the list scrolls, and stays off the selected file.
     p.mouse("wheel_down", 5, 4);
+    p.mouse("wheel_down", 5, 4);
     expect(list()).not.toContain("app.ts");
     expect(list()).toContain("z5.txt");
     // Moving the selection brings it back into view.
     key(p, "j");
-    expect(list()).toContain("bun.lock");
+    expect(list()).toContain("app.ts");
     p.hide();
   } finally {
     for (const name of extra) rmSync(join(root, name));
   }
+});
+
+test("all files reads every file in one flow, each under its heading", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 21, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  // Under the list's rule, the files in the list's order.
+  const flow = () => screen(p, 70, 60).slice(8);
+  let rows = flow();
+  const at = (text: string) => rows.findIndex(row => row.includes(text));
+  expect(rows[0]).toMatch(/M app\.ts +working copy  \+2 −2/);
+  expect(rows[at("A bun.lock")]).toContain("untracked  gen +2");
+  expect(rows[at("A bun.lock") + 1]).toContain("Generated file · enter loads its diff");
+  expect(rows[at("M notes.md")]).toContain("committed  +2");
+  expect(at("export const v30 = 300;")).toBeLessThan(at("A bun.lock"));
+  expect(at("More.")).toBeGreaterThan(at("M notes.md"));
+  // f walks to the next file; Enter there loads a generated diff in place.
+  key(p, "tab");
+  key(p, "f");
+  key(p, "enter");
+  await settle(p);
+  rows = flow();
+  expect(rows[at("A bun.lock") + 1]).toContain("{}");
+  // A note goes on the file the cursor is in.
+  key(p, "f");
+  key(p, "c");
+  for (const ch of "why?") key(p, ch);
+  key(p, "enter");
+  rows = flow();
+  expect(rows[at("M notes.md")]).toContain("•");
+  expect(rows.join("\n")).toContain("notes.md:2");
+  p.hide();
+});
+
+test("a file picked in the list shows alone, and all files comes back on it", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 22, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  screen(p);
+  p.mouse("press", 10, 6);
+  p.mouse("release", 10, 6);
+  await settle(p);
+  let rows = screen(p);
+  expect(rows[7]).toContain(" notes.md ");
+  expect(rows.slice(8).join("\n")).not.toContain("app.ts");
+  p.mouse("press", 10, 3);
+  p.mouse("release", 10, 3);
+  await settle(p);
+  // Back on the flow, it's on the file last shown, not its top.
+  rows = screen(p, 70, 20).slice(8);
+  expect(rows.some(row => /M notes\.md +committed/.test(row))).toBe(true);
+  expect(rows.join("\n")).toContain("More.");
+  expect(rows.join("\n")).not.toContain("v5 = 50");
+  p.hide();
+});
+
+test("find on all files reaches into every file", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 23, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  key(p, "tab");
+  key(p, "/");
+  for (const ch of "more.") key(p, ch);
+  const rows = screen(p, 70, 20);
+  expect(rows.join("\n")).toContain("More.");
+  expect(rows.at(-2)).toContain("1/1");
+  p.hide();
+});
+
+test("dragging the rule under the file list sets its height", async () => {
+  const p = new panel.Panel();
+  let saved = 0;
+  p.resized = rows => (saved = rows);
+  p.follow({ pane: 24, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  screen(p);
+  expect(p.splitRow).toBe(7);
+  p.mouse("press", 10, 7);
+  expect(p.splitting).toBe(true);
+  p.mouse("drag", 10, 5);
+  p.mouse("release", 10, 5);
+  expect(saved).toBe(2);
+  const rows = screen(p);
+  expect(rows[3]).toContain("All files");
+  expect(rows[5]).toMatch(/^│─+$/);
+  expect(rows[3]).toMatch(/▐$/);
+  expect(p.splitRow).toBe(5);
+  // Dragged down, the list stops short of the diff's last rows.
+  p.mouse("press", 10, 5);
+  p.mouse("drag", 10, 40);
+  p.mouse("release", 10, 40);
+  expect(saved).toBe(34 - 3 - 2 - 5);
+  p.hide();
+});
+
+test("a file's heading folds it to its counts, and unfolds it", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 25, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  const flow = () => screen(p, 70, 60).slice(8).join("\n");
+  expect(flow()).toMatch(/▾ M app\.ts/);
+  // A click on the heading folds the file away, leaving what it held.
+  p.mouse("press", 10, 8);
+  p.mouse("release", 10, 8);
+  let body = flow();
+  expect(body).toMatch(/▸ M app\.ts +2 hunks  working copy  \+2 −2/);
+  expect(body).not.toContain("v30 = 300");
+  expect(body).toContain("More.");
+  // Folded files are passed over by ] and unfold with Enter.
+  key(p, "]");
+  expect(screen(p, 70, 60).at(-2)).not.toContain("unfold");
+  key(p, "[");
+  expect(screen(p, 70, 60).at(-2)).not.toContain("unfold");
+  key(p, "home");
+  expect(screen(p, 70, 60).at(-2)).toContain("enter unfold");
+  key(p, "enter");
+  body = flow();
+  expect(body).toMatch(/▾ M app\.ts/);
+  expect(body).toContain("v30 = 300");
+  // x folds the file the cursor is in.
+  key(p, "x");
+  expect(flow()).toMatch(/▸ M app\.ts/);
+  p.hide();
+});
+
+test("? shows every key in one box of groups over a dimmed panel, and any key closes it", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 26, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  const before = screen(p, 80, 34);
+  key(p, "?");
+  expect(p.keysOpen).toBe(true);
+  const rows = screen(p, 80, 34),
+    at = (text: string) => rows.findIndex(row => row.includes(text));
+  expect(rows[at("Keys")]).toMatch(/╭─ Keys ─+╮/);
+  // Two columns of groups, each key at the end of what it does.
+  expect(rows[at("Move")]).toMatch(/Move +Show/);
+  expect(rows[at("Page")]).toMatch(/Page +space - +Uncommitted +u/);
+  expect(rows[at("Pin review")]).toMatch(/Pin review +p/);
+  expect(at("File list")).toBeGreaterThan(at("Move"));
+  expect(at("Leave")).toBeGreaterThan(at("File list"));
+  expect(rows[at("any key closes")]).toMatch(/╰─+ any key closes ─╯/);
+  key(p, "j");
+  expect(p.keysOpen).toBe(false);
+  expect(screen(p, 80, 34)[4]).toBe(before[4]);
+  // A click closes it too, and does nothing else.
+  key(p, "?");
+  p.mouse("press", 10, 4);
+  expect(p.keysOpen).toBe(false);
+  expect(screen(p, 80, 34)[3]).toContain("≡ All files");
+  p.hide();
+});
+
+test("space pages down and - pages up, as in tig", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 27, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  key(p, "tab");
+  const top = screen(p, 70, 20).slice(8).join("\n");
+  key(p, " ");
+  key(p, " ");
+  const paged = screen(p, 70, 20).slice(8).join("\n");
+  expect(paged).not.toBe(top);
+  expect(paged).toContain("More.");
+  key(p, "-");
+  key(p, "-");
+  key(p, "-");
+  expect(screen(p, 70, 20).slice(8).join("\n")).toContain("v5 = 50");
+  p.hide();
+});
+
+test("shift and an arrow select lines as a drag does", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 28, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  key(p, "tab");
+  key(p, "select_down");
+  key(p, "select_down");
+  expect(screen(p).at(-2)).toContain("c comment on 3 rows");
+  key(p, "select_up");
+  expect(screen(p).at(-2)).toContain("c comment on 2 rows");
+  // Back where it started, there's no selection.
+  key(p, "select_up");
+  expect(screen(p).at(-2)).not.toContain("comment on");
+  // A plain move after it ends the selection and moves, as letting go of shift would.
+  key(p, "select_down");
+  key(p, "down");
+  expect(screen(p).at(-2)).not.toContain("comment on");
+  // v's selection keeps growing with plain moves.
+  key(p, "v");
+  key(p, "down");
+  expect(screen(p).at(-2)).toContain("c comment on 2 rows");
+  key(p, "escape");
+  key(p, "up");
+  key(p, "up");
+  key(p, "select_up");
+  key(p, "c");
+  for (const ch of "both") key(p, ch);
+  key(p, "enter");
+  const body = screen(p).join("\n");
+  expect(body).toMatch(/╭─ app\.ts:\d+ /);
+  expect(body).toContain("both");
+  p.hide();
+});
+
+test("the note box edits like a text box: words, lines, selection and paste", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 29, cwd: root, name: "Fix app" });
+  p.show();
+  await settle(p);
+  key(p, "tab");
+  key(p, "c");
+  expect(p.typing).toBe(true);
+  for (const ch of "why is this here") key(p, ch);
+  key(p, "word_backspace");
+  key(p, "word_backspace");
+  key(p, "newline");
+  for (const ch of "50?") key(p, ch);
+  // Back to the first line's start, and a word selected and typed over.
+  key(p, "up");
+  key(p, "line_start");
+  key(p, "select_word_right");
+  for (const ch of "what") key(p, ch);
+  for (const byte of Buffer.from(" — pasted\r\nline")) p.pasteByte(byte);
+  // The paste goes in at the caret, its line break as one.
+  let rows = screen(p);
+  const y = rows.findIndex(row => row.includes("│ what — pasted ")),
+    x = rows[y].indexOf("what");
+  expect(rows[y + 1]).toContain("│ line is ");
+  expect(rows[y + 2]).toContain("│ 50? ");
+  // A click in the box places the caret; a drag selects.
+  p.mouse("press", x, y);
+  p.mouse("drag", x + 5, y);
+  p.mouse("release", x + 5, y);
+  key(p, "backspace");
+  key(p, "enter");
+  const body = screen(p).join("\n");
+  expect(body).toContain("— pasted");
+  expect(body).not.toContain("what");
+  expect(p.typing).toBe(false);
+  p.hide();
 });

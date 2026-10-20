@@ -20,12 +20,52 @@ const map: Record<string, string> = {
   "\u001b[4~": "end",
   "\u001b[3~": "delete",
   "\u001b[Z": "shift_tab",
+  "\u001b[1;2A": "shift_up",
+  "\u001b[1;2B": "shift_down",
+  "\u001b[1;2C": "shift_right",
+  "\u001b[1;2D": "shift_left",
+  "\u001b[1;2H": "shift_home",
+  "\u001b[1;2F": "shift_end",
+  "\u001b[1;3C": "alt_right",
+  "\u001b[1;3D": "alt_left",
+  "\u001b[1;4C": "shift_alt_right",
+  "\u001b[1;4D": "shift_alt_left",
+  "\u001b[1;5C": "ctrl_right",
+  "\u001b[1;5D": "ctrl_left",
+  "\u001b[1;6C": "shift_ctrl_right",
+  "\u001b[1;6D": "shift_ctrl_left",
+  "\u001b[1;9C": "super_right",
+  "\u001b[1;9D": "super_left",
+  "\u001b[1;10C": "shift_super_right",
+  "\u001b[1;10D": "shift_super_left",
+  "\u001b[3;3~": "alt_delete",
+  "\u001b[3;5~": "ctrl_delete",
+  "\u001b\u007f": "alt_backspace",
+  "\u001b\r": "alt_enter",
+  "\u001bb": "alt_b",
+  "\u001bd": "alt_d",
+  "\u001bf": "alt_f",
+  // Cmd's select all, copy and cut, as Ghostty passes them on when it has no selection of its own.
+  "\u001b[97;9u": "super_a",
+  "\u001b[99;9u": "super_c",
+  "\u001b[120;9u": "super_x",
   "\u001b[I": "focus_in",
   "\u001b[O": "focus_out",
   "\u001b[200~": "paste_start",
   "\u001b[201~": "paste_end",
 };
 export type Key =
+  | "alt_b"
+  | "alt_backspace"
+  | "alt_d"
+  | "alt_delete"
+  | "alt_enter"
+  | "alt_f"
+  | "alt_left"
+  | "alt_right"
+  | "ctrl_delete"
+  | "ctrl_left"
+  | "ctrl_right"
   | "delete"
   | "down"
   | "end"
@@ -38,7 +78,24 @@ export type Key =
   | "paste_end"
   | "paste_start"
   | "right"
+  | "shift_alt_left"
+  | "shift_alt_right"
+  | "shift_ctrl_left"
+  | "shift_ctrl_right"
+  | "shift_down"
+  | "shift_end"
+  | "shift_home"
+  | "shift_left"
+  | "shift_right"
+  | "shift_super_left"
+  | "shift_super_right"
   | "shift_tab"
+  | "shift_up"
+  | "super_a"
+  | "super_c"
+  | "super_left"
+  | "super_right"
+  | "super_x"
   | "up";
 export function parse(seq: string): Key | null {
   return (map[seq] as Key) ?? null;

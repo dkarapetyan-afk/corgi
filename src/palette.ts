@@ -117,9 +117,15 @@ export let keycap: string;
 /** The focused pane's or sidebar list's outline: `accent` halfway into
  * `line`, so a long edge doesn't shout. */
 export let outline: Rgb;
+/** Selected text in any text box, and its background alone: a tint of the
+ * accent on `selected`, so it doesn't glare. */
+export let selection: string;
+export let selection_bg: Rgb;
 derived(() => {
   keycap = new Style({ fg: "strong", bg: "line", bold: true }).sgr();
   outline = mix(colors.accent, colors.line, 50);
+  selection_bg = mix(colors.selected, colors.accent, 30);
+  selection = fgRgb(colors.strong) + bgRgb(selection_bg);
 });
 
 /** Code colors, a family apart from the UI tokens: in code, green, warm and

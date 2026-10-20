@@ -68,6 +68,30 @@ export function decode(bytes: string): Key | null {
     },
   };
 }
+/** The sequence Corgi's text boxes read for a key whose legacy encoding
+ * loses what they need: word and line deletion, word moves typed with alt,
+ * Enter with shift or alt, and cmd's select all, copy and cut. Null for any
+ * other key. */
+export function editSequence(key: Key): string | null {
+  const { shift, alt, ctrl } = key.mods,
+    cmd = !!key.mods.super;
+  switch (key.codepoint) {
+    case 127:
+      return cmd ? "\x15" : alt || ctrl ? "\x1b\x7f" : null;
+    case 13:
+      return shift || alt ? "\x1b\r" : null;
+    case 98:
+    case 100:
+    case 102:
+      return alt && !ctrl && !cmd ? "\x1b" + String.fromCharCode(key.codepoint) : null;
+    case 97:
+    case 99:
+    case 120:
+      return cmd && !alt && !ctrl && !shift ? `\x1b[${key.codepoint};9u` : null;
+    default:
+      return null;
+  }
+}
 export function encode(
   key: Key,
   options: {
