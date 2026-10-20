@@ -156,6 +156,7 @@ export function capture(r: Runtime, live: boolean) {
       model: w.model,
       agent_order: w.agent_order.slice(),
       last_agent: w.last_agent,
+      focus: w.focus,
     })),
     panes: r.panes.map(p => {
       p.refreshCwd();
@@ -252,6 +253,7 @@ export async function restore(
     item.model = Model.fromData(w.model);
     item.agent_order = Order.restore(w.agent_order ?? []);
     item.last_agent = w.last_agent ?? null;
+    item.focus = w.focus ?? 0;
     item.away = hydrate(item.away, w.away);
     for (const tab of item.model.tabs) if (tab.id >= state.next_pane) invalid();
     item.model.next_id = state.next_pane;

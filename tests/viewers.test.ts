@@ -980,6 +980,16 @@ class ViewerScenarios extends Viewers {
     this.assertEqual(b.state.pane, first);
   }
 
+  async test_viewer_reopens_on_the_last_used_pane() {
+    await this.new();
+    const second = await this.new(),
+      a = await this.newViewer();
+    await a.focus(second);
+    await a.close();
+    const b = await this.newViewer();
+    this.assertEqual(b.state.pane, second);
+  }
+
   async test_shared_break_join_and_undo() {
     const first = await this.new(),
       a = await this.newViewer(),

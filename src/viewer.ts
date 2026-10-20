@@ -69,6 +69,7 @@ export async function openMode(
   view.navigation.workspace_id = opened.workspace;
   view.input_state.attached = true;
   await view.refresh();
+  if (opened.focus && view.runtime.workspaces.owner(opened.focus)) view.focusPane(opened.focus);
   view.restoreAgentScroll();
   view.launch_previews.socket = socket;
   view.updateLaunchPreview();

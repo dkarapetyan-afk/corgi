@@ -14,6 +14,7 @@ export interface Opened {
   viewer_protocol: number;
   bell_seq: bigint;
   workspace: number;
+  focus: number | null;
 }
 export interface View<Session = unknown, Resources = unknown> {
   type: "view";

@@ -63,10 +63,12 @@ export async function open(s: Server, cl: Client, q: Open) {
   cl.view_workspace = s.initialWorkspace().id;
   cl.protocol_version = 1;
   if (first) s.updateTheme(q.theme ?? null);
+  const ws = s.initialWorkspace();
   cl.reply("viewer.open", {
     viewer_protocol: version,
     bell_seq: s.bell_seq,
-    workspace: s.initialWorkspace().id,
+    workspace: ws.id,
+    focus: ws.model.tabForPane(ws.focus) === null ? null : ws.focus,
   });
 }
 function equal(a: unknown, b: unknown) {
@@ -90,6 +92,7 @@ export async function sync(s: Server, cl: Client, q: Sync) {
   cl.controls = cl.controls.filter(c => c.seq > q.ack);
   cl.last_control = q.ack;
   cl.interests = interests.filter(i => s.runtime.pane(i.pane) !== null);
+  const before = cl.view_focus;
   cl.view_focus = cl.interests.some(i => i.pane === q.focus) ? q.focus : null;
   cl.watched = q.watched;
   cl.resources = q.resources;
@@ -104,6 +107,18 @@ export async function sync(s: Server, cl: Client, q: Sync) {
     if (s.preferred_workspace !== cl.view_workspace) {
       s.preferred_workspace = cl.view_workspace;
       await s.saveWorkspaces();
+    }
+    // Only a move counts, so two watched viewers don't trade it every sync.
+    const ws = s.runtime.workspaces.get(cl.view_workspace);
+    if (
+      ws &&
+      cl.view_focus !== null &&
+      cl.view_focus !== before &&
+      ws.focus !== cl.view_focus &&
+      ws.model.tabForPane(cl.view_focus) !== null
+    ) {
+      ws.focus = cl.view_focus;
+      s.runtime.wrote();
     }
   }
   await resize(s);

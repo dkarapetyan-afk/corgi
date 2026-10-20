@@ -104,6 +104,7 @@ $.workspaces[].agent_order[]|pane: u32
 $.workspaces[].agent_order[]|native: u32
 $.workspaces[].last_agent: optional
 $.workspaces[].last_agent?: enum codex claude
+$.workspaces[].focus: u32
 $.panes[].binding.actor: u32
 $.panes[].binding.generation: u64
 $.panes[].binding.selection_hash: u64

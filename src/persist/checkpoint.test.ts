@@ -130,6 +130,19 @@ test("each workspace keeps its last agent, and one that has none follows the lat
     r.destroy();
   }
 });
+test("each workspace keeps the pane a viewer last used in it", async () => {
+  const r = fresh();
+  r.workspaces.items[0].focus = 3;
+  try {
+    for (const live of [true, false]) {
+      using next = new Runtime();
+      await restore(next, cp.capture(r, live), live);
+      expect(next.workspaces.items[0].focus).toBe(3);
+    }
+  } finally {
+    r.destroy();
+  }
+});
 test("conversation checkpoint restores shared bindings and detached unread state", async () => {
   const r = fresh(),
     ws = r.workspaces.items[0],

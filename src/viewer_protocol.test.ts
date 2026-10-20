@@ -3,7 +3,20 @@ import { Server } from "./server";
 import * as json from "./json";
 import type { View as WireView } from "./protocol";
 import * as protocol from "./protocol";
-import { validateInterests, queue, targetViewer, viewerShowing, copy, action, viewers } from "./viewer_protocol";
+import {
+  validateInterests,
+  queue,
+  targetViewer,
+  viewerShowing,
+  copy,
+  action,
+  viewers,
+  open,
+  sync,
+} from "./viewer_protocol";
+import { Pane } from "./runtime";
+import { Terminal } from "./pane/terminal";
+import { Workspace } from "./workspace";
 import { version, compatible, require as requireVersion } from "./viewer_version";
 const servers: Server[] = [];
 afterEach(() => {
@@ -133,4 +146,32 @@ test("open from a pane goes to the viewer showing it", () => {
   expect(result).toHaveBeenCalledWith({ ok: true, viewer: 2, queued: true });
   expect(two.controls[0]).toMatchObject({ kind: "action", name: "open", value: "/tmp" });
   expect(one.controls).toHaveLength(0);
+});
+test("a new viewer opens on the pane last used in the preferred workspace", async () => {
+  const s = fixture(),
+    ws = new Workspace(1, "/tmp");
+  s.runtime.workspaces.items.push(ws);
+  s.runtime.workspaces.next_id = 2;
+  const first = ws.model.newTab("first"),
+    second = ws.model.newTab("second");
+  for (const id of [first, second]) s.runtime.panes.push(new Pane(id, new Terminal(80, 24), "/tmp"));
+  const use = (cl: ReturnType<typeof peer>, pane: number) =>
+    sync(
+      s,
+      cl,
+      protocol.decode("viewer.sync", { interests: [{ pane, cols: 80, rows: 24 }], focus: pane, workspace: 1 }),
+    );
+  const user = peer(s),
+    idle = peer(s, 2);
+  spyOn(user, "queue").mockImplementation(() => {});
+  spyOn(idle, "queue").mockImplementation(() => {});
+  // Both start on the first pane; only the viewer that moves takes over.
+  await use(user, second);
+  expect(ws.focus).toBe(second);
+  await use(idle, first);
+  expect(ws.focus).toBe(second);
+  const next = s.addClient(-1, false),
+    reply = spyOn(next, "reply").mockImplementation(() => {});
+  await open(s, next, protocol.decode("viewer.open", {}));
+  expect(reply.mock.calls[0][1]).toMatchObject({ workspace: 1, focus: second });
 });
