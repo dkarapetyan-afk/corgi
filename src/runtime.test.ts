@@ -4,6 +4,7 @@ import { Terminal } from "./pane/terminal";
 import { n, ptr, waitpid } from "./native_bridge";
 import { Provider, Text } from "./providers";
 import { Workspace } from "./workspace";
+import { Attachment } from "./conversations";
 function add(r: Runtime, w: Workspace, split: number | null = null) {
   w.model.next_id = r.workspaces.next_pane_id;
   const id = split === null ? w.model.newTab("") : w.model.split(split, "horizontal");
@@ -50,6 +51,43 @@ test("only attached conversations and their subagents are followed", () => {
     expect(r.followed(other)).toBe(false);
     p.terminal.exited = true;
     expect(r.followed(child)).toBe(false);
+  } finally {
+    r.destroy();
+  }
+});
+test("conversations nothing refers to are forgotten; panes, closed agents and native sessions keep theirs", () => {
+  const { r, w } = setup();
+  try {
+    const shown = r.conversations.get("claude", "shown"),
+      earlier = r.conversations.get("claude", "earlier"),
+      reopenable = r.conversations.get("codex", "reopenable"),
+      quit = r.conversations.get("codex", "quit"),
+      resumable = r.conversations.get("claude", "resumable"),
+      native = r.conversations.get("codex", "native"),
+      approving = r.conversations.get("codex", "approving");
+    r.conversations.get("claude", "never shown");
+    const p = add(r, w);
+    p.attachment.select(earlier);
+    p.attachment.select(shown);
+    const closed = add(r, w);
+    closed.attachment.select(reopenable);
+    r.close(closed.id);
+    const exited = add(r, w);
+    exited.attachment.select(quit);
+    exited.terminal.exited = true;
+    r.close(exited.id);
+    const asleep = add(r, w);
+    asleep.resume_hint.provider = "claude";
+    asleep.resume_hint.session = new Text("resumable");
+    r.sessions.push({
+      attachment: new Attachment(),
+      members: [native],
+      approvals: [{ actor: approving }],
+      destroy() {},
+    });
+    expect(r.pruneConversations()).toBe(true);
+    expect(r.conversations.items).toEqual([shown, earlier, reopenable, resumable, native, approving]);
+    expect(r.pruneConversations()).toBe(false);
   } finally {
     r.destroy();
   }

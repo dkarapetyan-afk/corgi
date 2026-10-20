@@ -26,6 +26,26 @@ test("child links cannot cross providers reparent or form cycles", () => {
   expect(r.linkChild(claude, child)).toBe(false);
   expect(r.linkChild(root, root)).toBe(false);
 });
+test("pruning keeps the conversations asked for with their parents and children", () => {
+  const r = new Registry(),
+    root = r.get("codex", "root"),
+    child = r.get("codex", "child"),
+    nested = r.get("codex", "nested"),
+    sibling = r.get("codex", "sibling"),
+    gone = r.get("codex", "gone"),
+    orphan = r.get("codex", "orphan");
+  r.linkChild(root, child);
+  r.linkChild(child, nested);
+  r.linkChild(root, sibling);
+  r.linkChild(gone, orphan);
+  expect(r.prune(new Set([child.id]))).toBe(true);
+  expect(r.items).toEqual([root, child, nested, sibling]);
+  expect(r.prune(new Set([nested.id]))).toBe(false);
+  expect(r.prune(new Set())).toBe(true);
+  expect(r.items).toEqual([]);
+  expect(r.get("codex", "root")).not.toBe(root);
+  expect(r.get("codex", "next").id).toBeGreaterThan(orphan.id);
+});
 test("attachments select stable actors and delayed hooks never change selection", () => {
   const r = new Registry(),
     b = new Attachment(),

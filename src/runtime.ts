@@ -8,7 +8,7 @@ import { Provider, byProvider, Text, validRef } from "./providers";
 import { Agent } from "./agents";
 import { Entry, capacity as command_capacity } from "./launch/command";
 import { Terminal } from "./pane/terminal";
-import { Attachment, Registry } from "./conversations";
+import { Attachment, Registry, type ActorId } from "./conversations";
 import { Tracker } from "./detection";
 import { ResumeHint } from "./resume_hint";
 import { waitpid, tcgetpgrp, systemCall } from "./native_bridge";
@@ -378,6 +378,32 @@ export class Runtime {
       actor = actor.parent ? this.conversations.byId(actor.parent) : null;
     }
     return false;
+  }
+  /** Forgets the conversations nothing refers to: no pane shows or knows
+   * them, no closed agent reopens them and no native session runs them. */
+  pruneConversations() {
+    const keep = new Set<ActorId>(),
+      hinted = new Set<string>();
+    const bound = (binding: Attachment) => {
+      if (binding.actor) keep.add(binding.actor.id);
+      for (const id of binding.known) keep.add(id);
+    };
+    const hint = (h: ResumeHint) => {
+      if (h.provider) hinted.add(`${h.provider}:${h.session.text()}`);
+    };
+    for (const p of this.panes) {
+      bound(p.attachment);
+      hint(p.resume_hint);
+    }
+    for (const c of this.closed) hint(c.resume_hint);
+    for (const s of this.sessions) {
+      bound(s.attachment);
+      for (const actor of s.members) keep.add(actor.id);
+      for (const request of s.approvals) if (request.actor) keep.add(request.actor.id);
+    }
+    for (const actor of this.conversations.items)
+      if (hinted.has(`${actor.state.provider}:${actor.state.sessionId()}`)) keep.add(actor.id);
+    return this.conversations.prune(keep);
   }
   getWorkspace(id: number) {
     const w = this.workspaces.get(id);

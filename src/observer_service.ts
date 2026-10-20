@@ -381,6 +381,7 @@ export async function tick(server: Server) {
       );
       changed(server);
     }
+    if (runtime.pruneConversations()) changed(server);
   }
   for (const session of runtime.sessions) {
     const seq = session.next_seq;

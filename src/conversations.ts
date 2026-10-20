@@ -292,6 +292,30 @@ export class Registry {
     this.next_id = Actor.Id.next(this.next_id);
     return actor;
   }
+  /** Forgets every conversation but those in `keep`, their parents and
+   * their children. Returns whether it forgot any. */
+  prune(keep: ReadonlySet<ActorId>) {
+    const kept = new Set<ActorId>();
+    for (const actor of this.items) {
+      if (!keep.has(actor.id)) continue;
+      let ancestor: Actor | null = actor;
+      for (let i = 0; i < max_actors && ancestor && !kept.has(ancestor.id); i++) {
+        kept.add(ancestor.id);
+        ancestor = ancestor.parent === null ? null : this.byId(ancestor.parent);
+      }
+    }
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const actor of this.items)
+        if (!kept.has(actor.id) && actor.parent !== null && kept.has(actor.parent)) {
+          kept.add(actor.id);
+          grew = true;
+        }
+    }
+    if (kept.size === this.items.length) return false;
+    this.items = this.items.filter(actor => kept.has(actor.id));
+    return true;
+  }
   linkChild(parent: Actor, child: Actor) {
     if (parent.state.provider !== child.state.provider || (child.parent !== null && child.parent !== parent.id))
       return false;

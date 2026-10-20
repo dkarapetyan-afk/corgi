@@ -365,6 +365,8 @@ export async function restore(
       p.terminal.prefill(p.resume_hint.command());
     }
   }
+  // Daemons that never pruned saved every conversation they had seen.
+  r.pruneConversations();
 }
 async function safeDirectory(cwd: string): Promise<string> {
   try {

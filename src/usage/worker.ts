@@ -295,6 +295,7 @@ export class Worker {
   }
   reconcile(runtime: Runtime) {
     this.requests = [];
+    for (const id of this.watchers.keys()) if (!runtime.conversations.byId(id)) this.watchers.delete(id);
     for (const actor of runtime.conversations.items) {
       const agent = actor.state;
       if (!agent.session.len || (!agent.transcript.len && actor.provider() !== "codex") || !runtime.followed(actor))

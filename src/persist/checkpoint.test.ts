@@ -11,7 +11,7 @@ import { n, ptr, symbols, waitpid } from "../native_bridge";
 import { Order } from "../agent_order";
 import { Workspace } from "../workspace";
 import { Text } from "../agents";
-import { Attachment } from "../conversations";
+import { Attachment, type Actor } from "../conversations";
 import { parseLabel } from "../activity/summary";
 import * as links from "../trackers/link_labels";
 const fixtures = resolve(import.meta.dir, "../fixtures");
@@ -22,6 +22,15 @@ const fresh = () => {
   r.workspaces.items.push(ws);
   r.workspaces.next_id = 2;
   return r;
+};
+// A restore keeps only the conversations something refers to.
+const show = (r: Runtime, actor: Actor) => {
+  const ws = r.workspaces.items[0],
+    pane = new Pane(ws.model.newTab(""), Terminal.create(20, 4), "/tmp");
+  pane.terminal.exited = true;
+  pane.attachment.select(actor);
+  r.panes.push(pane);
+  r.workspaces.next_pane_id = ws.model.next_id;
 };
 const roundtrip = (state: any) => json.parse(json.stringify(state));
 const restore = (r: Runtime, state: any, live: boolean) =>
@@ -36,6 +45,7 @@ test("checkpoint integer fields restore as bigint for small and wide values", as
     actor.state.observation.completed = sequence;
     binding.hook_seq = sequence;
     binding.provisional.last_seq = sequence;
+    show(original, actor);
     await restore(restored, cp.capture(original, true), true);
     const next = restored.conversations.byId(actor.id)!;
     expect(next.state.last_seq).toBe(sequence);
@@ -197,6 +207,25 @@ test("conversation checkpoint restores shared bindings and detached unread state
     r.destroy();
   }
 });
+test("a restore forgets the conversations nothing refers to, even a full registry's", async () => {
+  const r = fresh(),
+    shown = r.conversations.get("claude", "shown");
+  while (r.conversations.items.length < 1024) r.conversations.get("codex", `closed-${r.conversations.items.length}`);
+  show(r, shown);
+  const next = new Runtime(),
+    cold = new Runtime();
+  try {
+    await restore(next, cp.capture(r, true), true);
+    expect(next.conversations.items.map(actor => actor.id)).toEqual([shown.id]);
+    expect(Number(next.conversations.get("claude", "new").id)).toBe(1025);
+    await restore(cold, cp.capture(r, false), false);
+    expect(cold.conversations.items.map(actor => actor.id)).toEqual([shown.id]);
+  } finally {
+    next.destroy();
+    cold.destroy();
+    r.destroy();
+  }
+});
 test("cold recovery leaves an agent's pane dormant over its old screen, and a live reload keeps it so", async () => {
   const r = fresh(),
     ws = r.workspaces.items[0],
@@ -283,6 +312,7 @@ test("live compaction restores its clearing source including older checkpoints",
     actor.state.changed_at = item.changed;
     actor.state.setActivity("Reading source");
     actor.screen_compacting = item.owned;
+    show(r, actor);
     try {
       const saved = cp.capture(r, true);
       expect(saved.conversations[0].screen_compacting).toBe(item.owned);
