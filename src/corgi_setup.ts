@@ -9,7 +9,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as palette from "./palette";
-import { Style, colors, bgRgb, mix, type Token } from "./palette";
+import { Style, colors, bgRgb, mix, selection, type Token } from "./palette";
 import { Rect } from "./layout";
 import { Provider, byProvider } from "./providers";
 import type { ByProvider } from "./providers";
@@ -1072,11 +1072,15 @@ export class Menu {
       for (const ch of token.text)
         cells.push([ch, token.kind === "variable" ? graph : token.kind === "bad" ? warm : editor ? bright : text]);
     const at_caret = editor ? Array.from(editor.bytes(0, editor.cursor)).length : 0,
-      first = Math.max(0, at_caret - room + 1);
+      first = Math.max(0, at_caret - room + 1),
+      // The selection, as every field shows it, counted in characters like the cells.
+      sel = editor?.area.selection(),
+      chosen = sel ? sel.map(end => [...editor!.area.text.slice(0, end)].length) : null;
     let shown = "",
       used = 0;
-    for (const [ch, style] of cells.slice(first)) {
+    for (const [i, [ch, own]] of cells.slice(first).entries()) {
       if (used + displayWidth(ch) > room) break;
+      const style = chosen && first + i >= chosen[0] && first + i < chosen[1] ? selection : own;
       if (style !== shown) w.write((shown = style));
       w.write(ch);
       used += displayWidth(ch);

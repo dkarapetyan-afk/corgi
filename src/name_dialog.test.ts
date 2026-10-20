@@ -70,3 +70,39 @@ test("the fork card is roomy where it fits and plain where it doesn't", () => {
   ])
     expect(w.s).toContain(text);
 });
+
+test("every field edits as a text box: words, lines, selection, cut and select all", () => {
+  const d = Dialog.init({ agent: 1 }, "fix the sidebar flicker");
+  d.selected = false;
+  d.sequence("\x1b\x7f");
+  expect(d.raw()).toBe("fix the sidebar ");
+  d.key(23);
+  expect(d.raw()).toBe("fix the ");
+  d.sequence("\x1bb");
+  d.sequence("\x1b[1;2C");
+  d.sequence("\x1b[1;2C");
+  expect(d.selection()).toEqual([4, 6]);
+  d.key(c("a"));
+  expect(d.raw()).toBe("fix ae ");
+  d.sequence("\x1b[97;9u");
+  expect(d.selected).toBe(true);
+  d.sequence("\x1b[120;9u");
+  expect(d.len).toBe(0);
+  // Typed characters outside ASCII arrive a byte at a time.
+  for (const byte of Buffer.from("é")) d.key(byte);
+  expect(d.raw()).toBe("é");
+  d.key(21);
+  expect(d.len).toBe(0);
+});
+
+test("a press in the field places the caret, and a drag selects from it", () => {
+  const d = Dialog.init({ rename: 1 }, "branch name");
+  const v = View.init(60, 20, d);
+  d.press(v, v.text_x, v.field_y, 0);
+  expect([d.cursor, d.selection()]).toEqual([0, null]);
+  d.drag(v, v.text_x + 6);
+  expect(d.selection()).toEqual([0, 6]);
+  d.release(0);
+  d.drag(v, v.text_x + 9);
+  expect(d.selection()).toEqual([0, 6]);
+});

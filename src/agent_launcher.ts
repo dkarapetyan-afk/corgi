@@ -6,7 +6,7 @@ import { Style, keycap } from "./palette";
 import { Provider, byProvider } from "./providers";
 import type { ByProvider } from "./providers";
 import { Rect } from "./layout";
-import { Dialog } from "./name_dialog";
+import { Dialog, View as DialogView, writeField } from "./name_dialog";
 import { Entry as CommandEntry, Semantics, Resolution, capacity as command_capacity } from "./launch/command";
 import { restoreLimits, type Limits } from "./usage/account";
 import { Cell, Grid, expired } from "./launcher_usage";
@@ -572,6 +572,7 @@ export class Menu {
     }
     return "Account unknown";
   }
+  /** A field on `selected`: its text in `fg`, its selection while focused, or the placeholder. */
   private static drawInput(
     w: Writer,
     editor: Dialog,
@@ -580,22 +581,14 @@ export class Menu {
     y: number,
     width: number,
     focused: boolean,
+    fg: palette.Token = "text",
   ): void {
-    let offset = sat(editor.cursor, sat(width, 1));
-    while (offset < editor.cursor && (editor.text[offset] & 0xc0) === 0x80) offset += 1;
-    const end = editor.byteAtColumn(offset, width);
-    w.write(`\x1b[${y};${x}H` + palette.bg("selected"));
+    const plain = new Style({ fg, bg: "selected" }).sgr();
+    w.write(`\x1b[${y};${x}H` + plain);
     w.splat(" ", width);
     w.write(`\x1b[${y};${x}H`);
     if (editor.len === 0) writeEllipsis(w, placeholder, width);
-    else {
-      if (focused && editor.selected) w.write("\x1b[7m");
-      w.write(
-        Buffer.from(
-          Uint8Array.from(editor.text.subarray(offset, end), ch => (ch < 32 || ch === 127 ? 32 : ch)),
-        ).toString(),
-      );
-    }
+    else writeField(w, editor, DialogView.scroll(editor, width), width, plain, { selecting: focused });
     w.write(new Style({ fg: "text", bg: "surface" }).sgr());
   }
   private drawManager(w: Writer, cols: number, rowsCount: number, side: SidebarView): void {
@@ -702,9 +695,8 @@ export class Menu {
     );
     if (m.selected === "add") {
       const editor = m.name_focused ? m.name_editor : m.editor;
-      let offset = sat(editor.cursor, sat(width, 1));
-      while (offset < editor.cursor && (editor.text[offset] & 0xc0) === 0x80) offset += 1;
-      const cursor = Math.min(sat(width, 1), displayWidth(editor.bytes(offset, editor.cursor)));
+      const offset = DialogView.scroll(editor, width),
+        cursor = Math.min(sat(width, 1), displayWidth(editor.bytes(offset, editor.cursor)));
       w.write(`\x1b[${field_y + 2 + (m.name_focused ? 4 : 0)};${input_x + 1 + cursor}H\x1b[?25h`);
     }
   }
@@ -932,11 +924,9 @@ export class Menu {
     w.write((c.focus === "list" ? palette.fg("muted") : "\x1b[1m" + palette.fg("strong")) + "New worktree\x1b[22m ");
     w.write(rule + "─".repeat(sat(r.w, 21)) + "┤");
     const label = (y: number, name: string) => w.write(at(bx.label_x, y) + panel + name);
-    const input = (d: Dialog, placeholder: string, y: number, focused: boolean) => {
-      // drawInput sets only the background: the text is strong, a placeholder faint.
-      w.write(palette.fg(d.len === 0 ? "faint" : "strong"));
-      Menu.drawInput(w, d, placeholder, bx.field_x + 1, y + 1, bx.field_w, focused);
-    };
+    // The text is strong, a placeholder faint.
+    const input = (d: Dialog, placeholder: string, y: number, focused: boolean) =>
+      Menu.drawInput(w, d, placeholder, bx.field_x + 1, y + 1, bx.field_w, focused, d.len === 0 ? "faint" : "strong");
     label(bx.branch, "Branch");
     input(c.field, "branch name", bx.branch, c.focus === "branch");
     label(bx.from, "From");
@@ -968,10 +958,9 @@ export class Menu {
     }
     if (c.focus === "list") return;
     // The caret, where the focused field's text ends or the cursor stands.
-    const field = c.input();
-    let offset = sat(field.cursor, sat(bx.field_w, 1));
-    while (offset < field.cursor && (field.text[offset] & 0xc0) === 0x80) offset += 1;
-    const caret = Math.min(sat(bx.field_w, 1), displayWidth(field.bytes(offset, field.cursor)));
+    const field = c.input(),
+      offset = DialogView.scroll(field, bx.field_w),
+      caret = Math.min(sat(bx.field_w, 1), displayWidth(field.bytes(offset, field.cursor)));
     const y = c.focus === "from" ? bx.from : bx.branch;
     w.write(`\x1b[0m${at(bx.field_x + caret, y)}\x1b[?25h`);
   }

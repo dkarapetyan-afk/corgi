@@ -5,7 +5,7 @@ import { basename } from "node:path";
 import type { Provider } from "./providers";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
-import { Dialog } from "./name_dialog";
+import { Dialog, View as DialogView, writeField } from "./name_dialog";
 import { Writer, writeEllipsis, truncatedText, sat } from "./text";
 import * as scrollThumb from "./scroll_thumb";
 
@@ -433,9 +433,10 @@ export class View {
     const scope = scopeLabel(this.scope);
     const field = sat(width, scope.length + 19);
     if (this.searching) {
-      w.write(palette.fg("strong"));
-      writeEllipsis(w, this.query.name(), sat(field, 1));
-      w.write("\x1b[7m \x1b[27m");
+      const room = sat(field, 1);
+      writeField(w, this.query, DialogView.scroll(this.query, room), room, panel + palette.fg("strong"), {
+        caret: true,
+      });
     } else {
       w.write(dim);
       writeEllipsis(w, "search titles and what was said", field);

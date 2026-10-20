@@ -129,6 +129,8 @@ export interface Search {
   text: string;
   /** An index into `text`, which is ASCII, so also a column. */
   cursor: number;
+  /** The selected part of `text`, by the same indexes. */
+  selection: [number, number] | null;
 }
 /** Viewer-local agent list filter. `workspace` follows the selected workspace. */
 export type Scope = "workspace" | "all";
@@ -374,9 +376,6 @@ export class Preview {
 }
 
 /** UTF-8 byte offset into `text` as a JS string index. */
-function fromByte(text: string, offset: number): string {
-  return Buffer.from(text).subarray(offset).toString();
-}
 
 export class View {
   search: Search | null = null;
@@ -775,7 +774,14 @@ export class View {
       w.splat(" ", v.width - 5);
       w.write(`\x1b[${v.middle() + 2};4H` + fg("text"));
       if (search.text.length === 0) writeClipped(w, "type to search", v.width - 5);
-      else writeClipped(w, fromByte(search.text, v.searchOffset()), v.width - 5);
+      else {
+        // The selection as every text box shows it.
+        const from = v.searchOffset(),
+          shown = search.text.slice(from, from + v.width - 5),
+          [a, b] = (search.selection ?? [0, 0]).map(end => Math.min(Math.max(end - from, 0), shown.length)),
+          plain = new Style({ fg: "text", bg: "surface" }).sgr();
+        w.write(shown.slice(0, a) + palette.selection + shown.slice(a, b) + plain + shown.slice(b));
+      }
     } else if (v.drawer === null) w.write(`\x1b[${v.middle() + 1};${v.width - 9}H` + button + ` New  ▾ ${panel}`);
     if (v.drawer !== "agents") v.drawWorkspaces(w, workspaces);
     if (v.drawer === "workspaces") {

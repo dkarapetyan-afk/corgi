@@ -907,7 +907,9 @@ test("agent list shows a scrollbar on the border only when it overflows", () => 
   expect(has(out, "/6")).toBe(false);
   expect(top.hit(5, top.rows - 2)).toEqual(H("entry", 4));
   // The search hint takes the bottom row.
-  const searching = View.init(80, 24, true, 0, 5).withSearch({ text: "", cursor: 0 }).withEntries(entries.slice(0, 5));
+  const searching = View.init(80, 24, true, 0, 5)
+    .withSearch({ text: "", cursor: 0, selection: null })
+    .withEntries(entries.slice(0, 5));
   expect(searching.capacity).toBe(5);
   expect(searching.hit(5, searching.rows - 1)).toEqual(H("none"));
 });

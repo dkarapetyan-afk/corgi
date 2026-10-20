@@ -721,7 +721,10 @@ export class Controller {
     }
   }
   private agentSearch(): sidebar.Search | null {
-    if (this.agent_picker) return { text: this.agent_picker.query.raw(), cursor: this.agent_picker.query.cursor };
+    if (this.agent_picker) {
+      const query = this.agent_picker.query;
+      return { text: query.raw(), cursor: query.cursor, selection: query.selection() };
+    }
     return null;
   }
   inheritedCwd(ws: Workspace, target: number | null): string {
@@ -2587,6 +2590,10 @@ export class Controller {
         else this.moveResume(rows, -1);
         break;
       default:
+        if (view.searching) {
+          view.query.sequence(seq);
+          view.home();
+        }
         break;
     }
     this.revealResume();
@@ -3392,7 +3399,8 @@ export class Controller {
     if (this.worktreeDetail() !== null) return "discard";
     if (this.agent_launcher)
       return (this.agent_launcher.managing && this.agent_launcher.selected === "add") ||
-        (this.agent_launcher.worktree.mode === "open" && this.agent_launcher.worktree.focus !== "list")
+        (this.agent_launcher.worktree.mode === "open" && this.agent_launcher.worktree.focus !== "list") ||
+        this.resumeSearching()
         ? "launcher"
         : "discard";
     if (this.corgi_setup?.editing) return "setup";
@@ -3402,6 +3410,28 @@ export class Controller {
     if (this.hasMenu() || this.reviewKeys()) return "discard";
     const p = this.focused();
     return p ? { pane: p.id } : "discard";
+  }
+  /** The launcher's resume list is taking a search. */
+  private resumeSearching(): boolean {
+    const launch = this.agent_launcher;
+    return launch !== null && launch.resume_view.focused && !launch.managing && launch.resume_view.searching;
+  }
+  /** The text box that has the keyboard, which cmd+c and cmd+x copy from. */
+  private textField(): textArea.TextArea | null {
+    const launch = this.agent_launcher;
+    if (launch) {
+      if (this.resumeSearching()) return launch.resume_view.query.area;
+      const c = launch.worktree;
+      if (c.mode === "open" && c.focus !== "list") return c.input().area;
+      return launch.managing && launch.selected === "add" ? launch.input().area : null;
+    }
+    if (this.corgi_setup) return this.corgi_setup.editing?.area ?? null;
+    if (this.agent_picker) return this.agent_picker.query.area;
+    if (this.name_dialog) {
+      const d = this.name_dialog;
+      return d instanceof newWorkspace.Dialog && d.browser.focused ? d.browser.field.area : d.area;
+    }
+    return this.reviewKeys() ? this.review.typingArea() : null;
   }
   private pastePane(): Pane | null {
     const target = this.input_state.paste;
@@ -3550,7 +3580,10 @@ export class Controller {
     switch (target) {
       // Its owner can close mid-paste, when a snapshot removes the target.
       case "launcher":
-        if (this.agent_launcher) {
+        if (this.resumeSearching()) {
+          this.agent_launcher!.resume_view.query.pasteByte(byte);
+          this.agent_launcher!.resume_view.home();
+        } else if (this.agent_launcher) {
           const c = this.agent_launcher.worktree;
           if (this.agent_launcher.name_focused) this.agent_launcher.name_customized = true;
           if (c.mode === "open" && c.focus === "from") c.search(from => from.pasteByte(byte));
@@ -3700,6 +3733,12 @@ export class Controller {
       }
       const text = latin1(seq);
       const parsed_key = keys.parse(text);
+      // Cmd+C and cmd+X copy a text box's selection, as Ghostty passes them on when it has none;
+      // cmd+X's cut and cmd+A's select all then go on to the box as its other edits do.
+      if (cl.paste === null && (parsed_key === "super_c" || parsed_key === "super_x")) {
+        const copied = this.textField()?.selectedText();
+        if (copied) this.copyText(copied);
+      }
       const again = cl.paste === null ? bindings.repeatSequence(this.prefs.preset, text) : null;
       if (parsed_key === "paste_start" || parsed_key === "paste_end") {
         if (parsed_key === "paste_start") cl.paste = this.pasteTarget();
@@ -4519,6 +4558,9 @@ export class Controller {
           default:
             break;
         }
+        this.dirty = true;
+      } else if (!release && button === 32) {
+        dialog.drag(NameView.init(this.width, this.height, dialog), x);
         this.dirty = true;
       } else if (release) dialog.release(milliTimestamp());
       return;

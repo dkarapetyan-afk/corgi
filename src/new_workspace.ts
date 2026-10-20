@@ -9,7 +9,7 @@ import * as palette from "./palette";
 import { Style, fgRgb, bgRgb, mix, colors } from "./palette";
 import * as keys from "./keys";
 import * as nameDialog from "./name_dialog";
-import { printable, type Key, type KeySpec, type Result } from "./name_dialog";
+import { printable, writeField, type Key, type KeySpec, type Result } from "./name_dialog";
 import * as scrollThumb from "./scroll_thumb";
 import { relativeTime } from "./sidebar";
 import { KeyHold, Spring } from "./key_hold";
@@ -474,6 +474,7 @@ export class Dialog extends nameDialog.Dialog {
     return super.press(v, x, y, now);
   }
   release(now: number): void {
+    super.release(now);
     this.create.release(now);
   }
   /** The hold moved on, and the create key held down with the mouse until it filled. */
@@ -723,10 +724,11 @@ export class View extends nameDialog.View {
     w.write(`\x1b[${f.name_label_y + 1};${left + 1}H${label}Name`);
     w.write(`\x1b[${f.label_y + 1};${left + 1}H${label}Folder`);
     const field = b.field;
-    w.write(`\x1b[${f.field_y + 1};${left + 1}H` + new Style({ fg: "text", bg: "selected" }).sgr());
+    const plain = new Style({ fg: "text", bg: "selected" }).sgr();
+    w.write(`\x1b[${f.field_y + 1};${left + 1}H` + plain);
     w.splat(" ", v.text_width + 2);
-    const end = field.byteAtColumn(f.offset, v.text_width);
-    w.write(`\x1b[${f.field_y + 1};${v.text_x + 1}H` + printable(field.bytes(f.offset, end)));
+    w.write(`\x1b[${f.field_y + 1};${v.text_x + 1}H`);
+    writeField(w, field, f.offset, v.text_width, plain);
     // The list's box is as wide as the field.
     const right = left + v.text_width + 1;
     const edge = new Style({ fg: "line", bg: "surface" }).sgr();

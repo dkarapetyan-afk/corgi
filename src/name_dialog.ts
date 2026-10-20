@@ -1,13 +1,16 @@
 //! Name dialogs and the one-line editor search fields share. Mirrors
-//! name_dialog.zig: the text is bytes, and the cursor a byte offset.
+//! name_dialog.zig: fields count the text in bytes, and the cursor is a byte
+//! offset; the editing itself is a single-line text area's.
 import { basename } from "node:path";
 import * as palette from "./palette";
-import { Style, keycap, fgRgb, bgRgb, mix, colors } from "./palette";
+import { Style, keycap, fgRgb, bgRgb, mix, colors, selection } from "./palette";
+export { selection } from "./palette";
 import * as keys from "./keys";
 import * as forkMotion from "./fork_motion";
 import { milliTimestamp } from "./clock";
 import { identify, shell } from "./launch/command";
 import { Writer, writeEllipsis, codepointWidth } from "./text";
+import { TextArea, byte_edits, key_edits, type Edit } from "./text_area";
 
 export type Target =
   | { pane: number }
@@ -48,6 +51,37 @@ function fieldWidth(t: Target, cp: number): number {
 export function printable(text: string): string {
   return text.replace(controls, "?");
 }
+/** Writes what field `d` shows from byte `offset` in `columns`, where the
+ * cursor stands: its text in `plain` and its selection as every field shows
+ * one, unless `selecting` is off. With `caret`, a field that draws its own
+ * caret gets it as an inverted cell. Returns the caret's column. */
+export function writeField(
+  w: Writer,
+  d: Dialog,
+  offset: number,
+  columns: number,
+  plain: string,
+  { caret = false, selecting = true } = {},
+): number {
+  const end = d.byteAtColumn(offset, columns),
+    sel = selecting ? d.selection() : null,
+    at = d.cursor,
+    after = at < d.len ? at + sequenceLength(d.text[at]) : at,
+    cuts = [offset, end, ...(sel ?? []), ...(caret ? [at, after] : [])]
+      .filter(cut => cut >= offset && cut <= end)
+      .sort((x, y) => x - y)
+      .filter((cut, i, all) => i === 0 || cut !== all[i - 1]);
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const from = cuts[i],
+      to = cuts[i + 1],
+      chosen = sel !== null && from >= sel[0] && to <= sel[1];
+    w.write((chosen ? selection : plain) + (caret && from === at ? "\x1b[7m" : "") + d.shown(from, to) + "\x1b[27m");
+  }
+  let column = 0;
+  for (const ch of d.bytes(offset, Math.min(at, end))) column += fieldWidth(d.target, ch.codePointAt(0)!);
+  if (caret && at >= end && column < columns) w.write(plain + "\x1b[7m \x1b[27m");
+  return column;
+}
 /** The longest text, in bytes, a target takes. */
 function limit(t: Target): number {
   return "agent_command" in t || "folder" in t ? max_length : name_limit;
@@ -79,14 +113,20 @@ function validUtf8(bytes: Uint8Array): boolean {
 
 export class Dialog {
   target: Target;
-  text = new Uint8Array(capacity);
-  len = 0;
-  cursor = 0;
-  selected = true;
+  /** What's typed: its text, caret and selection, edited as every text box is. */
+  area = new TextArea("", false);
   failed = false;
   overflow = false;
   /** The fork card's hero. */
   hero: forkMotion.Hero = { glyphs: false, motion: null };
+  /** A typed character's bytes until it is whole. */
+  private partial: number[] = [];
+  /** Empty, whether text filled in later starts selected, as a new dialog's does. */
+  private empty_selected = true;
+  /** Where a press in the field put the caret, so a drag selects from it. */
+  private pressed_at: number | null = null;
+  /** The text as UTF-8, as fields draw it, until the text changes. */
+  private utf8 = { text: "", bytes: new Uint8Array() };
 
   constructor(target: Target) {
     this.target = target;
@@ -94,21 +134,50 @@ export class Dialog {
   static init(target: Target, initial: string): Dialog {
     const d = new Dialog(target);
     d.fill(initial);
+    d.selected = true;
     return d;
   }
+  /** The text as UTF-8 bytes; offsets into it are what the fields count. */
+  get text(): Uint8Array {
+    if (this.utf8.text !== this.area.text) this.utf8 = { text: this.area.text, bytes: Buffer.from(this.area.text) };
+    return this.utf8.bytes;
+  }
+  get len(): number {
+    return this.text.length;
+  }
+  /** The caret, as a byte offset. */
+  get cursor(): number {
+    return Buffer.byteLength(this.area.text.slice(0, this.area.caret));
+  }
+  /** The whole text is selected, as a name starts: typing replaces it. */
+  get selected(): boolean {
+    if (this.area.text.length === 0) return this.empty_selected;
+    const sel = this.area.selection();
+    return sel !== null && sel[0] === 0 && sel[1] === this.area.text.length;
+  }
+  set selected(on: boolean) {
+    this.empty_selected = on;
+    if (on) this.area.apply("select_all");
+    else this.area.anchor = null;
+  }
+  /** The selection as byte offsets, or null. */
+  selection(): [number, number] | null {
+    const sel = this.area.selection();
+    return (
+      sel && [Buffer.byteLength(this.area.text.slice(0, sel[0])), Buffer.byteLength(this.area.text.slice(0, sel[1]))]
+    );
+  }
+  /** Replaces the text, keeping it wholly selected if it was. */
   protected fill(initial: string): void {
-    const source = Buffer.from(initial);
-    this.len = Math.min(source.length, limit(this.target));
-    for (let i = 0; i < this.len; i++) {
-      const ch = source[i];
-      this.text[i] = unicodeTarget(this.target) || (ch >= 32 && ch < 127) ? ch : "_".charCodeAt(0);
-    }
-    while (this.len > 0 && !validUtf8(this.text.subarray(0, this.len))) this.len -= 1;
-    this.cursor = this.len;
+    const whole = this.selected;
+    let text = unicodeTarget(this.target) ? initial : initial.replace(/[^\x20-\x7e]/gu, "_");
+    while (Buffer.byteLength(text) > limit(this.target)) text = [...text].slice(0, -1).join("");
+    this.area = new TextArea(text, false);
+    if (whole) this.selected = true;
   }
   /** The text as written, untrimmed. */
   raw(): string {
-    return Buffer.from(this.text.subarray(0, this.len)).toString();
+    return this.area.text;
   }
   bytes(from = 0, to = this.len): string {
     return Buffer.from(this.text.subarray(from, to)).toString();
@@ -116,37 +185,47 @@ export class Dialog {
   name(): string {
     const trim = "agent_command" in this.target ? " \t\r\n" : " ";
     let start = 0;
-    let end = this.len;
-    while (start < end && trim.includes(String.fromCharCode(this.text[start]))) start++;
-    while (end > start && trim.includes(String.fromCharCode(this.text[end - 1]))) end--;
-    return this.bytes(start, end);
+    let end = this.area.text.length;
+    while (start < end && trim.includes(this.area.text[start])) start++;
+    while (end > start && trim.includes(this.area.text[end - 1])) end--;
+    return this.area.text.slice(start, end);
   }
   clear(): void {
-    this.len = 0;
-    this.cursor = 0;
-    this.selected = false;
+    this.area = new TextArea("", false);
+    this.partial = [];
+    this.empty_selected = false;
     this.failed = false;
     this.overflow = false;
   }
   typeByte(byte: number): void {
-    if (byte < 32 || (byte >= 127 && !unicodeTarget(this.target))) return;
-    this.insert([byte]);
+    if (byte < 32 || byte === 127 || (byte >= 128 && !unicodeTarget(this.target))) return;
+    if (byte < 128) {
+      this.partial = [];
+      return this.insert(String.fromCharCode(byte));
+    }
+    this.partial.push(byte);
+    if (this.partial.length < sequenceLength(this.partial[0])) return;
+    const bytes = Uint8Array.from(this.partial);
+    this.partial = [];
+    if (validUtf8(bytes)) this.insert(Buffer.from(bytes).toString());
   }
   pasteByte(byte: number): void {
-    if ("agent_command" in this.target && (byte === 9 || byte === 13 || byte === 10)) this.insert([byte]);
+    if ("agent_command" in this.target && (byte === 9 || byte === 13 || byte === 10))
+      this.insert(String.fromCharCode(byte));
     else this.typeByte(byte);
   }
-  private insert(bytes: number[]): void {
-    if (this.selected) this.clear();
-    if (this.len + bytes.length > limit(this.target)) {
+  private insert(text: string): void {
+    const sel = this.selection() ?? [this.cursor, this.cursor];
+    if (this.len - (sel[1] - sel[0]) + Buffer.byteLength(text) > limit(this.target)) {
       this.overflow = true;
       return;
     }
-    this.text.copyWithin(this.cursor + bytes.length, this.cursor, this.len);
-    this.text.set(bytes, this.cursor);
-    this.len += bytes.length;
-    this.cursor += bytes.length;
+    this.area.insert(text);
     this.failed = false;
+  }
+  /** Edits the text as every text box does. */
+  edit(edit: Edit): void {
+    this.area.apply(edit);
   }
   key(byte: number): Result {
     switch (byte) {
@@ -155,52 +234,37 @@ export class Dialog {
       case 13:
         return "save";
       case 3:
-      case 21:
         this.clear();
         break;
-      case 1:
-        this.position(0);
-        break;
-      case 5:
-        this.position(this.len);
-        break;
-      case 8:
-      case 127:
-        if (this.selected) this.clear();
-        else if (this.cursor > 0) {
-          const previous_pos = this.previous();
-          const count = this.cursor - previous_pos;
-          this.text.copyWithin(previous_pos, this.cursor, this.len);
-          this.cursor = previous_pos;
-          this.len -= count;
-        }
-        break;
-      default:
-        this.typeByte(byte);
+      default: {
+        const edit = byte_edits[byte];
+        if (edit) this.edit(edit);
+        else this.typeByte(byte);
+      }
     }
     return "none";
   }
+  /** Puts the caret at byte `cursor`, or the character it falls in. */
   position(cursor: number): void {
-    this.cursor = Math.min(cursor, this.len);
-    while (this.cursor > 0 && this.cursor < this.len && (this.text[this.cursor] & 0xc0) === 0x80) this.cursor -= 1;
-    this.selected = false;
-  }
-  private previous(): number {
-    let pos = this.cursor > 0 ? this.cursor - 1 : 0;
-    while (pos > 0 && (this.text[pos] & 0xc0) === 0x80) pos -= 1;
-    return pos;
-  }
-  private next(): number {
-    if (this.cursor >= this.len) return this.len;
-    return Math.min(this.len, this.cursor + sequenceLength(this.text[this.cursor]));
+    let at = 0,
+      used = 0;
+    for (const ch of this.area.text) {
+      const size = Buffer.byteLength(ch);
+      if (used + size > cursor) break;
+      used += size;
+      at += ch.length;
+    }
+    this.area.anchor = null;
+    this.area.caret = at;
   }
   byteAtColumn(start: number, columns: number): number {
+    const text = this.text;
     let pos = start;
     let used = 0;
-    while (pos < this.len) {
-      const n = sequenceLength(this.text[pos]);
-      if (pos + n > this.len) break;
-      const piece = this.text.subarray(pos, pos + n);
+    while (pos < text.length) {
+      const n = sequenceLength(text[pos]);
+      if (pos + n > text.length) break;
+      const piece = text.subarray(pos, pos + n);
       if (!validUtf8(piece)) break;
       const cp = Buffer.from(piece).toString().codePointAt(0)!;
       used += fieldWidth(this.target, cp);
@@ -209,32 +273,16 @@ export class Dialog {
     }
     return pos;
   }
+  /** The text between bytes `from` and `to` as a field shows it: controls
+   * as spaces, or as "?" for a folder. */
+  shown(from: number, to: number): string {
+    const s = this.bytes(from, to);
+    return "folder" in this.target ? printable(s) : s.replace(/[\x00-\x1f\x7f]/g, " ");
+  }
   sequence(seq: string): void {
-    switch (keys.parse(seq)) {
-      case "left":
-        this.position(this.selected ? 0 : this.previous());
-        break;
-      case "right":
-        this.position(this.selected ? this.len : this.next());
-        break;
-      case "home":
-        this.position(0);
-        break;
-      case "end":
-        this.position(this.len);
-        break;
-      case "delete":
-        if (this.selected) this.clear();
-        else if (this.cursor < this.len) {
-          const next_pos = this.next();
-          const count = next_pos - this.cursor;
-          this.text.copyWithin(this.cursor, next_pos, this.len);
-          this.len -= count;
-        }
-        break;
-      default:
-        break;
-    }
+    const key = keys.parse(seq),
+      edit = key && key_edits[key];
+    if (edit) this.edit(edit);
   }
   /** A view of its own, in place of the plain one; none by default. */
   view(_width: number, _height: number): View | null {
@@ -254,14 +302,24 @@ export class Dialog {
         break;
       case "field":
         this.position(this.byteAtColumn(v.offset, found.field - v.offset));
+        this.pressed_at = this.area.caret;
         break;
       default:
         break;
     }
     return "none";
   }
+  /** The pointer moved with the button down: after a press in the field, the
+   * selection runs from there to the column under it. */
+  drag(v: View, x: number): void {
+    if (this.pressed_at === null) return;
+    this.position(this.byteAtColumn(v.offset, Math.max(0, x - v.text_x)));
+    this.area.anchor = this.pressed_at;
+  }
   /** The mouse button let go. */
-  release(_now: number): void {}
+  release(_now: number): void {
+    this.pressed_at = null;
+  }
   /** Moves a dialog that animates on to `now`; "save" when it finishes by itself. */
   tick(_now: number): Result {
     return "none";
@@ -300,12 +358,10 @@ export const capped = (k: { key: string; split?: boolean }) => (k.split ? k.key.
 export const labelled = (k: { key: string; label: string; split?: boolean }) => capped(k) + 1 + k.label.length;
 /** How many columns each fork card button's label takes. */
 const card_label_widths = [13, 8, 10];
-/** The fork card's selected name and call to action: tints of the accent, not
- * its full strength, so neither glares on the panel. */
-export let selection: string;
+/** The fork card's call to action: a tint of the accent, not its full
+ * strength, so it doesn't glare on the panel. */
 let create_fill: string, create_label: string;
 palette.derived(() => {
-  selection = fgRgb(colors.strong) + bgRgb(mix(colors.selected, colors.accent, 30));
   create_fill = "\x1b[0m" + bgRgb(mix(colors.surface, colors.accent, 22));
   create_label = create_fill + "\x1b[1m" + fgRgb(colors.accent);
 });
@@ -567,12 +623,7 @@ export class View {
       // This is a preview of the current position, never an editable/saved name.
       w.write(palette.fg("muted") + `${number}`);
     } else {
-      if (d.selected) w.write(selection);
-      const end = d.byteAtColumn(v.offset, v.text_width);
-      const shown = Uint8Array.from(d.text.subarray(v.offset, end), byte =>
-        kind === "agent_command" && byte < 32 ? 32 : byte,
-      );
-      w.write(Buffer.from(shown).toString());
+      writeField(w, d, v.offset, v.text_width, new Style({ fg: "text", bg: "selected" }).sgr());
     }
     return { left, room };
   }
@@ -629,8 +680,8 @@ export class View {
       w.write(`\x1b[${v.field_y + row};${v.text_x - 1}H` + new Style({ fg: "text", bg: "selected" }).sgr());
       w.splat(" ", v.text_width + 4);
     }
-    w.write(`\x1b[${v.field_y + 1};${v.text_x + 1}H${d.selected ? selection : ""}`);
-    w.write(d.bytes(v.offset, d.byteAtColumn(v.offset, v.text_width)));
+    w.write(`\x1b[${v.field_y + 1};${v.text_x + 1}H`);
+    writeField(w, d, v.offset, v.text_width, new Style({ fg: "text", bg: "selected" }).sgr());
     v.cardButtons().forEach((b, i) => {
       const fill = i === 0 ? create_fill : new Style({ bg: "selected" }).sgr();
       for (let row = 0; row < 3; row++) {
