@@ -27,12 +27,15 @@ export function installedCommand(provider: Provider): string {
     "; fi"
   );
 }
+/** The name Claude's and Codex's /hooks list Corgi's handlers by. */
+const hook_name = "Reporting to Corgi";
 function configCommand(provider: Provider, command: string) {
+  const handler = { type: "command", command, timeout: 2, statusMessage: hook_name };
   return {
     hooks: Object.fromEntries(
       Provider.backend(provider)
         .hookEvents()
-        .map(event => [event, [{ hooks: [{ type: "command", command, timeout: 2 }] }]]),
+        .map(event => [event, [{ hooks: [handler] }]]),
     ),
   };
 }
@@ -52,6 +55,8 @@ export function mergedConfig(provider: Provider, existing: string): string | nul
   for (const [event, template] of Object.entries(configCommand(provider, command).hooks)) {
     const groups = (root.hooks[event] ??= []);
     if (!Array.isArray(groups)) bad();
+    // By command alone: Codex's approval covers the name, so renaming a
+    // handler installed before it had one would stop it running.
     let found = false;
     for (const group of groups) {
       if (!group || typeof group !== "object" || !Array.isArray(group.hooks)) bad();

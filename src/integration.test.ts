@@ -68,3 +68,13 @@ test("installing leaves hook settings that already have every hook untouched", a
     rmSync(directory, { recursive: true, force: true });
   }
 });
+test("hook install names Corgi's handlers and leaves ones it added unnamed as they are", () => {
+  const added = JSON.parse(mergedConfig("codex", "{}")!);
+  expect(added.hooks.Stop).toEqual([
+    {
+      hooks: [{ type: "command", command: installedCommand("codex"), timeout: 2, statusMessage: "Reporting to Corgi" }],
+    },
+  ]);
+  for (const groups of Object.values<any>(added.hooks)) delete groups[0].hooks[0].statusMessage;
+  expect(mergedConfig("codex", JSON.stringify(added))).toBeNull();
+});
