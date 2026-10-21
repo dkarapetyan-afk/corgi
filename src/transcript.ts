@@ -3,31 +3,31 @@ import { open, lstat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import type { Agent } from "./agents";
 import type { Outcome } from "./observation";
-import { Codex } from "./providers/codex";
-import { Claude } from "./providers/claude";
-import { str, field, timestampMs } from "./providers/common";
+import { adapter } from "./providers";
+import { str, timestampMs } from "./providers/common";
 export const read_budget = 64 * 1024,
   initial_tail = 256 * 1024,
   record_limit = 64 * 1024;
 export type Result = { actor: number; seq: bigint; outcome: Outcome };
-export async function verifySession(file: FileHandle, provider: string, session: string) {
-  if (provider === "claude") return;
+/** A transcript's first record, or null when its first MiB holds none. */
+export async function head(file: FileHandle): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   while (size < 1024 * 1024) {
     const chunk = Buffer.alloc(Math.min(4096, 1024 * 1024 - size));
     const { bytesRead } = await file.read(chunk, 0, chunk.length, size);
-    if (!bytesRead) throw Error("NoIdentity");
+    if (!bytesRead) return null;
     const end = chunk.subarray(0, bytesRead).indexOf(10);
     chunks.push(chunk.subarray(0, end >= 0 ? end : bytesRead));
     size += bytesRead;
-    if (end >= 0) {
-      const rollout = Codex.Rollout.decode(parse(Buffer.concat(chunks).toString()));
-      if (rollout.type !== "session_meta" || str(rollout.payload, "id") !== session) throw Error("WrongSession");
-      return;
-    }
+    if (end >= 0)
+      try {
+        return parse(Buffer.concat(chunks).toString());
+      } catch {
+        return null;
+      }
   }
-  throw Error("NoIdentity");
+  return null;
 }
 export function completion(agent: Agent, line: string): Outcome | null {
   let v: any;
@@ -39,30 +39,7 @@ export function completion(agent: Agent, line: string): Outcome | null {
   if (!v || typeof v !== "object") return null;
   const stamp = timestampMs(str(v, "timestamp"));
   if (stamp === null || BigInt(stamp) < agent.last_seq / 1000n) return null;
-  if (agent.provider === "codex") {
-    const rollout = Codex.Rollout.decode(v);
-    if (rollout.type !== "event_msg" || !agent.turn.len || str(rollout.payload, "turn_id") !== agent.turnId())
-      return null;
-    const kind = rollout.payloadType();
-    if (kind === "turn_aborted") return "interrupted";
-    if (kind === "task_complete" || kind === "turn_complete")
-      return field(rollout.payload, "error") !== null ? "failed" : "completed";
-    return null;
-  }
-  if (agent.provider === "claude") {
-    const decoded = Claude.Line.decode(v);
-    if (!decoded || decoded.sessionId !== agent.sessionId()) return null;
-    if (decoded.type === "system" && decoded.subtype === "turn_duration") return "completed";
-    const attachment = field(v, "attachment");
-    if (
-      decoded.type === "attachment" &&
-      str(attachment, "type") === "hook_cancelled" &&
-      str(attachment, "hookEvent") === "Stop" &&
-      field(attachment, "timedOut") === false
-    )
-      return "interrupted";
-  }
-  return null;
+  return agent.provider ? (adapter(agent.provider).transcript?.completion(agent, v) ?? null) : null;
 }
 export class Tail {
   actor = 0;
@@ -116,7 +93,8 @@ export class Tail {
       if (!named.isFile()) throw Error("Replaced");
       if (!this.inode) {
         if (!agent.provider) throw Error("NoProvider");
-        await verifySession(file, agent.provider, agent.sessionId());
+        const verify = adapter(agent.provider).transcript?.verify;
+        if (verify) verify(await head(file), agent.sessionId());
         this.offset = Math.max(0, stat.size - initial_tail);
         this.discard = this.offset > 0;
         this.partial = Buffer.alloc(0);

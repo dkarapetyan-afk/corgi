@@ -1,9 +1,9 @@
 import { test, expect } from "bun:test";
 import { Order } from "./agent_order";
-test("agent order mixes pane and native identities and reconciles removal and insertion", () => {
+test("agent order mixes pane and headless identities and reconciles removal and insertion", () => {
   const a = { pane: 1 },
     b = { pane: 2 },
-    c = { native: 1 },
+    c = { headless: 1 },
     d = { pane: 3 },
     o = new Order();
   o.move([a, b, c], c, a);

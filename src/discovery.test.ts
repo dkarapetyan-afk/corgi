@@ -3,12 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as build_id from "./build_id";
-import { isVersion, onPath } from "./discovery";
-test("Codex version validation rejects successful non-Codex programs", () => {
-  expect(isVersion("codex-cli 0.155.0-alpha.2.6\n", "codex-cli ")).toBe(true);
-  for (const output of ["", "codex-cli ", "unrelated tool 1.0.0\n", "codex-cli missing native binary"])
-    expect(isVersion(output, "codex-cli ")).toBe(false);
-});
+import { onPath } from "./discovery";
 test("a bare provider name resolves past Corgi's own alias on PATH", () => {
   const root = mkdtempSync(join(tmpdir(), "corgi-discovery-")),
     alias = join(root, "alias"),

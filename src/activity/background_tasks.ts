@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Text, field, str } from "../providers/common";
+import { Text } from "../providers/common";
 export const capacity = 32;
 export type Group = "tests" | "builds" | "servers" | "commands";
 export const Group = {
@@ -12,11 +12,6 @@ export const Group = {
     })[g],
 };
 export type Task = { id: Text; label: Text; group: Group };
-export function claudeTask(item: any) {
-  if (["completed", "failed", "killed"].includes(str(item, "status"))) return null;
-  const t = str(item, "type");
-  return ["shell", "subagent"].includes(t) ? t : null;
-}
 export function classify(command: string): Group {
   const words = command.trim().split(/\s+/),
     exe = path.basename(words.shift() ?? "");
@@ -90,14 +85,6 @@ export class Inventory {
       group,
     });
   }
-  static claude(value: any, now: number) {
-    if (!Array.isArray(value)) return null;
-    const t = new Inventory();
-    t.observed_at = now;
-    for (const item of value)
-      if (claudeTask(item) === "shell") t.append(str(item, "id"), str(item, "description"), str(item, "command"));
-    return t;
-  }
   view() {
     return {
       items: this.items.map(t => ({
@@ -132,23 +119,6 @@ export class Children {
     this.items = kept;
     return this;
   }
-  static claude(value: any) {
-    if (!Array.isArray(value)) return null;
-    const out = new Children();
-    for (const item of value) {
-      if (claudeTask(item) !== "subagent") continue;
-      const id = str(item, "id");
-      if (!id || Buffer.byteLength(id) > 96 || out.listed(id)) continue;
-      out.running = Math.min(0xffffffff, out.running + 1);
-      if (out.len === capacity) continue;
-      out.items.push({
-        id: new Text(id),
-        description: new Text(str(item, "description").slice(0, 160)),
-        agent_type: new Text(str(item, "agent_type").slice(0, 80)),
-      });
-    }
-    return out;
-  }
 }
 export class Ended {
   static limit = 16;
@@ -165,25 +135,11 @@ export class Ended {
     return this.items.some(t => t.text() === id);
   }
 }
-/** The background shells a Claude Stop lists as running: commands and
- * Monitors alike. Each one's end, and each event a Monitor prints, wakes
- * the conversation. */
+/** Background shells a conversation runs. */
 export class Shells {
   items: Text[] = [];
   get len() {
     return this.items.length;
-  }
-  /** Empty when the Stop lists no work at all. */
-  static claude(value: any): Shells {
-    const out = new Shells();
-    if (!Array.isArray(value)) return out;
-    for (const item of value) {
-      if (claudeTask(item) !== "shell") continue;
-      const id = str(item, "id");
-      if (!id || Buffer.byteLength(id) > 32 || out.listed(id) || out.len === capacity) continue;
-      out.items.push(new Text(id));
-    }
-    return out;
   }
   /** Drops the shells the transcript reports ended. */
   drop(ended: Ended) {
@@ -195,7 +151,4 @@ export class Shells {
   listed(id: string) {
     return this.items.some(t => t.text() === id);
   }
-}
-export function claudeWakeup(crons: any) {
-  return Array.isArray(crons) && crons.some(c => field(c, "recurring") === false);
 }

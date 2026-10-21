@@ -1,4 +1,4 @@
-/** Terminal, hook, native-session, and executable-discovery regressions. */
+/** Terminal, hook, headless-session, and executable-discovery regressions. */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -619,75 +619,64 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     await this.until(async () => (await this.panes())[0].state === "idle");
     await this.command("pane.close", { target: pane });
   }
-  async test_native_handshake_retained_approvals_and_event_rotation() {
+  async test_headless_handshake_retained_approvals_and_event_rotation() {
     for (const provider of ["codex", "claude"]) {
-      const ident = (await this.rpc({ op: "native.start", provider, cwd: this.temp.name })).session;
+      const ident = (
+        await this.rpc({ op: "headless.start", protocol: 2, prompt: "test/init", provider, cwd: this.temp.name })
+      ).session;
       await this.until(async () =>
-        (await this.rpc({ op: "native.list" })).sessions.some((s: any) => s.id === ident && s.ready),
+        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+          (s: any) => s.session === ident && s.ready,
+        ),
       );
-      await this.rpc({
-        op: "native.send",
-        session: ident,
-        message: { id: 1, method: "test/approval" },
-      });
+      await this.headless_command(ident, "test/approval", provider);
       await this.until(async () =>
-        (await this.rpc({ op: "native.list" })).sessions.some((s: any) => s.id === ident && s.pending_requests === 1),
+        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+          (s: any) => s.session === ident && s.pending_requests === 1,
+        ),
       );
-      await this.rpc({
-        op: "native.send",
-        session: ident,
-        message: { id: 2, method: "test/flood" },
-      });
+      await this.headless_command(ident, "test/flood", provider);
       await this.until(async () =>
-        (await this.rpc({ op: "native.list" })).sessions.some((s: any) => s.id === ident && s.next_seq > 150),
+        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+          (s: any) => s.session === ident && s.next_seq > 150,
+        ),
       );
-      const events = await this.rpc({ op: "native.events", session: ident });
+      const events = await this.rpc({ op: "headless.events", protocol: 2, provider, session: ident });
       this.assertLessEqual(events.events.length, 128);
       this.assertEqual(events.pending_requests.length, 1);
       this.assertGreater(events.first_seq, 1);
-      const response =
-        provider === "codex"
-          ? { id: 900, result: { decision: "decline" } }
-          : {
-              type: "control_response",
-              response: {
-                subtype: "success",
-                request_id: "permission-1",
-                response: { behavior: "deny", message: "test" },
-              },
-            };
-      await this.rpc({ op: "native.send", session: ident, message: response });
+      await this.headless_answer(ident, provider, false);
       await this.until(async () =>
-        (await this.rpc({ op: "native.list" })).sessions.some(
-          (s: any) => s.id === ident && s.state === "idle" && s.pending_requests === 0,
+        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+          (s: any) => s.session === ident && s.state === "idle" && s.pending_requests === 0,
         ),
       );
-      await this.rpc({ op: "native.stop", session: ident });
+      await this.rpc({ op: "headless.stop", protocol: 2, provider, session: ident });
     }
   }
-  async test_native_acknowledgement_clears_attention_without_dropping_requests() {
+  async test_headless_acknowledgement_clears_attention_without_dropping_requests() {
     await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
     await this.attach();
     await this.get_type("frame");
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { id: 1, method: "test/approval" },
-    });
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].attention === "needs_input");
-    await this.rpc({ op: "native.events", session: ident });
-    const session = (await this.rpc({ op: "native.list" })).sessions[0];
+    await this.headless_command(ident, "test/approval");
+    await this.until(
+      async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].attention === "needs_input",
+    );
+    await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session: ident });
+    const session = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0];
     this.assertEqual(session.attention, "none");
     this.assertEqual(session.pending_requests, 1);
   }
-  async test_native_codex_discovers_path_without_override() {
+  async test_headless_codex_discovers_path_without_override() {
     await this.run_cli("shutdown");
     await this.until(() => !existsSync(this.path));
     const binDir = join(this.temp.name, "auto-bin");
@@ -695,12 +684,11 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     writeExecutable(join(binDir, "codex"), FAKE);
     delete this.env.CORGI_CODEX_BIN;
     this.env.PATH = binDir + ":" + (this.env.PATH ?? "");
-    const ident = JSON.parse(await this.run_cli("native", "start", "codex", "--json")).session;
+    const ident = JSON.parse(await this.run_cli("headless", "start", "codex", "test/init", "--json")).session;
     await this.until(async () =>
-      (await this.rpc({ op: "native.list" })).sessions.some((s: any) => s.id === ident && s.ready),
+      (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some((s: any) => s.session === ident && s.ready),
     );
-    const events = (await this.rpc({ op: "native.events", session: ident })).events;
-    this.assertTrue(events.some((e: any) => JSON.parse(e.line).result?.version === "fixture"));
+    this.assertGreater((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid, 0);
   }
   async checkRealClientExit(keys: string, remainingPanes: number) {
     const pty = new Pty(80, 24);
@@ -809,14 +797,16 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     await this.split_pane("right", { cwd: this.temp.name });
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
     await this.checkRealClientExit("\x02X\x02c\r", 0);
     this.assertEqual((await this.session()).closed_panes, 0);
-    this.assertEqual((await this.rpc({ op: "native.list" })).sessions[0].id, ident);
+    this.assertEqual((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].session, ident);
   }
 }
 

@@ -18,6 +18,7 @@ import type { Rgb } from "./palette";
 import type { Colors as TerminalColors } from "./terminal_palette";
 import type { RGB } from "./theme";
 import type { Reply, RequestInput } from "./protocol";
+import * as protocol from "./protocol";
 import type { State as ClipboardState } from "./host_clipboard";
 import { n, ptr } from "./native_ffi";
 import { stringify } from "./json";
@@ -507,7 +508,7 @@ function watch(socket: string, viewer: number, woken: () => void, closed: () => 
     conn.on("data", woken);
     conn.on("error", () => {});
     conn.on("close", closed);
-    conn.write(stringify({ op: "viewer.watch", protocol: 1, viewer }) + "\n");
+    conn.write(stringify(protocol.envelope("viewer.watch", { viewer })) + "\n");
     return conn;
   } catch {
     return null;

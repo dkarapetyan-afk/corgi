@@ -12,7 +12,7 @@ test("agent navigation wraps, excludes shells, and validates history against the
     }),
     entry({
       name: "",
-      target: { native: 2 },
+      target: { headless: 2 },
       provider: "claude",
       state: "blocked",
       attention: "needs_input",
@@ -38,7 +38,7 @@ test("picker preserves target identity across reordering and removes filtered or
     }),
     entry({
       name: "Beta",
-      target: { native: 1 },
+      target: { headless: 1 },
       provider: "claude",
       state: "blocked",
       attention: "needs_input",

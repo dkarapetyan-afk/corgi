@@ -3,6 +3,7 @@ import { geometry, aimed, draw, State } from "./resource_tooltip";
 import { Rect } from "./layout";
 import { Writer } from "./text";
 import { Terminal } from "./pane/terminal";
+import * as sim from "./providers/sim";
 test("resource card stays within terminal bounds", () => {
   for (const cols of [68, 88, 120, 200])
     for (const rows of [24, 30, 40]) {
@@ -34,6 +35,20 @@ test("aim triangle spans from the row exit to the card's left edge", () => {
   expect(aimed(lifted, { x: 4, y: 30 }, 16, 24)).toBe(true);
   expect(aimed(lifted, { x: 4, y: 30 }, 16, 36)).toBe(false);
   expect(aimed(new Rect(2, 4, 82, 24), exit, 3, 5)).toBe(false);
+});
+test("agent processes carry their provider's mark, which the legend explains", () => {
+  const remove = sim.register();
+  try {
+    const state = new State(),
+      work = { id: 1, known: true, count: 1, processes: [{ pid: 7, start: 1n, name: "sim", provider: sim.sim }] };
+    state.update(work, true);
+    const w = new Writer();
+    draw(w, new Rect(0, 0, 82, 24), "corgi", { workspaces: [work] }, state);
+    expect(w.buffered()).toContain("§ sim");
+    expect(w.buffered()).toContain("† Codex   * Claude Code   § Simulated Agent");
+  } finally {
+    remove();
+  }
 });
 test("process rows freeze by identity while their numbers can refresh", () => {
   const state = new State(),

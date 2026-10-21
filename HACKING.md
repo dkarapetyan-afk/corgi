@@ -113,7 +113,7 @@ These are separate compatibility boundaries:
 
 | Boundary | Definition |
 | --- | --- |
-| Runtime and viewer wire formats | [protocol.ts](src/protocol.ts), [viewer_version.ts](src/viewer_version.ts) |
+| Management, runtime and viewer wire formats | [protocol.ts](src/protocol.ts), [viewer_version.ts](src/viewer_version.ts) |
 | Checkpoint and live handoff JSON | [persist/migrations.ts](src/persist/migrations.ts), [persist/steps.ts](src/persist/steps.ts) |
 | Live terminal/update compatibility | `terminal_abi` and `update_abi` in [persist/handoff.ts](src/persist/handoff.ts) |
 
@@ -121,6 +121,14 @@ Wire renames, required-field or type changes require the corresponding protocol
 version to change. Defaulted fields can be compatible, but `session.command`
 rejects unknown nested fields: changing its payload also affects old clients.
 Unversioned requests cannot rely on a version handshake for compatibility.
+
+`hello` and `server.reload` use management protocol 1, checked independently of
+the runtime version. Keep their request and reply shapes compatible so a new
+client can discover and replace an older daemon. No protocol fallback is needed.
+`hello` advertises the client's runtime version in `runtime_protocol`; its reply's
+`protocol` advertises the server's runtime version. Only a matching runtime
+version negotiates ordinary requests on that connection. Management requests
+always carry their own version, even on a negotiated connection.
 
 For saved data, a defaulted addition needs an updated schema snapshot; a rename,
 removal or change of meaning needs a migration:

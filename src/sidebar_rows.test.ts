@@ -88,20 +88,20 @@ test("lost terminal binding holds the label until exit or a real replacement", (
   shown = rows.update(1, [e], out, 1180);
   expect(shown[0].conversation).toBe(0);
 });
-test("pane removal fades once while ended natives stay visible and same-workspace reordering stays live", () => {
+test("pane removal fades once while ended headless sessions stay visible and same-workspace reordering stays live", () => {
   const rows = new State(),
     out: Entry[] = [],
     pane = entry(1),
-    native: Entry = { ...entry(1, "claude", "working"), target: { native: 1 } };
-  rows.update(1, [pane, native], out, 0);
-  let shown = rows.update(1, [native, pane], out, 10);
-  expect(shown[0].target).toEqual({ native: 1 });
-  native.state = "done";
-  shown = rows.update(1, [native], out, 20);
+    headless: Entry = { ...entry(1, "claude", "working"), target: { headless: 1 } };
+  rows.update(1, [pane, headless], out, 0);
+  let shown = rows.update(1, [headless, pane], out, 10);
+  expect(shown[0].target).toEqual({ headless: 1 });
+  headless.state = "done";
+  shown = rows.update(1, [headless], out, 20);
   expect(shown).toHaveLength(2);
   expect(shown[0].exit ?? null).toBeNull();
   expect(shown[1].exit).not.toBeNull();
-  shown = rows.update(1, [native], out, 260);
+  shown = rows.update(1, [headless], out, 260);
   expect(shown).toHaveLength(1);
   expect(shown[0].state).toBe("done");
 });

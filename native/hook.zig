@@ -60,7 +60,7 @@ fn run(init: std.process.Init) !void {
     };
     const body = try std.json.Stringify.valueAlloc(a, .{
         .op = "hook",
-        .protocol = 1,
+        .protocol = 2,
         .provider = @tagName(provider),
         .event = parsed.value,
         .pane = pane,

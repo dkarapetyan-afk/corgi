@@ -1,23 +1,22 @@
 import * as clock from "./clock";
-import { lstatSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import * as os from "./os";
 import { Model, Tab } from "./layout";
 import type { Axis } from "./layout";
 import { Store, Workspace } from "./workspace";
-import { Provider, byProvider, Text, validRef } from "./providers";
+import { Provider, byProvider, Text, validRef, adapter } from "./providers";
 import { Agent } from "./agents";
 import { Entry, capacity as command_capacity } from "./launch/command";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type ActorId } from "./conversations";
-import { Tracker } from "./detection";
+import { Tracker, locate, process_buffer } from "./detection";
 import { ResumeHint } from "./resume_hint";
 import { waitpid, tcgetpgrp, systemCall } from "./native_bridge";
-import { attachCommand } from "./providers/claude/daemon";
 import * as keys from "./keys";
 import * as trackers from "./trackers";
 import { Model as AgentModel } from "./providers/model";
 import { Status as InferenceStatus } from "./inference/setup";
 import type { Target } from "./agent_order";
+import type { Session } from "./headless";
 import { Briefs } from "./worktree_briefs";
 export type Create = {
   workspace: number;
@@ -25,6 +24,8 @@ export type Create = {
   cwd: string;
   command?: string | null;
   interactive_command?: boolean;
+  /** Variables its command runs with besides Corgi's own. */
+  env?: [string, string][];
   title?: string;
   /** Dormant from the start: nothing runs until `Runtime.wake`. */
   asleep?: boolean;
@@ -97,10 +98,18 @@ export class Ghost {
     return Math.min(this.changed_at + Ghost.quiet_ms, this.loaded_at + Ghost.longest_ms);
   }
 }
-const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 export class Launch {
   constructor(
-    public agent?: { provider: Provider; yolo?: boolean },
+    public agent?: {
+      provider: Provider;
+      yolo?: boolean;
+      /** Options and variables kept from a command someone typed to start it. */
+      args?: string[];
+      env?: [string, string][];
+      /** Read off an agent someone started in its pane's shell, which the
+       * next one started there replaces. */
+      observed?: boolean;
+    },
     public command?: string,
   ) {}
   static from(value: any) {
@@ -109,31 +118,49 @@ export class Launch {
   toJSON() {
     return this.agent ? { agent: this.agent } : { command: this.command };
   }
-  typed(resuming: string[] | null = null) {
-    let out = this.agent
-      ? this.agent.provider + (this.agent.yolo ? " " + Provider.info(this.agent.provider).yolo_flag : "")
-      : (this.command ?? "");
-    if (resuming) out += " " + resuming[1] + " " + quote(resuming[2]);
-    return out;
+  /** The command that starts it, followed by `then`, with the permission
+   * checks and model `live` last saw. */
+  typed(then: string[] | null = null, live: ResumeHint | null = null) {
+    const { agent } = this,
+      start = agent
+        ? os.shellWords([
+            agent.provider,
+            ...adapter(agent.provider).launch.start({
+              permissions: live?.permissions ?? (agent.yolo ? "bypass" : "default"),
+              model: live?.model.len ? live.model.text() : null,
+              args: agent.args ?? [],
+            }),
+          ])
+        : (this.command ?? "");
+    return then?.length ? start + " " + os.shellWords(then) : start;
   }
-  forking(provider: Provider, session: string, new_session: string | null = null, name: string | null = null) {
-    const info = Provider.info(provider);
-    let out = this.typed() + " " + info.fork_args[0] + " " + quote(session);
-    if (info.fork_args[1]) out += " " + info.fork_args[1];
-    if (info.fork_session_flag && new_session) out += " " + info.fork_session_flag + " " + quote(new_session);
-    if (info.name_flag && name) out += " " + info.name_flag + " " + quote(name);
-    return out;
-  }
+  /** How the agent at `pid`, which someone started in a pane's shell, starts again. */
   static observed(provider: Provider, pid: number) {
-    let yolo = false;
-    if (pid > 0)
-      try {
-        yolo = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(Provider.info(provider).yolo_flag);
-      } catch {}
-    return new Launch({ provider, yolo });
+    const info = pid > 0 ? os.processArgs(pid, process_buffer, { env: true }) : null,
+      found = info?.complete ? locate(info.argv) : null,
+      kept =
+        info && found?.provider === provider
+          ? adapter(provider).launch.keep?.({
+              env: info.environ().flatMap(e => {
+                const at = e.indexOf("=");
+                return at > 0 ? [[e.slice(0, at), e.slice(at + 1)] as [string, string]] : [];
+              }),
+              args: info.argv.slice(found.at),
+              flagged: false,
+              cwd: "/",
+            })
+          : null;
+    return new Launch({ provider, args: kept?.args ?? [], env: kept?.env ?? [], observed: true });
   }
-  paneCommand(executable: string, typed: string) {
-    return this.agent ? `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${quote(executable)} agent ${typed}` : typed;
+  /** How a pane runs it, typed as `typed`. */
+  run(executable: string, typed: string): Pick<Create, "command" | "interactive_command" | "env"> {
+    return this.agent
+      ? {
+          command: `${os.shellQuote(executable)} agent ${typed}`,
+          interactive_command: false,
+          env: this.agent.env ?? [],
+        }
+      : { command: typed, interactive_command: true, env: [] };
   }
 }
 export class Pane {
@@ -143,7 +170,8 @@ export class Pane {
   detected = { output: 0n, at: 0 };
   resume_hint = new ResumeHint();
   launch: Launch | null = null;
-  background_job: string | null = null;
+  /** The command that attaches to its agent where that already runs. */
+  attached: string | null = null;
   ghost: Ghost | null = null;
   /** Recovered with nothing running: its old screen, faded, until `Runtime.wake`. */
   dormant = false;
@@ -220,10 +248,7 @@ export class Pane {
   restoring() {
     if (!this.ghost && !this.dormant) return "";
     return (
-      this.ghost?.fork ??
-      (this.background_job
-        ? attachCommand(new Text(this.background_job))
-        : (this.resumeLaunch()?.typed(this.resume_hint.args()) ?? ""))
+      this.ghost?.fork ?? this.attached ?? this.resumeLaunch()?.typed(this.resume_hint.args(), this.resume_hint) ?? ""
     );
   }
   /** How its agent comes back: as it was launched, or as its provider starts. */
@@ -238,7 +263,7 @@ export class Pane {
     this.terminal.destroy();
     this.terminal = t;
     this.dormant = true;
-    this.background_job = this.resumeLaunch()?.agent ? (this.resume_hint.backgroundJob()?.text() ?? null) : null;
+    this.attached = this.resumeLaunch()?.agent ? this.resume_hint.attach() : null;
   }
   failed() {
     return (
@@ -301,11 +326,11 @@ export class Runtime {
   panes: Pane[] = [];
   closed: ClosedAgent[] = [];
   stopped: number[] = [];
-  sessions: any[] = [];
+  sessions: Session[] = [];
   renames: TypedRename[] = [];
   wanted_names: WantedName[] = [];
   next_session = 1;
-  last_agent: Provider = "codex";
+  last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
   agent_commands = Array.from({ length: command_capacity }, () => new Entry());
@@ -340,7 +365,7 @@ export class Runtime {
   }
   adopt() {
     for (const p of [...this.panes, ...this.closed]) p.terminal.owner = "runtime";
-    for (const s of this.sessions) s.owner = "runtime";
+    for (const s of this.sessions) s.adopt();
   }
   [Symbol.dispose]() {
     this.destroy();
@@ -379,7 +404,7 @@ export class Runtime {
     return false;
   }
   /** Forgets the conversations nothing refers to: no pane shows or knows
-   * them, no closed agent reopens them and no native session runs them. */
+   * them, no closed agent reopens them and no headless session runs them. */
   pruneConversations() {
     const keep = new Set<ActorId>(),
       hinted = new Set<string>();
@@ -430,7 +455,15 @@ export class Runtime {
       t.applyTheme(opts.theme);
       if (opts.asleep) t.exited = true;
       else
-        await t.spawn(dir, opts.socket, id, opts.executable, opts.command ?? null, opts.interactive_command ?? false);
+        await t.spawn(
+          dir,
+          opts.socket,
+          id,
+          opts.executable,
+          opts.command ?? null,
+          opts.interactive_command ?? false,
+          opts.env ?? [],
+        );
     } catch (e) {
       t.destroy();
       throw e;
@@ -552,41 +585,37 @@ export class Runtime {
     p.ghost.old_screen = old !== null;
     p.ghost.fork = fork;
     const provider = p.resumeLaunch()?.agent?.provider;
-    if (provider && Provider.info(provider).screen.titled_once_loaded) p.ghost.untitled = p.terminal.title;
+    if (provider && adapter(provider).caps.titles_once_loaded) p.ghost.untitled = p.terminal.title;
   }
   async resumeAgent(opts: Create, launch: Launch, hint: ResumeHint, old: string | Uint8Array | null) {
     if (!hint.provider || !hint.args()) throw Error("InvalidSession");
-    const job = launch.agent ? hint.backgroundJob() : null;
+    const attached = launch.agent ? hint.attach() : null;
     if (opts.asleep) {
       const id = await this.create(opts),
         p = this.pane(id)!;
       if (old) p.terminal.feed(old);
-      this.resumed(p, opts.workspace, launch, hint, job);
+      this.resumed(p, opts.workspace, launch, hint, attached);
       return id;
     }
-    const typed = job ? attachCommand(job) : launch.typed(hint.args()),
-      command = launch.paneCommand(opts.executable, typed),
+    const typed = attached ?? launch.typed(hint.args(), hint),
+      run = launch.run(opts.executable, typed),
       frozen = await this.frozenScreen(opts, old);
     let id: number;
     try {
-      id = await this.create({
-        ...opts,
-        command,
-        interactive_command: !launch.agent,
-      });
+      id = await this.create({ ...opts, ...run });
     } catch (e) {
       frozen.destroy();
       throw e;
     }
     const p = this.pane(id)!;
-    this.resumed(p, opts.workspace, launch, hint, job);
+    this.resumed(p, opts.workspace, launch, hint, attached);
     this.haunt(p, frozen, old, null);
     return id;
   }
-  resumed(p: Pane, workspace: number, launch: Launch, hint: ResumeHint, job: Text | null) {
+  resumed(p: Pane, workspace: number, launch: Launch, hint: ResumeHint, attached: string | null) {
     p.resume_hint = hint;
     p.launch = launch;
-    p.background_job = job?.text() ?? null;
+    p.attached = attached;
     try {
       const actor = this.conversations.get(hint.provider!, hint.session.text());
       actor.state.reopened(Date.now() * 1000);
@@ -607,8 +636,8 @@ export class Runtime {
       launch = p.resumeLaunch(),
       args = hint.args();
     if (!launch || !args) throw Error("InvalidSession");
-    const job = launch.agent ? hint.backgroundJob() : null,
-      typed = job ? attachCommand(job) : launch.typed(args),
+    const attached = launch.agent ? hint.attach() : null,
+      typed = attached ?? launch.typed(args, hint),
       old = p.terminal.fadedSnapshot(),
       { cols, rows } = p.terminal,
       frozen = shell ? null : await this.frozenScreen({ cols, rows, theme: opts.theme }, old),
@@ -619,8 +648,16 @@ export class Runtime {
         t.feed(old);
         t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
       }
-      const command = shell ? null : launch.paneCommand(opts.executable, typed);
-      await t.spawn(await Store.directory(p.cwd), opts.socket, id, opts.executable, command, !launch.agent);
+      const run = launch.run(opts.executable, typed);
+      await t.spawn(
+        await Store.directory(p.cwd),
+        opts.socket,
+        id,
+        opts.executable,
+        shell ? null : (run.command ?? null),
+        run.interactive_command,
+        run.env,
+      );
     } catch (e) {
       t.destroy();
       frozen?.destroy();
@@ -630,38 +667,35 @@ export class Runtime {
     p.terminal = t;
     p.dormant = false;
     if (frozen) {
-      this.resumed(p, this.workspaces.owner(id)!.id, launch, hint, job);
+      this.resumed(p, this.workspaces.owner(id)!.id, launch, hint, attached);
       this.haunt(p, frozen, old, null);
     } else t.prefill(typed);
     this.changed();
   }
-  static forkSource(p: Pane): [Provider, string] {
+  /** The provider of the conversation `p` shows, and how to fork it. */
+  static forkSource(p: Pane, name: string | null = null) {
     const a = p.agent(),
       provider = a.provider,
-      session = a.sessionId();
-    if (!provider || session.length !== 36 || !validRef({ id: session })) throw Error("NoConversation");
-    if (provider === "claude" && a.transcriptPath())
-      try {
-        lstatSync(a.transcriptPath());
-      } catch {
-        throw Error("NoConversation");
-      }
-    return [provider, session];
+      session = a.sessionId(),
+      branch =
+        provider && validRef({ id: session })
+          ? adapter(provider).launch.fork({ session, transcript: a.transcriptPath() }, name)
+          : null;
+    if (!provider || !branch) throw Error("NoConversation");
+    return { provider, branch };
   }
   async forkAgent(opts: Create, id: number, wanted: string | null) {
     const name = wanted === null ? null : wanted.replace(/^ +| +$/g, "");
     if (name !== null && !validName(name)) throw Error("InvalidName");
     const p = this.pane(id);
     if (!p) throw Error("NoPane");
-    const [provider, session] = Runtime.forkSource(p),
+    const { provider, branch } = Runtime.forkSource(p, name),
       launch = p.launch ?? Launch.observed(provider, p.detection.pid),
-      newSession = Provider.info(provider).fork_session_flag ? randomUUID() : null,
-      typed = launch.forking(provider, session, newSession, name),
+      typed = launch.typed(branch.args, p.resume_hint),
       old = p.terminal.fadedSnapshot(),
       forked = {
         ...opts,
-        command: launch.paneCommand(opts.executable, typed),
-        interactive_command: !launch.agent,
+        ...launch.run(opts.executable, typed),
         cols: p.terminal.vt.cols,
         rows: p.terminal.vt.rows,
       },
@@ -679,9 +713,9 @@ export class Runtime {
     fork.launch = launch;
     this.haunt(fork, frozen, old, typed);
     const pickedName = name ?? p.agent().name.text();
-    if (newSession) {
+    if (branch.session) {
       try {
-        const actor = this.conversations.get(provider, newSession);
+        const actor = this.conversations.get(provider, branch.session);
         actor.state.reopened(clock.microTimestamp());
         if (!actor.state.name.len) actor.state.name = new Text(pickedName);
         actor.workspace = ws.id;
@@ -693,7 +727,7 @@ export class Runtime {
       fork.attachment.provisional.provider = provider;
       fork.attachment.provisional.name = new Text(pickedName);
     }
-    if (!Provider.info(provider).name_flag && name)
+    if (!branch.named && name)
       this.wanted_names.push(new WantedName(created, name, clock.milliTimestamp() + WantedName.wait_ms));
     ws.model.moveTab(ws.model.tabs[ws.model.count - 1].id, ws.model.tabIndex(sourceTab)! + 1);
     ws.model.revision = BigInt.asUintN(64, ws.model.revision + 1n);
@@ -710,7 +744,7 @@ export class Runtime {
     out.length = 0;
     for (let i = 0; i < ws.model.count; i++)
       for (const p of this.panes) if (ws.model.tabForPane(p.id) === i) out.push({ pane: p.id });
-    for (const s of this.sessions) if (s.workspace_id === ws.id) out.push({ native: s.id });
+    for (const s of this.sessions) if (s.workspace_id === ws.id) out.push({ headless: s.id });
     return out;
   }
   async renameAgent(id: number, wanted: string | null) {

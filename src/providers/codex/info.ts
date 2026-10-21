@@ -1,68 +1,73 @@
-import { Info } from "../common";
-export const info = new Info({
+import type { Caps, Info } from "../adapter";
+import type { Keeping, Vocabulary } from "../command_line";
+import { cached } from "../command_line";
+export const info: Info = {
+  id: "codex",
   label: "Codex",
   name: "Codex",
+  glyph: "†",
   launcher_key: "c",
-  executables: ["codex"],
-  scripts: ["/@openai/codex/bin/codex.js"],
-  package: "@openai/codex",
-  binary_env: "CORGI_CODEX_BIN",
-  home_paths: [".local/bin/codex", ".bun/bin/codex", ".npm-global/bin/codex", ".volta/bin/codex", ".cargo/bin/codex"],
-  system_paths: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"],
-  native_args: ["app-server", "--listen", "stdio://"],
-  inference_args: [
-    "-c",
-    "features.shell_tool=false",
-    "-c",
-    "features.apps=false",
-    "-c",
-    "features.memories=false",
-    "-c",
-    "features.hooks=false",
-    "-c",
-    "features.plugins=false",
-    "-c",
-    "features.code_mode=false",
-    "-c",
-    "features.skip_host_skill_discovery=true",
-    "-c",
-    "agents.enabled=false",
-    "-c",
-    "project_doc_max_bytes=0",
-    "-c",
-    'web_search="disabled"',
-  ],
-  resume_args: ["codex", "resume"],
-  fork_args: ["fork", ""],
-  app_bundles: ["Codex.app", "ChatGPT.app"],
-  version_prefix: "codex-cli ",
+  command: "codex",
+};
+export const caps: Caps = {
+  prompt_turns: false,
+  children_at_stop: false,
+  follows_cd: false,
+  titles_once_loaded: true,
+  transcript_tools: true,
+};
+/** How its command line chooses a model, an account and its permission checks. */
+export const vocabulary: Vocabulary = {
   config_env: "CODEX_HOME",
-  config_dir: ".codex",
-  hooks_file: "hooks.json",
-  account_file: "auth.json",
   account_home: ".codex",
+  yolo: "--dangerously-bypass-approvals-and-sandbox",
+  profile_flags: ["--profile", "-p"],
+  settings_flags: ["--settings", "-c", "--config"],
   credential_env: ["OPENAI_API_KEY"],
   endpoint_env: ["OPENAI_BASE_URL"],
   provider_env: [],
-  profile_flags: ["--profile", "-p"],
-  settings_flags: ["--settings", "-c", "--config"],
-  yolo_flag: "--dangerously-bypass-approvals-and-sandbox",
-  summary_model: "gpt-6-luna",
-  windows: ["primary", "secondary"],
-  used: "usedPercent",
-  minutes: null,
-  screen: {
-    blocked_title: "Action Required",
-    idle_prompt: "›",
-    background_status: true,
-    compaction_status: true,
-    // Its chat view titles the terminal; the screen it shows while a thread loads doesn't.
-    titled_once_loaded: true,
+  account(root) {
+    const auth = cached(root, "auth.json");
+    if (!auth) return null;
+    if (auth.OPENAI_API_KEY) return "Profile API key - identity unavailable";
+    try {
+      const email = JSON.parse(Buffer.from(auth.tokens?.id_token?.split(".")[1] ?? "", "base64url").toString()).email;
+      return email ? `${email} (cached)` : null;
+    } catch {
+      return null;
+    }
   },
-  limits: {
-    windows: ["primary", "secondary"],
-    used: "usedPercent",
-    minutes: null,
-    reset: "unix_seconds",
-  },
-});
+};
+/** What a resume or fork keeps of a typed `codex` command. Approval and
+ * sandbox options stay, since its hooks can't tell them apart. */
+export const keeping: Keeping = {
+  drop: [
+    "--model",
+    "-m",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--yolo",
+    "--image",
+    "-i",
+    "--last",
+    "--all",
+    "--version",
+    "-V",
+    "--help",
+    "-h",
+  ],
+  flags: [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--yolo",
+    "--full-auto",
+    "--oss",
+    "--search",
+    "--no-alt-screen",
+    "--last",
+    "--all",
+    "--version",
+    "-V",
+    "--help",
+    "-h",
+  ],
+  env: /^(HOME|CODEX_HOME|CODEX_SQLITE_HOME|OPENAI_\w+|AZURE_OPENAI_\w+)$/,
+};

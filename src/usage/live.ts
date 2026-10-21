@@ -1,6 +1,4 @@
-import { field, str, timestampMs } from "../providers/common";
-import { Codex as ProviderCodex } from "../providers/codex";
-import { number, add } from "./tokens";
+import { add } from "./tokens";
 export class Tokens {
   input = 0n;
   cached_input = 0n;
@@ -60,17 +58,8 @@ export class Meter {
   }
 }
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
-export function parseTokens(v: any, camel: boolean) {
-  const input = number(v, camel ? "inputTokens" : "input_tokens"),
-    output = number(v, camel ? "outputTokens" : "output_tokens");
-  if (input === null || output === null) return null;
-  return new Tokens({
-    input,
-    cached_input: min(input, number(v, camel ? "cachedInputTokens" : "cached_input_tokens") ?? 0n),
-    output,
-  });
-}
-export class Codex {
+/** A provider's running token total, turned into what each report adds. */
+export class Counter {
   meter = new Meter();
   previous: Tokens | null = null;
   child = false;
@@ -78,49 +67,7 @@ export class Codex {
   catch_up = false;
   ordinal: bigint | null = null;
   baseline_next = false;
-  header(value: any, child: boolean, tracked_since: number, complete_prefix: boolean) {
-    this.child = child;
-    const r = ProviderCodex.Rollout.decode(value);
-    this.owned_from = number(r.payload, "subagent_history_start_ordinal");
-    const created = timestampMs(str(r.payload, "timestamp")) ?? timestampMs(r.timestamp);
-    this.catch_up =
-      child &&
-      complete_prefix &&
-      this.owned_from !== null &&
-      created !== null &&
-      tracked_since > 0 &&
-      created >= tracked_since;
-    if (child && (!this.catch_up || this.owned_from === null)) this.meter.lose();
-  }
-  ingest(value: any, appended: boolean, now: number) {
-    const r = ProviderCodex.Rollout.decode(value);
-    if (r.type !== "event_msg" || r.payloadType() !== "token_count") return;
-    const ordinal = number(value, "ordinal");
-    if (this.owned_from !== null) {
-      if (ordinal === null) {
-        this.meter.lose();
-        return;
-      }
-      if (ordinal < this.owned_from) return;
-    }
-    if (ordinal !== null) {
-      if (this.ordinal !== null && ordinal <= this.ordinal) return;
-      this.ordinal = ordinal;
-    }
-    const info = field(r.payload, "info"),
-      total = parseTokens(field(info, "total_token_usage"), false);
-    if (!total) return;
-    this.sample(
-      total,
-      parseTokens(field(info, "last_token_usage"), false),
-      appended || this.catch_up,
-      Math.min(timestampMs(r.timestamp) ?? now, now),
-    );
-  }
-  native(value: any, active: boolean, now: number) {
-    const total = parseTokens(field(value, "total"), true);
-    if (total) this.sample(total, parseTokens(field(value, "last"), true), active, now);
-  }
+  /** Counts what `total` adds to the last one, at most `last`; with `count` false it only sets the baseline. */
   sample(total: Tokens, last: Tokens | null, count: boolean, stamp: number) {
     const p = this.previous,
       regressed = p && (total.input < p.input || total.output < p.output || total.cached_input < p.cached_input);

@@ -352,9 +352,11 @@ class ViewerScenarios extends Viewers {
   async test_agent_navigation_includes_native_sessions_and_handles_empty_lists() {
     const first = await this.new();
     await this.mark_agent(first, "Terminal-agent");
-    const native = (
+    const headless = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
@@ -362,11 +364,11 @@ class ViewerScenarios extends Viewers {
     const a = await this.newViewer();
     await a.focus(first);
     await a.input("\x02]");
-    this.assertIn(`native session ${native}`, a.state.data);
+    this.assertIn(`codex session ${headless}`, a.state.data);
     await a.input("\x02\t");
-    this.assertNotIn(`native session ${native}`, a.state.data);
+    this.assertNotIn(`codex session ${headless}`, a.state.data);
     await a.input("\x02\t");
-    this.assertIn(`native session ${native}`, a.state.data);
+    this.assertIn(`codex session ${headless}`, a.state.data);
     this.assertEqual((await a.input("\x02]")).pane, first);
     const empty = (
       await this.command("workspace.create", {
@@ -641,22 +643,20 @@ class ViewerScenarios extends Viewers {
     this.assertEqual((await counts()).tools, 0);
   }
 
-  async test_native_usage_and_attention_are_visible_and_survive_reload() {
+  async test_headless_usage_and_attention_are_visible_and_survive_reload() {
     await this.new();
     const home = (await this.session()).workspaces[0].id;
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
     const send = (method: string, params: any) =>
-      this.rpc({
-        op: "native.send",
-        session: ident,
-        message: { id: 1, method: "test/event", params: { method, params } },
-      });
+      this.headless_command(ident, "test/event " + JSON.stringify({ method, params }));
     const counts = async () => (await this.session()).workspaces[0].stats;
     await send("turn/started", { threadId: "t", turn: { id: "turn" } });
     await send("item/started", {
@@ -959,7 +959,7 @@ class ViewerScenarios extends Viewers {
       ],
     ];
     for (const [command, error] of invalid) {
-      this.assertEqual((await this.raw_rpc({ op: "session.command", protocol: 1, command })).err, error);
+      this.assertEqual((await this.raw_rpc({ op: "session.command", protocol: 2, command })).err, error);
       this.assertEqual((await this.session()).workspaces, before);
     }
   }
@@ -1165,7 +1165,7 @@ process.stdin.resume();
       second = await this.new();
     const client = await JsonSocket.connect(this.path);
     try {
-      const call = (request: any) => client.request({ protocol: 1, viewer_protocol: 3, ...request });
+      const call = (request: any) => client.request({ protocol: 2, viewer_protocol: 3, ...request });
       await call({ op: "viewer.open", cwd: this.temp.name });
       await call({
         op: "viewer.sync",

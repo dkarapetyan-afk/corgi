@@ -17,7 +17,7 @@ import { testBuild } from "./build_assets";
 import * as config from "./build_config";
 import * as crash from "./crash";
 import * as build_id from "./build_id";
-import { Provider } from "./providers";
+import { Provider, adapter } from "./providers";
 export const executable = build_id.executablePath(
   import.meta.filename,
   process.execPath,
@@ -128,15 +128,17 @@ export function say(op: protocol.Op, reply: any): string {
       return "reloaded\n";
     case "action":
       return `queued for viewer ${reply.viewer}\n`;
-    case "native.start":
-      return `native session ${reply.session} (${reply.provider})\n`;
-    case "native.list":
-      return reply.sessions.length ? reply.sessions.map(nativeSession).join("") : "no native sessions\n";
-    case "native.events":
+    case "headless.start":
+      return `headless session ${reply.session} (${reply.provider})\n`;
+    case "headless.list":
+      return reply.sessions.length ? reply.sessions.map(headlessSession).join("") : "no headless sessions\n";
+    case "headless.events":
       return (
         [
-          ...reply.events.map((event: any) => `${event.seq} ${event.line}`),
-          ...reply.pending_requests.map((line: string) => `pending ${line}`),
+          ...reply.events.map(({ seq, event: { kind, ...rest } }: any) => `${seq} ${kind} ${json.stringify(rest)}`),
+          ...reply.pending_requests.map(
+            ({ id, ask }: any) => `pending ${id} ${ask.name}${ask.summary ? ": " + ask.summary : ""}`,
+          ),
           `next ${reply.next_seq}`,
         ].join("\n") + "\n"
       );
@@ -144,13 +146,13 @@ export function say(op: protocol.Op, reply: any): string {
       return "ok\n";
   }
 }
-function nativeSession(s: any): string {
+function headlessSession(s: any): string {
   const attention = s.attention && s.attention !== "none" ? ", " + s.attention.replace("_", " ") : "",
     pending = s.pending_requests ? `, ${s.pending_requests} pending request${s.pending_requests === 1 ? "" : "s"}` : "";
-  return `session ${s.id} ${s.provider} ${s.state}${attention}${pending}, pid ${s.pid}\n`;
+  return `${s.provider} ${s.session ?? "starting"} ${s.state}${attention}${pending}\n`;
 }
 /** Commands that print the daemon's reply: in words, or as JSON with `--json`. */
-const replies = ["ping", "shutdown", "checkpoint", "reload", "action", "onboard", "native", "dev"];
+const replies = ["ping", "shutdown", "checkpoint", "reload", "action", "onboard", "headless", "dev"];
 /** Whether a command line asks for JSON: `--json` before any `--`. */
 function asksJson(args: string[]): boolean {
   const end = args.indexOf("--");
@@ -355,8 +357,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "hooks": {
       if (args.length !== 2) throw Error("Usage");
-      const integration = await import("./integration");
-      process.stdout.write(integration.config(provider(args[1]), executable) + "\n");
+      process.stdout.write(adapter(provider(args[1])).integration.snippet(executable) + "\n");
       return;
     }
     case "agent": {
@@ -365,24 +366,30 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       await integration.launch(provider(args[1]), args.slice(2), executable);
       return;
     }
-    case "native": {
+    case "headless": {
       const op = args[1];
       if (op === "start") {
-        if (args.length !== 3 && (args.length !== 5 || args[3] !== "--workspace")) throw Error("Usage");
+        if (args.length !== 4 && (args.length !== 6 || args[4] !== "--workspace")) throw Error("Usage");
         await ensureServer(path);
-        await print(path, "native.start", {
+        await print(path, "headless.start", {
           provider: provider(args[2]),
+          prompt: args[3],
           cwd: process.cwd(),
-          workspace: args[4] ? Number(args[4]) : null,
+          workspace: args[5] ? Number(args[5]) : null,
         });
-      } else if (op === "list") await print(path, "native.list");
-      else if (op === "stop" || op === "events")
-        await print(path, `native.${op}`, {
-          session: Number(args[2]),
-          ...(op === "events" ? { after: Number(args[3] ?? 0) } : {}),
+      } else if (op === "list") await print(path, "headless.list");
+      else if ((op === "stop" && args.length === 4) || (op === "events" && (args.length === 4 || args.length === 5)))
+        await print(path, `headless.${op}`, {
+          provider: provider(args[2]),
+          session: args[3],
+          ...(op === "events" ? { after: BigInt(args[4] ?? 0) } : {}),
         });
-      else if (op === "send" && args.length === 4)
-        await print(path, "native.send", { session: Number(args[2]), message: json.parse(args[3]) });
+      else if (op === "send" && args.length === 5)
+        await print(path, "headless.send", {
+          provider: provider(args[2]),
+          session: args[3],
+          input: json.parse(args[4]),
+        });
       else throw Error("Usage");
       return;
     }
@@ -423,8 +430,11 @@ export function failure(args: string[], error: unknown): string {
       return `corgi: unknown command ${args[0]}; see corgi --help\n`;
     case "IncompatibleViewerProtocol":
     case "UnsupportedViewerProtocol":
+      return `corgi: this viewer is incompatible with the server (requires viewer protocol ${protocol.viewer_version}). The server may have changed during a restart. Reattach using the same Corgi version as the server.\n`;
     case "UnsupportedProtocol":
-      return "corgi: this viewer is incompatible with the server (requires viewer protocol 3). The server may have changed during a restart. Reattach using the same Corgi version as the server.\n";
+      return `corgi: this client uses runtime protocol ${protocol.version}, which the server does not support. Reload the server using this Corgi version, or use a matching client.\n`;
+    case "UnsupportedManagementProtocol":
+      return `corgi: this client uses management protocol ${protocol.management_version}, which the server does not support. Use a matching Corgi version to reload the server.\n`;
     default:
       return `corgi: ${name}\n`;
   }

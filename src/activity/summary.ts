@@ -1,4 +1,3 @@
-import { field, str } from "../providers/common";
 import { BoundedText } from "../bounded_text";
 import type { Action } from "./prompt";
 export class Text extends BoundedText(2048) {}
@@ -69,19 +68,4 @@ export class Conversation {
       this.phases[this.phases_len++] = phase;
     }
   }
-}
-export function codex(turn: any) {
-  const items = field(turn, "items");
-  if (!Array.isArray(items)) return new Text();
-  let latest = "",
-    out = "";
-  for (const item of items) if (str(item, "type") === "agentMessage") latest = str(item, "text");
-  if (latest) out = `Latest agent update: ${latest.slice(0, 1400)}\n`;
-  for (const item of items) {
-    if (str(item, "type") !== "userMessage" || !Array.isArray(field(item, "content"))) continue;
-    out += "User request: ";
-    for (const part of field(item, "content")) if (str(part, "type") === "text") out += str(part, "text");
-    break;
-  }
-  return new Text(out.slice(0, 2048));
 }

@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { Text } from "../common";
-import { Claude } from "./index";
 import { running } from "../../os";
 export { Text as JobId };
 export function jobName(id: string) {
@@ -28,14 +27,4 @@ export function jobIn(root: string, session: string): Text | null {
     } catch {}
   }
   return null;
-}
-export function job(session: string) {
-  try {
-    return jobIn(path.join(Claude.info.configDir(), "sessions"), session);
-  } catch {
-    return null;
-  }
-}
-export function attachCommand(id: Text) {
-  return `${Claude.info.executables[0]} attach ${id.text()}`;
 }

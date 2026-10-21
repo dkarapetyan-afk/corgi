@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { atomicWrite } from "../os";
 import { save as saveInference } from "../inference/setup";
-import { install } from "../integration";
+import * as claude from "../providers/claude";
 import { Runtime } from "../runtime";
 import * as checkpoint from "./checkpoint";
 import * as recovery from "./recovery";
@@ -106,7 +106,7 @@ test("hook settings preserve ordinary config directory and file permissions", as
     process.env.CLAUDE_CONFIG_DIR = parent;
     const file = join(parent, "settings.json");
     writeFileSync(file, "{}", { mode: 0o644 });
-    await install("claude");
+    await claude.adapter.integration.install();
     expect(JSON.parse(readFileSync(file, "utf8")).hooks).toBeDefined();
     expect(readFileSync(file + ".corgi-backup", "utf8")).toBe("{}");
     expect(statSync(file).mode & 0o777).toBe(0o644);

@@ -14,8 +14,7 @@ import type { Entry as CommandEntry } from "./launch/command";
 import { status as setupStatus, type Status as SetupStatus } from "./corgi_setup";
 import { status as shellStatus } from "./shell_picker";
 import type { ShellStatus } from "./launch/command";
-import { byProvider } from "./providers";
-import type { Provider } from "./providers";
+import { Provider, byProvider } from "./providers";
 import { type Conversation, conversation, usageView } from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as errors from "./errors";
@@ -284,7 +283,7 @@ export interface Workspace {
   custom_name: string;
   cwd: string;
   model: Model;
-  agent_order: ({ pane: number } | { native: number })[];
+  agent_order: ({ pane: number } | { headless: number })[];
   last_agent: Provider | null;
   closed_agents: number;
   git_commits: any[];
@@ -383,8 +382,8 @@ export function worktreeSnapshot(value: any): Worktrees | null {
       const target =
         a.target?.pane !== undefined
           ? { pane: Number(a.target.pane) }
-          : a.target?.native !== undefined
-            ? { native: Number(a.target.native) }
+          : a.target?.headless !== undefined
+            ? { headless: Number(a.target.headless) }
             : null;
       return target
         ? [{ target, path: a.path ?? "", source: a.source === "write" ? "write" : "cwd", stale: a.stale === true }]
@@ -395,7 +394,8 @@ export function worktreeSnapshot(value: any): Worktrees | null {
 export function statsAny(stats: any): boolean {
   return Object.values(stats ?? {}).some(v => v !== 0 && v !== false && v !== null && v !== undefined && v !== "0");
 }
-export interface Native {
+export interface Headless {
+  session: string;
   agent: Agent | null;
   observation: Observation;
   id: number;
@@ -409,8 +409,9 @@ export interface Native {
   tool_active: boolean;
   compacting: boolean;
 }
-function native(value: any): Native {
+function headless(value: any): Headless {
   return {
+    session: value.session ?? value.agent?.session ?? "",
     agent: value.agent ? agent(value.agent) : null,
     observation: observation(value.observation ?? {}),
     id: value.id,
@@ -441,7 +442,7 @@ export class Runtime {
   snapshot_hash: bigint | null = null;
   workspaces = new Workspaces();
   panes: Pane[] = [];
-  sessions: Native[] = [];
+  sessions: Headless[] = [];
   conversations: Conversation[] = [];
   system_model = "";
   system_model_name = "";
@@ -456,7 +457,7 @@ export class Runtime {
   ports: any = { workspaces: [] };
   resources = new resources.Snapshot();
   resources_hash: bigint | null = null;
-  last_agent: Provider = "codex";
+  last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
   agent_commands: CommandEntry[] = Array.from({ length: 6 }, () => commandEntry());
@@ -513,7 +514,7 @@ export class Runtime {
     this.snapshot_hash = null;
     this.panes = panes;
     this.workspaces.items = parsed;
-    this.sessions = (snapshot.native_sessions ?? []).map(native);
+    this.sessions = (snapshot.headless_sessions ?? []).map(headless);
     this.conversations = (snapshot.conversations ?? []).map(conversation);
     this.system_model = snapshot.system_model ?? "";
     this.system_model_name = snapshot.system_model_name ?? "";
@@ -526,7 +527,7 @@ export class Runtime {
     this.system_working = snapshot.system_working === true;
     this.smart_links = snapshot.smart_links !== false;
     this.ports = snapshot.ports ?? { workspaces: [] };
-    this.last_agent = snapshot.last_agent ?? "codex";
+    this.last_agent = snapshot.last_agent ?? Provider.first;
     this.agent_yolo = byProvider(p => snapshot.agent_yolo?.[p] === true);
     this.agent_hidden = byProvider(p => snapshot.agent_hidden?.[p] === true);
     this.agent_commands = Array.from({ length: 6 }, (_, i) => commandEntry(snapshot.agent_commands?.[i]));

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import * as palette from "./palette";
 import { Style, colors, bgRgb, mix, selection, type Token } from "./palette";
 import { Rect } from "./layout";
-import { Provider, byProvider } from "./providers";
+import { Provider, byProvider, adapter } from "./providers";
 import type { ByProvider } from "./providers";
 import { Model } from "./providers/model";
 import * as corgiAnimation from "./corgi_animation";
@@ -79,7 +79,7 @@ export const Summarizer = {
     return Provider.parse(choice);
   },
   label(choice: Summarizer): string {
-    return choice === "auto" ? "Auto" : choice === "off" ? "Off" : Provider.info(choice).name;
+    return choice === "auto" ? "Auto" : choice === "off" ? "Off" : adapter(choice).name;
   },
 };
 
@@ -2007,12 +2007,12 @@ function summary(choice: Summarizer, s: Status): string {
   switch (choice) {
     case "auto":
       if (s.choice !== "auto" || s.provider === null) return "Follow the agents you run";
-      return `${s.locked ? "Settled on" : "Following you →"} ${Provider.info(s.provider).name} · ${Model.resolve(s.models[s.provider]).label()}`;
+      return `${s.locked ? "Settled on" : "Following you →"} ${adapter(s.provider).name} · ${Model.resolve(s.models[s.provider]).label()}`;
     case "off":
       return "No summaries, plain links";
     default: {
       const provider = Summarizer.provider(choice)!;
-      return `${Model.resolve(s.models[provider]).label()} · your ${Provider.info(provider).name} login`;
+      return `${Model.resolve(s.models[provider]).label()} · your ${adapter(provider).name} login`;
     }
   }
 }
@@ -2030,7 +2030,7 @@ function note(choice: Summarizer, s: Status): string | null {
 /** Summaries' value: the choice, and whom Auto follows once it knows. */
 function inUse(s: Status): string {
   const label = Summarizer.label(s.choice);
-  return s.choice === "auto" && s.provider !== null ? `${label} · ${Provider.info(s.provider).name}` : label;
+  return s.choice === "auto" && s.provider !== null ? `${label} · ${adapter(s.provider).name}` : label;
 }
 /** Launches per provider since the daemon started, in launcher order. */
 function launchCounts(s: Status): string {
@@ -2038,8 +2038,7 @@ function launchCounts(s: Status): string {
   if (total === 0) return "No agents yet this session; using your last one";
   let out = "Since start:";
   Provider.all.forEach(
-    (provider, i) =>
-      (out += `${i === 0 ? "" : " ·"} ${Provider.info(provider).executables[0]} ${s.launches[provider]}×`),
+    (provider, i) => (out += `${i === 0 ? "" : " ·"} ${adapter(provider).command} ${s.launches[provider]}×`),
   );
   return out;
 }

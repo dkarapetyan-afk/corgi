@@ -16,6 +16,13 @@ test("pane environment IDs use the source unsigned integer boundary", () => {
   for (const value of ["", "1e2", "-1", " 7", "7.0"]) expect(() => paneId(value)).toThrow("InvalidCharacter");
   expect(() => paneId("4294967296")).toThrow("Overflow");
 });
+test("runtime protocol errors are distinct from viewer incompatibility", () => {
+  const runtime = failure(["dev"], Error("UnsupportedProtocol"));
+  expect(runtime).toContain("runtime protocol 2");
+  expect(runtime).not.toContain("viewer protocol");
+  expect(failure(["dev"], Error("UnsupportedViewerProtocol"))).toContain("viewer protocol 3");
+  expect(failure(["reload"], Error("UnsupportedManagementProtocol"))).toContain("management protocol 1");
+});
 test("help names every action on lines of at most 80 columns", () => {
   for (const line of actionNames.split("\n")) expect(Buffer.byteLength(line)).toBeLessThanOrEqual(80);
   expect(
@@ -84,22 +91,31 @@ test("daemon replies print in words", () => {
   expect(say("ping", { ok: true, pid: 42 })).toBe("running, pid 42\n");
   expect(say("recovery.save", { ok: true, path: "/state/r1" })).toBe("saved /state/r1\n");
   expect(say("action", { ok: true, viewer: 3, queued: true })).toBe("queued for viewer 3\n");
-  expect(say("native.list", { ok: true, sessions: [] })).toBe("no native sessions\n");
+  expect(say("headless.list", { ok: true, sessions: [] })).toBe("no headless sessions\n");
   expect(
-    say("native.list", {
+    say("headless.list", {
       ok: true,
-      sessions: [{ id: 2, pid: 9, provider: "codex", state: "blocked", attention: "needs_input", pending_requests: 1 }],
+      sessions: [
+        {
+          session: "thread-abc",
+          pid: 9,
+          provider: "codex",
+          state: "blocked",
+          attention: "needs_input",
+          pending_requests: 1,
+        },
+      ],
     }),
-  ).toBe("session 2 codex blocked, needs input, 1 pending request, pid 9\n");
+  ).toBe("codex thread-abc blocked, needs input, 1 pending request\n");
   expect(
-    say("native.events", {
+    say("headless.events", {
       ok: true,
-      events: [{ seq: 4, line: '{"id":1}' }],
-      pending_requests: ['{"id":2}'],
+      events: [{ seq: 4, event: { kind: "message", session: "a", text: "done" } }],
+      pending_requests: [{ id: "9", session: "a", ask: { tool: true, name: "Bash", summary: "rm -rf build" } }],
       next_seq: 5,
     }),
-  ).toBe('4 {"id":1}\npending {"id":2}\nnext 5\n');
-  expect(say("native.stop", { ok: true })).toBe("ok\n");
+  ).toBe('4 message {"session":"a","text":"done"}\npending 9 Bash: rm -rf build\nnext 5\n');
+  expect(say("headless.stop", { ok: true })).toBe("ok\n");
 });
 test("--json prints a daemon reply as it came", async () => {
   const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, pid: 42 });
@@ -219,4 +235,30 @@ test("the daemon and the viewer never import each other", () => {
     }
   }
   expect(crossed).toEqual([]);
+});
+
+test("headless CLI passes provider IDs intact and includes the first prompt", async () => {
+  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, provider: "codex", session: "thread-abc" });
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    await run(["headless", "start", "codex", "hello", "--workspace", "7"]);
+    await run(["headless", "send", "codex", "thread-abc", '{"kind":"prompt","text":"again"}']);
+    await run(["headless", "stop", "claude", "12345678901234567890"]);
+    const calls = request.mock.calls.map(call => call.slice(1));
+    expect(calls).toContainEqual([
+      "headless.start",
+      { provider: "codex", prompt: "hello", cwd: process.cwd(), workspace: 7 },
+    ]);
+    expect(calls).toContainEqual([
+      "headless.send",
+      { provider: "codex", session: "thread-abc", input: { kind: "prompt", text: "again" } },
+    ]);
+    expect(calls).toContainEqual(["headless.stop", { provider: "claude", session: "12345678901234567890" }]);
+    expect(output.mock.calls[0][0]).toBe("headless session thread-abc (codex)\n");
+    await expect(run(["headless", "start", "codex"])).rejects.toThrow("Usage");
+    await expect(run(["headless", "stop", "1"])).rejects.toThrow("Usage");
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+  }
 });

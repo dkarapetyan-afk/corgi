@@ -1,15 +1,10 @@
 import { Quit } from "../subprocess";
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { Provider, byProvider, Text } from "../providers";
+import { Provider, adapter, byProvider, Text } from "../providers";
+import type { Launcher } from "../providers/adapter";
 import { Model } from "../providers/model";
 import { Info, serializeLimits } from "../usage/account";
 import { none, update as updateLimitHistory } from "../usage/limits";
-import { Pool } from "../inference";
-import { Client } from "../providers/claude/account";
-import { Cache, interval } from "../usage/account_cache";
 import * as discovery from "../discovery";
-import * as errors from "../errors";
 export { Text };
 export class Option {
   signed_in: boolean | null = null;
@@ -43,29 +38,6 @@ export class Preview {
 export function installed() {
   return byProvider(p => discovery.installed(p));
 }
-export function applyModel(out: Option, value: any, source: string) {
-  if (typeof value?.model === "string" && value.model) out.setModel(value.model, source);
-}
-function readModel(out: Option, root: string, relative: string, source: string) {
-  try {
-    const file = join(root, relative),
-      s = statSync(file);
-    if (!s.isFile() || s.size > 1024 * 1024) return;
-    applyModel(out, JSON.parse(readFileSync(file, "utf8")), source);
-  } catch {}
-}
-export function claudeModel(cwd: string) {
-  const out = new Option();
-  out.source = new Text("Account default / provider selection");
-  try {
-    readModel(out, Provider.info("claude").configDir(), "settings.json", "User settings");
-  } catch {}
-  readModel(out, cwd, ".claude/settings.json", "Project settings (if trusted)");
-  readModel(out, cwd, ".claude/settings.local.json", "Local settings (if trusted)");
-  if (process.env.ANTHROPIC_MODEL) out.setModel(process.env.ANTHROPIC_MODEL, "ANTHROPIC_MODEL");
-  readModel(out, "/Library/Application Support/ClaudeCode", "managed-settings.json", "Managed settings");
-  return out;
-}
 export class Worker {
   quit = Quit.init();
   stopping = false;
@@ -80,18 +52,21 @@ export class Worker {
     accessing: boolean;
     request_access: boolean;
   }[] = [];
-  pool = new Pool({ config: { provider: "codex", timeout_ms: 5000 } });
-  claude_client = new Client();
-  accounts = new Map<string, { at: number; info: Info }>();
+  /** Each provider's launcher, opened on first use. */
+  launchers = new Map<Provider, Promise<Launcher | null>>();
   static start() {
     return new Worker();
   }
   async stop() {
     this.stopping = true;
     this.quit.signal();
-    this.pool.close();
-    this.claude_client.close();
+    for (const launcher of this.launchers.values()) void launcher.then(l => l?.close());
     await this.pending;
+  }
+  launcher(p: Provider) {
+    let launcher = this.launchers.get(p);
+    if (!launcher) this.launchers.set(p, (launcher = adapter(p).launcher?.() ?? Promise.resolve(null)));
+    return launcher;
   }
   preview(cwd: string) {
     return this.request(cwd, false);
@@ -167,20 +142,11 @@ export class Worker {
     for (const p of Provider.all) {
       if (this.stopping) return;
       if (!result.installed[p]) continue;
-      let out: Option;
-      if (p === "claude") out = claudeModel(job.cwd);
-      else {
-        out = new Option();
-        try {
-          const model = await this.pool.configuredModel(job.cwd, this.quit.abortSignal);
-          out.setModel(model.text(), "Effective Codex settings");
-        } catch {
-          out.source = new Text("Model resolved by Codex at startup");
-        }
-      }
-      if (this.stopping) return;
+      const out = new Option(),
+        launcher = await this.launcher(p);
+      if (!launcher) continue;
       try {
-        const account = p === "claude" ? await this.claude_client.preview(this, this.quit) : await this.codexAccount();
+        const account = await launcher.account(this.quit);
         for (const key of [
           "signed_in",
           "account",
@@ -191,12 +157,14 @@ export class Worker {
           "usage_needs_consent",
         ] as const)
           (out as any)[key] = account[key];
-        if (p === "claude" && out.model.len === 0 && this.claude_client.default_model.len > 0)
-          out.setModel(this.claude_client.default_model.text(), "Claude Code default");
         out.history = await updateLimitHistory(p, account, this.stopping);
       } catch {
         out.usage_error = new Text("account read failed");
       }
+      if (this.stopping) return;
+      const chosen = await launcher.model(job.cwd, this.quit);
+      if (chosen.model) out.setModel(chosen.model, chosen.source);
+      else out.source = new Text(chosen.source);
       result.options[p] = out;
     }
     if (this.jobs.includes(job)) {
@@ -204,32 +172,6 @@ export class Worker {
       job.preview.pending = job.queued;
       job.accessing = false;
       job.updated = Date.now();
-    }
-  }
-  async codexAccount() {
-    const root = Provider.info("codex").configDir();
-    let auth: string;
-    try {
-      auth = readFileSync(join(root, "auth.json"), "utf8");
-    } catch {
-      auth = root;
-    }
-    const identity = auth + "\n" + (process.env.OPENAI_API_KEY ?? "");
-    const cache = await Cache.open("codex", identity);
-    try {
-      const now = Math.floor(Date.now() / 1000);
-      if (now < cache.state.next_usage) return cache.state.display(now);
-      cache.state.next_usage = now + interval;
-      cache.save();
-      try {
-        cache.state.update(await this.pool.configuredAccount(this.quit.abortSignal), Math.floor(Date.now() / 1000));
-      } catch (e) {
-        cache.state.failed(errors.is(e, "Timeout") ? "request timed out" : "account read failed");
-      }
-      cache.save();
-      return cache.state.display(Math.floor(Date.now() / 1000));
-    } finally {
-      cache.close();
     }
   }
 }

@@ -1,4 +1,4 @@
-import { Provider, byProvider } from "../providers";
+import { Provider, byProvider, adapter } from "../providers";
 import type { ByProvider } from "../providers";
 import * as settings from "../settings";
 import type { Choice } from "./harness";
@@ -47,7 +47,7 @@ export function resolve(choice: Choice, launches: Launches, remembered: Provider
 export function model(provider: Provider | null) {
   return provider === null
     ? ""
-    : (process.env.CORGI_INFERENCE_MODEL ?? process.env.CORGI_SUMMARY_MODEL ?? Provider.info(provider).summary_model);
+    : (process.env.CORGI_INFERENCE_MODEL ?? process.env.CORGI_SUMMARY_MODEL ?? adapter(provider).inference.model);
 }
 /** A choice as settings and the environment spell it. */
 export function parseChoice(value: unknown): Choice | null {

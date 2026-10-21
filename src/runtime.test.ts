@@ -2,9 +2,12 @@ import { test, expect } from "bun:test";
 import { Runtime, Pane, Launch, Ghost, ending } from "./runtime";
 import { Terminal } from "./pane/terminal";
 import { n, ptr, waitpid } from "./native_bridge";
-import { Provider, Text } from "./providers";
+import { Text } from "./providers";
 import { Workspace } from "./workspace";
 import { Attachment } from "./conversations";
+import { Agent } from "./agents";
+import { ResumeHint } from "./resume_hint";
+import type { Session } from "./headless";
 function add(r: Runtime, w: Workspace, split: number | null = null) {
   w.model.next_id = r.workspaces.next_pane_id;
   const id = split === null ? w.model.newTab("") : w.model.split(split, "horizontal");
@@ -55,7 +58,7 @@ test("only attached conversations and their subagents are followed", () => {
     r.destroy();
   }
 });
-test("conversations nothing refers to are forgotten; panes, closed agents and native sessions keep theirs", () => {
+test("conversations nothing refers to are forgotten; panes, closed agents and headless sessions keep theirs", () => {
   const { r, w } = setup();
   try {
     const shown = r.conversations.get("claude", "shown"),
@@ -63,7 +66,7 @@ test("conversations nothing refers to are forgotten; panes, closed agents and na
       reopenable = r.conversations.get("codex", "reopenable"),
       quit = r.conversations.get("codex", "quit"),
       resumable = r.conversations.get("claude", "resumable"),
-      native = r.conversations.get("codex", "native"),
+      headless = r.conversations.get("codex", "headless"),
       approving = r.conversations.get("codex", "approving");
     r.conversations.get("claude", "never shown");
     const p = add(r, w);
@@ -81,12 +84,12 @@ test("conversations nothing refers to are forgotten; panes, closed agents and na
     asleep.resume_hint.session = new Text("resumable");
     r.sessions.push({
       attachment: new Attachment(),
-      members: [native],
-      approvals: [{ actor: approving }],
+      members: [headless],
+      approvals: [{ id: "1", actor: approving, ask: { tool: true, name: "Bash", summary: "" } }],
       destroy() {},
-    });
+    } as unknown as Session);
     expect(r.pruneConversations()).toBe(true);
-    expect(r.conversations.items).toEqual([shown, earlier, reopenable, resumable, native, approving]);
+    expect(r.conversations.items).toEqual([shown, earlier, reopenable, resumable, headless, approving]);
     expect(r.pruneConversations()).toBe(false);
   } finally {
     r.destroy();
@@ -175,7 +178,7 @@ test("a reopened agent that Claude's daemon runs shows the attach it runs", () =
   try {
     const p = add(r, w);
     p.ghost = new Ghost(Terminal.create(20, 4), p.terminal.surface_revision, "");
-    p.background_job = "job";
+    p.attached = "claude attach job";
     expect(p.restoring()).toBe("claude attach job");
   } finally {
     r.destroy();
@@ -213,18 +216,41 @@ test("resuming a conversation finds the newest agent closed with it, in any work
   }
 });
 test("a fork starts the way its source did, copying the conversation", () => {
-  expect(new Launch({ provider: "codex", yolo: true }).forking("codex", "session")).toBe(
-    "codex --dangerously-bypass-approvals-and-sandbox fork 'session'",
+  expect(new Launch({ provider: "codex", yolo: true }).typed(["fork", "session"])).toBe(
+    "codex --dangerously-bypass-approvals-and-sandbox fork session",
   );
-  expect(new Launch(undefined, "custom --model opus").forking("claude", "old", "new", "Name")).toBe(
-    "custom --model opus --resume 'old' --fork-session --session-id 'new' --name 'Name'",
+  expect(new Launch(undefined, "custom --model opus").typed(["--resume", "old", "--name", "Two words"])).toBe(
+    "custom --model opus --resume old --name 'Two words'",
   );
 });
-test("a launch resumes the way it started, with the session quoted", () => {
-  expect(new Launch({ provider: "codex" }).typed(["codex", "resume", "session'quote"])).toBe(
-    "codex resume 'session'\\''quote'",
+test("a launch resumes the way it started, quoting what needs it", () => {
+  expect(new Launch({ provider: "codex" }).typed(["resume", "session'quote"])).toBe("codex resume 'session'\\''quote'");
+  expect(new Launch({ provider: "claude" }).typed(["--resume", "4ee5c02d-691c-4045-8744-930f330494fd"])).toBe(
+    "claude --resume 4ee5c02d-691c-4045-8744-930f330494fd",
   );
-  expect(new Launch(undefined, "custom").paneCommand("/bin/corgi", "custom")).toBe("custom");
+  expect(new Launch(undefined, "custom").run("/bin/corgi", "custom").command).toBe("custom");
+});
+test("a resume comes back with the agent's live settings and the options it was typed with", () => {
+  const agent = new Agent({ provider: "claude", session: new Text("s1") }),
+    hint = new ResumeHint();
+  agent.permissions = "default";
+  agent.model = new Text("claude-opus-5-5");
+  hint.observe(agent);
+  const launch = new Launch({
+    provider: "claude",
+    yolo: true,
+    args: ["--mcp-config", "a.json"],
+    env: [["CLAUDE_CONFIG_DIR", "/work/.claude"]],
+    observed: true,
+  });
+  expect(launch.typed(["--resume", "s1"], hint)).toBe("claude --model claude-opus-5-5 --mcp-config a.json --resume s1");
+  expect(launch.typed(["--resume", "s1"])).toBe(
+    "claude --dangerously-skip-permissions --mcp-config a.json --resume s1",
+  );
+  expect(launch.run("/bin/corgi", "claude").env).toEqual([["CLAUDE_CONFIG_DIR", "/work/.claude"]]);
+  hint.observe(new Agent({ provider: "claude", session: new Text("s2") }));
+  expect(hint.permissions).toBeNull();
+  expect(hint.model.len).toBe(0);
 });
 function dormant(r: Runtime, w: Workspace, launch: Launch | null) {
   const p = add(r, w);
@@ -243,7 +269,7 @@ test("a dormant agent keeps its old screen with nothing running, and closing it 
     await p.sleep();
     expect([p.dormant, p.terminal.exited, p.terminal.pid]).toEqual([true, true, -1]);
     expect(p.terminal.text()).toContain("OLD SCREEN");
-    expect(p.restoring()).toBe("codex resume 'agent-session'");
+    expect(p.restoring()).toBe("codex resume agent-session");
     expect(r.attachments(actor)).toBe(1);
     r.close(p.id);
     expect(r.closedCount(w.id)).toBe(1);
@@ -265,7 +291,7 @@ test("waking a dormant agent starts it in its own pane behind its old screen", a
     expect(p.terminal).not.toBe(asleep);
     expect(p.terminal.pid).toBeGreaterThan(0);
     expect(p.ghost?.terminal.text()).toContain("OLD SCREEN");
-    expect(p.restoring()).toBe("true resume 'agent-session'");
+    expect(p.restoring()).toBe("true resume agent-session");
     expect(actor.state.state).toBe("idle");
     await expect(r.wake(p.id, wakeOptions, false)).rejects.toThrow("NotDormant");
   } finally {
@@ -282,7 +308,7 @@ test("waking a dormant agent into a shell types its command without running it",
     expect(p.ghost).toBeNull();
     expect(p.terminal.pid).toBeGreaterThan(0);
     expect(p.terminal.text()).toContain("OLD SCREEN");
-    expect(p.terminal.initial_input).toBe(`codex ${Provider.info("codex").yolo_flag} resume 'agent-session'`);
+    expect(p.terminal.initial_input).toBe(`codex --dangerously-bypass-approvals-and-sandbox resume agent-session`);
   } finally {
     r.destroy();
   }

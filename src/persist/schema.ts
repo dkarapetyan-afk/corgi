@@ -61,16 +61,11 @@ export function validateCheckpoint(value: any): void {
       "provider",
       "cwd",
       "workspace_id",
-      "pid",
-      "stdin",
-      "stdout",
+      "client",
       "ready",
       "exited",
       "state",
       "attention",
-      "input",
-      "output",
-      "deferred",
       "events",
       "approvals",
       "tools",
@@ -81,7 +76,7 @@ export function validateCheckpoint(value: any): void {
   for (const line of checkpointSchema.trim().split("\n")) {
     const [path, type] = line.split(": ");
     for (const item of values(value, path)) {
-      if (type === "optional") continue;
+      if (type === "optional" || type === "any") continue;
       if (type === "one of") {
         if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).length !== 1) fail();
         const tags = checkpointSchema

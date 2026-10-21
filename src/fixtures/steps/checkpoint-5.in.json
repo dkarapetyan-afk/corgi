@@ -1,0 +1,25 @@
+{
+  "version": 5,
+  "workspaces": [{ "id": 1, "agent_order": [{ "pane": 1 }, { "native": 2 }] }],
+  "sessions": [
+    {
+      "id": 2,
+      "provider": "codex",
+      "cwd": "/tmp/project",
+      "pid": 41,
+      "stdin": 7,
+      "stdout": 8,
+      "ready": true,
+      "exited": false,
+      "input": "",
+      "output": "e30K",
+      "deferred": "eyJpZCI6MX0K",
+      "events": [{ "seq": 3, "line": "{}" }],
+      "approvals": ["{\"id\":9,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"a\"}}"],
+      "approval_actors": [1],
+      "turns": [{ "thread": "a", "turn": "t" }],
+      "next_seq": 4,
+      "journal_bytes": 2
+    }
+  ]
+}

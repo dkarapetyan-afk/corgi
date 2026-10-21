@@ -176,12 +176,14 @@ class Children extends Titles {
     this.assertEqual(this.errors, []);
   }
 }
-class NativeUsage extends Runtime {
-  async test_native_agent_hover_shows_own_usage_without_children() {
+class HeadlessUsage extends Runtime {
+  async test_headless_agent_hover_shows_own_usage_without_children() {
     await this.command("pane.create", { workspace: 1, command: "sleep 60" });
-    const native = (
+    const headless = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
@@ -216,11 +218,7 @@ class NativeUsage extends Runtime {
         },
       ],
     ] as const)
-      await this.rpc({
-        op: "native.send",
-        session: native,
-        message: { id: 1, method: "test/event", params: { method, params } },
-      });
+      await this.headless_command(headless, "test/event " + JSON.stringify({ method, params }));
     await this.until(async () =>
       (await this.session()).conversations.some((c: any) => c.agent.session === "solo" && c.usage.known),
     );
@@ -254,22 +252,21 @@ class NativeUsage extends Runtime {
   }
   async test_reload_baselines_replayed_native_usage_but_counts_new_requests() {
     await this.command("pane.create", { workspace: 1, command: "sleep 60" });
-    const native = (
+    const headless = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
     const send = (method: string, params: any) =>
-      this.rpc({
-        op: "native.send",
-        session: native,
-        message: { id: 1, method: "test/event", params: { method, params } },
-      });
-    const actor = async () => (await this.session()).conversations.find((c: any) => c.agent.session === "native-child");
+      this.headless_command(headless, "test/event " + JSON.stringify({ method, params }));
+    const actor = async () =>
+      (await this.session()).conversations.find((c: any) => c.agent.session === "headless-child");
     await send("turn/started", {
-      threadId: "native-child",
+      threadId: "headless-child",
       turn: { id: "work" },
     });
     await this.until(async () => !!(await actor()));
@@ -278,7 +275,7 @@ class NativeUsage extends Runtime {
       last: { inputTokens: 100, outputTokens: 20 },
     };
     await send("thread/tokenUsage/updated", {
-      threadId: "native-child",
+      threadId: "headless-child",
       tokenUsage: first,
     });
     await this.until(async () => (await actor()).usage.tokens.input === 100);
@@ -287,14 +284,14 @@ class NativeUsage extends Runtime {
     this.assertFalse(restored.usage.known);
     this.assertEqual(restored.usage.tokens.input, 0);
     await send("thread/tokenUsage/updated", {
-      threadId: "native-child",
+      threadId: "headless-child",
       tokenUsage: first,
     });
     await this.until(async () => (await actor()).observed_at > restored.observed_at);
     this.assertEqual((await actor()).usage.tokens.input, 0);
     this.assertTrue((await actor()).usage.partial);
     await send("thread/tokenUsage/updated", {
-      threadId: "native-child",
+      threadId: "headless-child",
       tokenUsage: {
         total: { inputTokens: 130, outputTokens: 25 },
         last: { inputTokens: 30, outputTokens: 5 },
@@ -305,4 +302,4 @@ class NativeUsage extends Runtime {
   }
 }
 registerCase("Children", Children, { inherited: false });
-registerCase("NativeUsage", NativeUsage, { inherited: false });
+registerCase("HeadlessUsage", HeadlessUsage, { inherited: false });

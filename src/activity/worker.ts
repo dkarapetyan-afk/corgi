@@ -17,7 +17,7 @@ export const cooldown_ms = 8000,
   away_interval_ms = 60000;
 export class Request {
   actor = 0;
-  provider: Provider = "codex";
+  provider: Provider = Provider.first;
   session = new Text();
   turn = new Text();
   evidence = new summary.Text();
@@ -154,7 +154,7 @@ export class Worker {
   /** Smart Links' links are named unless the model is off. */
   link_names = true;
   launches = new setup.Launches();
-  remembered: Provider = "codex";
+  remembered: Provider = Provider.first;
   active: Provider | null = null;
   applied = false;
   locked = false;
@@ -432,7 +432,6 @@ export class Worker {
     this.running = true;
     try {
       this.applyChoice();
-      this.implementation.pool.refreshUsage();
       this.locked ||= this.implementation.pool.started;
       this.system_meter = this.implementation.pool.system_usage.meter;
       this.passes++;

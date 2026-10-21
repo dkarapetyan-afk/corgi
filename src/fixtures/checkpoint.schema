@@ -67,6 +67,9 @@ $.conversations[].agent.tool: custom bounded_text.BoundedText(160)
 $.conversations[].agent.tool_active: bool
 $.conversations[].agent.permission_review: optional
 $.conversations[].agent.permission_review?: u8
+$.conversations[].agent.permissions: optional
+$.conversations[].agent.permissions?: enum default bypass
+$.conversations[].agent.model: custom bounded_text.BoundedText(160)
 $.conversations[].agent.compacting: bool
 $.conversations[].agent.compacting_since: i64
 $.conversations[].agent.paused: bool
@@ -101,7 +104,7 @@ $.workspaces[].cwd: string
 $.workspaces[].model: custom layout.Model
 $.workspaces[].agent_order[]: one of
 $.workspaces[].agent_order[]|pane: u32
-$.workspaces[].agent_order[]|native: u32
+$.workspaces[].agent_order[]|headless: u32
 $.workspaces[].last_agent: optional
 $.workspaces[].last_agent?: enum codex claude
 $.workspaces[].focus: u32
@@ -141,6 +144,9 @@ $.panes[].binding.provisional.tool: custom bounded_text.BoundedText(160)
 $.panes[].binding.provisional.tool_active: bool
 $.panes[].binding.provisional.permission_review: optional
 $.panes[].binding.provisional.permission_review?: u8
+$.panes[].binding.provisional.permissions: optional
+$.panes[].binding.provisional.permissions?: enum default bypass
+$.panes[].binding.provisional.model: custom bounded_text.BoundedText(160)
 $.panes[].binding.provisional.compacting: bool
 $.panes[].binding.provisional.compacting_since: i64
 $.panes[].binding.provisional.paused: bool
@@ -175,10 +181,16 @@ $.panes[].resume_hint.touched_at: i64
 $.panes[].resume_hint.provider: optional
 $.panes[].resume_hint.provider?: enum codex claude
 $.panes[].resume_hint.session: custom bounded_text.BoundedText(160)
+$.panes[].resume_hint.permissions: optional
+$.panes[].resume_hint.permissions?: enum default bypass
+$.panes[].resume_hint.model: custom bounded_text.BoundedText(160)
 $.panes[].launch: optional
 $.panes[].launch?: one of
 $.panes[].launch?|agent.provider: enum codex claude
 $.panes[].launch?|agent.yolo: bool
+$.panes[].launch?|agent.args[]: string
+$.panes[].launch?|agent.env[][]: string
+$.panes[].launch?|agent.observed: bool
 $.panes[].launch?|command: custom bounded_text.BoundedText(2048)
 $.panes[].dormant: bool
 $.closed[].label: custom bounded_text.BoundedText(80)
@@ -202,10 +214,16 @@ $.closed[].resume_hint.touched_at: i64
 $.closed[].resume_hint.provider: optional
 $.closed[].resume_hint.provider?: enum codex claude
 $.closed[].resume_hint.session: custom bounded_text.BoundedText(160)
+$.closed[].resume_hint.permissions: optional
+$.closed[].resume_hint.permissions?: enum default bypass
+$.closed[].resume_hint.model: custom bounded_text.BoundedText(160)
 $.closed[].launch: optional
 $.closed[].launch?: one of
 $.closed[].launch?|agent.provider: enum codex claude
 $.closed[].launch?|agent.yolo: bool
+$.closed[].launch?|agent.args[]: string
+$.closed[].launch?|agent.env[][]: string
+$.closed[].launch?|agent.observed: bool
 $.closed[].launch?|command: custom bounded_text.BoundedText(2048)
 $.closed[].pane: u32
 $.closed[].tab_index: optional
@@ -246,6 +264,9 @@ $.sessions[].binding.provisional.tool: custom bounded_text.BoundedText(160)
 $.sessions[].binding.provisional.tool_active: bool
 $.sessions[].binding.provisional.permission_review: optional
 $.sessions[].binding.provisional.permission_review?: u8
+$.sessions[].binding.provisional.permissions: optional
+$.sessions[].binding.provisional.permissions?: enum default bypass
+$.sessions[].binding.provisional.model: custom bounded_text.BoundedText(160)
 $.sessions[].binding.provisional.compacting: bool
 $.sessions[].binding.provisional.compacting_since: i64
 $.sessions[].binding.provisional.paused: bool
@@ -255,7 +276,6 @@ $.sessions[].binding.provisional.changed_at: i64
 $.sessions[].binding.provisional.working_since: i64
 $.sessions[].binding.provisional.updated_at: i64
 $.sessions[].members[]: u32
-$.sessions[].approval_actors[]: u32
 $.sessions[].usage_tracker.samples[128].id: u64
 $.sessions[].usage_tracker.samples[128].input: u64
 $.sessions[].usage_tracker.samples[128].cached_input: u64
@@ -271,22 +291,23 @@ $.sessions[].observation.outcome: enum completed interrupted failed
 $.sessions[].turns[].thread: string
 $.sessions[].turns[].turn: string
 $.sessions[].id: u32
+$.sessions[].session: string
 $.sessions[].provider: enum codex claude
 $.sessions[].cwd: string
 $.sessions[].workspace_id: u32
-$.sessions[].pid: i32
-$.sessions[].stdin: i32
-$.sessions[].stdout: i32
+$.sessions[].client.state: any
+$.sessions[].client.handles[]: i32
 $.sessions[].ready: bool
 $.sessions[].exited: bool
 $.sessions[].state: enum unknown initializing idle working blocked done
 $.sessions[].attention: enum none finished needs_input
-$.sessions[].input: string
-$.sessions[].output: string
-$.sessions[].deferred: string
 $.sessions[].events[].seq: u64
-$.sessions[].events[].line: string
-$.sessions[].approvals[]: string
+$.sessions[].events[].event: any
+$.sessions[].approvals[].id: string
+$.sessions[].approvals[].actor: u32
+$.sessions[].approvals[].ask.tool: bool
+$.sessions[].approvals[].ask.name: string
+$.sessions[].approvals[].ask.summary: string
 $.sessions[].tools[].id: string
 $.sessions[].tools[].thread: string
 $.sessions[].tools[].turn: string
@@ -297,3 +318,6 @@ $.sessions[].resume_hint.touched_at: i64
 $.sessions[].resume_hint.provider: optional
 $.sessions[].resume_hint.provider?: enum codex claude
 $.sessions[].resume_hint.session: custom bounded_text.BoundedText(160)
+$.sessions[].resume_hint.permissions: optional
+$.sessions[].resume_hint.permissions?: enum default bypass
+$.sessions[].resume_hint.model: custom bounded_text.BoundedText(160)

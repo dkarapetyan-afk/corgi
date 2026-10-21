@@ -1,8 +1,5 @@
 import { Model } from "../providers/model";
-import { Claude } from "../providers/claude";
-import { Codex } from "../providers/codex";
-import { field, str, timestampMs } from "../providers/common";
-import { number, add, max } from "./tokens";
+import { add, max } from "./tokens";
 export class View {
   used = 0n;
   window = 0n;
@@ -53,54 +50,6 @@ export class Reading {
   model = new Model();
   auto_compaction = 0n;
   in_turn = false;
-  claude(value: any) {
-    const line = Claude.Line.decode(value);
-    if (!line) return;
-    const turn = line.turn();
-    if (turn) this.in_turn = turn === "open";
-    const stamp = timestampMs(line.timestamp);
-    if (stamp === null) return;
-    if (line.type === "assistant") {
-      const model = Model.resolve(str(line.message, "model"));
-      if (!model.window) return;
-      const usage = field(line.message, "usage"),
-        input = number(usage, "input_tokens");
-      if (input === null) return;
-      this.used = add(
-        add(input, number(usage, "cache_read_input_tokens") ?? 0n),
-        number(usage, "cache_creation_input_tokens") ?? 0n,
-      );
-      this.window = model.window;
-      this.at = stamp;
-      this.model = model;
-    } else if (line.type === "system" && line.subtype === "compact_boundary") {
-      const meta = field(value, "compactMetadata");
-      // Claude also compacts an idle session, at any size, before its prompt
-      // cache expires; only a compaction inside a turn marks a full window.
-      if (str(meta, "trigger") === "auto" && this.in_turn)
-        this.auto_compaction = number(meta, "preTokens") ?? this.auto_compaction;
-      this.used = number(meta, "postTokens") ?? 0n;
-      this.at = stamp;
-    }
-  }
-  codex(value: any) {
-    const r = Codex.Rollout.decode(value);
-    if (r.type !== "event_msg" || r.payloadType() !== "token_count") return;
-    const stamp = timestampMs(r.timestamp),
-      info = field(r.payload, "info"),
-      window = number(info, "model_context_window"),
-      last = field(info, "last_token_usage");
-    if (stamp === null || window === null) return;
-    let used = number(last, "total_tokens");
-    if (used === null) {
-      const input = number(last, "input_tokens");
-      if (input === null) return;
-      used = add(input, number(last, "output_tokens") ?? 0n);
-    }
-    this.used = used;
-    this.window = window;
-    this.at = stamp;
-  }
   view(points: Points) {
     return new View({
       used: this.used,

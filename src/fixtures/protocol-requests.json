@@ -150,24 +150,29 @@
     "workspace": 1,
     "viewer": null
   },
-  "native.start": {
+  "headless.start": {
     "provider": "codex",
     "cwd": "/tmp",
-    "workspace": 1
+    "workspace": 1,
+    "prompt": "hello"
   },
-  "native.list": {},
-  "native.stop": {
-    "session": 1
+  "headless.list": {},
+  "headless.stop": {
+    "session": "t",
+    "provider": "codex"
   },
-  "native.send": {
-    "session": 1,
-    "message": {
+  "headless.send": {
+    "session": "t",
+    "input": {
+      "kind": "prompt",
       "text": "hi"
-    }
+    },
+    "provider": "codex"
   },
-  "native.events": {
-    "session": 1,
-    "after": 4
+  "headless.events": {
+    "session": "t",
+    "after": 4,
+    "provider": "codex"
   },
   "theme": {
     "theme": {

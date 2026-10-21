@@ -1,7 +1,8 @@
 import * as protocol from "./protocol";
 import { transport } from "./fixtures/transport";
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { Controller, cardEffect, pasteKey, forkName, breadcrumbs } from "./controller";
+import { Controller, agentMessage, cardEffect, pasteKey, forkName, breadcrumbs } from "./controller";
+import * as sim from "./providers/sim";
 import * as preferences from "./preferences";
 import { TabMenu } from "./commands";
 import { Dialog } from "./name_dialog";
@@ -129,7 +130,7 @@ function folders(...cwds: string[]) {
       agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
     })),
     conversations: [],
-    native_sessions: [],
+    headless_sessions: [],
   };
 }
 
@@ -271,6 +272,19 @@ test("a fork's name is its title marked as a fork, cut to fit", () => {
   const long = forkName("x".repeat(72) + "⑂⑂");
   expect(long).toBe("x".repeat(72) + " (fork)");
   expect(Buffer.from(long).toString()).toBe(long);
+});
+
+test("a busy agent's rename names its provider", () => {
+  const remove = sim.register();
+  try {
+    expect(agentMessage("AgentBusy", "", agent({ provider: sim.sim }))).toBe(
+      " Sim is busy: rename it once its input box is empty",
+    );
+    expect(agentMessage("AgentBusy", "", undefined)).toBe(" This agent is busy: rename it once its input box is empty");
+    expect(agentMessage("Timeout", " Could not rename this agent", undefined)).toBe(" Could not rename this agent");
+  } finally {
+    remove();
+  }
 });
 
 test("Copy details names the harness, session, id and paths, leaving out what isn't known", () => {
@@ -452,7 +466,7 @@ function pair() {
       },
     })),
     conversations: [],
-    native_sessions: [],
+    headless_sessions: [],
   };
 }
 /** A controller on `pair()` that records what panes are sent. */
@@ -968,7 +982,7 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
         },
       })),
       conversations: [],
-      native_sessions: [],
+      headless_sessions: [],
     });
   const s = controller(),
     reads: string[] = [];

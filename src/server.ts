@@ -7,7 +7,6 @@ import { Client } from "./peer";
 import { n, ReadyLoop, READ } from "./native_bridge";
 import { closeReadiness } from "./pane/terminal";
 import { Theme } from "./theme";
-import { Provider } from "./providers";
 import * as protocol from "./protocol";
 import * as session from "./session";
 import * as viewer from "./viewer_protocol";
@@ -196,7 +195,8 @@ export class Server {
     this.runtime.ports.configure(settings.smartLinks(settings.path(this.socket)));
     try {
       let selected: number | null = null;
-      if (this.listener < 0) {
+      const handoff = this.listener >= 0;
+      if (!handoff) {
         if (await recovery.load(this.runtime, this.socket, this.executable)) {
           const preferences = new Store();
           try {
@@ -217,16 +217,9 @@ export class Server {
         this.listener = listen(this.socket);
         chmodSync(this.socket, 0o600);
         this.socketPath = SocketPath.claim(this.socket);
-        if (!integration.uninstalled("codex"))
-          void integration.installCodexTitle().catch(error => console.error("Codex title setup:", error));
       } else this.socketPath = SocketPath.claim(this.socket);
       // A handoff to a newer Corgi may hook more events than the old one did.
-      for (const provider of Provider.all)
-        try {
-          if (!integration.uninstalled(provider)) await integration.install(provider);
-        } catch (error) {
-          console.error("hook setup:", error);
-        }
+      await integration.startup(handoff);
       this.bindPanes();
       observers.start(this);
       for (const p of this.runtime.panes) if (p.terminal.imported) p.terminal.adopt(p.terminal.fd, p.terminal.pid);
@@ -301,12 +294,21 @@ export class Server {
           } catch (error) {
             cl.queue({ err: error instanceof Error ? error.message : String(error) });
           } finally {
-            cl.done();
+            if (!cl.headless_start) cl.done();
           }
           this.publish();
         });
       },
       () => {
+        if (client.headless_start) {
+          const session = this.runtime.sessions.find(s => s.id === client.headless_start!.id);
+          if (session && !session.session) {
+            session.destroy();
+            this.runtime.sessions.splice(this.runtime.sessions.indexOf(session), 1);
+            this.runtime.changed();
+          }
+          client.headless_start = null;
+        }
         this.clients = this.clients.filter(c => !c.dead);
         this.dirty = true;
         void viewer.resize(this);
@@ -361,6 +363,10 @@ export class Server {
     this.runtime.reapStopped();
     await this.runtime.advanceRenames(clock.milliTimestamp());
     await observers.tick(this);
+    if (this.clients.some(c => c.headless_start)) {
+      const headless = await import("./headless");
+      headless.finishStarts(this);
+    }
     const gitStatusChanged = this.runtime.git_status.tick(this.runtime.workspaces);
     const gitPushChanged = this.runtime.git_push.tick(this.runtime.workspaces, this.runtime.git_status);
     const portsChanged = this.runtime.ports.tick(this.runtime);
@@ -410,12 +416,13 @@ export class Server {
       cl.queue({ err: "UnsupportedViewerProtocol", viewer_protocol: protocol.viewer_version });
       return;
     }
-    if (check !== "none") protocol.require(v, check === "negotiate" ? null : cl.protocol_version);
+    if (check === "management") protocol.require(v, null, "management");
+    else if (check !== "none") protocol.require(v, cl.protocol_version);
     const request = protocol.decoded(op, v);
     if (!["onboarding.copy", "onboarding.handoff"].includes(op)) importer.admit(this, op);
     switch (request.op) {
       case "hello":
-        cl.protocol_version = protocol.version;
+        cl.protocol_version = v.runtime_protocol === protocol.version ? protocol.version : null;
         cl.queue({
           type: "hello",
           protocol: protocol.version,
@@ -506,7 +513,7 @@ export class Server {
         if (!p) throw Error("NoPane");
         cl.queue({
           type: "surface",
-          protocol: 1,
+          protocol: protocol.version,
           server_pid: process.pid,
           revision: this.runtime.revision,
           surface: p.terminal.surface(p.id).surface,
@@ -546,13 +553,13 @@ export class Server {
         cl.queue({ ok: true, path: recovery.path(this.socket) });
         return;
       }
-      case "native.start":
-      case "native.list":
-      case "native.stop":
-      case "native.send":
-      case "native.events": {
-        const native = await import("./native");
-        await native.request(this, cl, request);
+      case "headless.start":
+      case "headless.list":
+      case "headless.stop":
+      case "headless.send":
+      case "headless.events": {
+        const headless = await import("./headless");
+        await headless.request(this, cl, request);
         return;
       }
       case "agent.command.preview":

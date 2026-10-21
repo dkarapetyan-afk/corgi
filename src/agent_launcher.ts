@@ -3,7 +3,7 @@
 //! remembers the choice. Mirrors agent_launcher.zig.
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
-import { Provider, byProvider } from "./providers";
+import { Provider, byProvider, adapter } from "./providers";
 import type { ByProvider } from "./providers";
 import { Rect } from "./layout";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
@@ -39,7 +39,7 @@ export const Row = {
 };
 /** The agent a launcher key starts. */
 export function keyAgent(byte: number): Provider | null {
-  for (const provider of providers) if (Provider.info(provider).launcher_key.charCodeAt(0) === byte) return provider;
+  for (const provider of providers) if (adapter(provider).launcher_key.charCodeAt(0) === byte) return provider;
   return null;
 }
 
@@ -116,7 +116,7 @@ export class Menu {
   history: launcherResume.History = { pending: true, entries: [] };
   /** Conversations panes run now, which the list jumps to instead. */
   open: launcherResume.Open[] = [];
-  selected: Row = "codex";
+  selected: Row = Provider.first;
   yolo = byProvider(() => false);
   hidden = byProvider(() => false);
   managing = false;
@@ -135,7 +135,7 @@ export class Menu {
   resolution = new Resolution();
   save_requested = false;
   commands: CommandEntry[] = Array.from({ length: command_capacity }, () => new CommandEntry());
-  last: Provider = "codex";
+  last: Provider = Provider.first;
   pinned = false;
   /** The prefix arrived while pinned. Cmd+T sends the prefix and `c`, so a
    * repeat is ignored instead of read as a launcher key. */
@@ -154,7 +154,7 @@ export class Menu {
   cells(provider: Provider): string[] {
     const o = this.preview.options[provider];
     return [
-      Provider.info(provider).label,
+      adapter(provider).label,
       this.yolo[provider] ? "✓" : "·",
       o.model.length > 0 ? modelLabel(o) : this.preview.pending ? "Reading…" : "Default",
       o.account.length > 0 ? o.account : this.preview.pending ? "Reading…" : "Unavailable",
@@ -615,7 +615,7 @@ export class Menu {
       const row = m.rowAt(i)!;
       const custom = Row.custom(row);
       const hidden = custom !== null ? m.commands[custom].hidden : m.hidden[Row.agent(row)!];
-      const label = custom !== null ? m.commands[custom].label() : Provider.info(Row.agent(row)!).label;
+      const label = custom !== null ? m.commands[custom].label() : adapter(Row.agent(row)!).label;
       const info =
         custom !== null
           ? m.commands[custom].semantics
@@ -671,7 +671,7 @@ export class Menu {
                 : m.account(m.resolution.semantics);
       w.write(`\x1b[${field_y + 9};${b.x + 4}H`);
       const info = m.resolution.semantics;
-      const provider = info.provider ? Provider.info(info.provider).label : "Custom agent";
+      const provider = info.provider ? adapter(info.provider).label : "Custom agent";
       writeEllipsis(w, resolved ? `${provider} · ${status}` : status, b.w - 8);
       w.write(`\x1b[${field_y + 10};${b.x + 4}H${dim}`);
       if (resolved) {
@@ -779,7 +779,7 @@ export class Menu {
         w.write(`\x1b[${row};${b.x + 4}H`);
         writeEllipsis(
           w,
-          `${Provider.info(provider).label} · ${status}   [${m.hidden[provider] ? "Add" : "Remove"}]`,
+          `${adapter(provider).label} · ${status}   [${m.hidden[provider] ? "Add" : "Remove"}]`,
           sat(b.w, 6),
         );
         continue;

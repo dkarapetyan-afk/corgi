@@ -2,7 +2,7 @@
 //! rows, and every one, grouped by day and searchable, once expanded.
 //! Mirrors launcher_resume.zig.
 import { basename } from "node:path";
-import type { Provider } from "./providers";
+import { Provider, adapter } from "./providers";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
@@ -535,7 +535,7 @@ export class View {
     w.write(`\x1b[${row};${x + 1}H${style}`);
     w.splat(" ", sat(width, 3));
     w.write(`\x1b[${row};${x + 1}H${selected ? "›" : " "}`);
-    if (named) w.write(`\x1b[${row};${x + 3}H${providerLabel(e.provider)}`);
+    if (named) w.write(`\x1b[${row};${x + 3}H${adapter(e.provider).name}`);
     else w.write(`\x1b[${row};${x + 3}H${rail(selected)}│${style}`);
     let col = x + 3 + 9;
     w.write(`\x1b[${row};${col}H`);
@@ -613,9 +613,6 @@ export function startsRun(c: Context, rows: Line[], i: number, first: number): b
   const above = agentOf(c, rows[i - 1]);
   if (above === null) return true;
   return above !== agent;
-}
-function providerLabel(p: Provider): string {
-  return p === "claude" ? "Claude" : "Codex";
 }
 /** Draw a keycap, then restore the surrounding style. */
 export function writeKey(w: Writer, key: string, after: string): void {

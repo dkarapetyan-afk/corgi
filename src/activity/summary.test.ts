@@ -1,15 +1,7 @@
 import { test, expect } from "bun:test";
-import { codex, parseLabel, Text } from "./summary";
+import { parseLabel, Text } from "./summary";
 import * as prompt from "./prompt";
-test("bounded commentary evidence and strict labels", () => {
-  const evidence = codex({
-    items: [
-      { type: "userMessage", content: [{ type: "text", text: "Fix tabs" }] },
-      { type: "agentMessage", text: "Tracing focus changes" },
-    ],
-  });
-  expect(evidence.text().startsWith("Latest agent update: Tracing focus changes")).toBe(true);
-  expect(evidence.text()).toContain("User request: Fix tabs");
+test("strict labels and bounded evidence", () => {
   for (const label of [
     "Tracing focus changes",
     "Tracing tool activity code",

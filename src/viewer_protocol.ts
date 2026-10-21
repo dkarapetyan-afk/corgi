@@ -6,7 +6,7 @@ import * as surface from "./pane/surface";
 import * as session from "./session";
 import { microTimestamp } from "./clock";
 import { stringify } from "./json";
-import type { View as WireView, Control, Request } from "./protocol";
+import { version as wire_version, type View as WireView, type Control, type Request } from "./protocol";
 import type { Server } from "./server";
 import type { Client } from "./peer";
 import type { Snapshot as Resources } from "./trackers/resources";
@@ -61,7 +61,7 @@ export async function open(s: Server, cl: Client, q: Open) {
   cl.viewer_id = s.next_viewer++;
   cl.active_seq = ++s.next_active;
   cl.view_workspace = s.initialWorkspace().id;
-  cl.protocol_version = 1;
+  cl.protocol_version = wire_version;
   if (first) s.updateTheme(q.theme ?? null);
   const ws = s.initialWorkspace();
   cl.reply("viewer.open", {

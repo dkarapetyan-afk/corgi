@@ -1,8 +1,4 @@
-import { Provider } from "../providers";
 import { Text } from "../agents";
-import { Claude } from "../providers/claude";
-import { Codex } from "../providers/codex";
-import { field, str, timestampMs } from "../providers/common";
 export { Text };
 export const usage_max_age = 600;
 export type Limits = "none" | "metered" | "rate_limited" | { windows: [Window | null, Window | null] };
@@ -63,61 +59,12 @@ export class Window {
 export function expired(fetched_at: number, now: number) {
   return fetched_at <= 0 || Math.max(0, now - fetched_at) >= usage_max_age;
 }
-export function limits(value: any, provider: Provider): Limits {
-  const f = Provider.info(provider).limits;
-  const windows = f.windows.map((name: string, i: number) => {
-    const v = field(value, name),
-      used = field(v, f.used);
-    if (typeof used !== "number" || !Number.isFinite(used) || used < 0 || used > 100) return null;
-    const reported = field(v, "windowDurationMins"),
-      minutes = f.minutes?.[i] ?? (Number.isInteger(reported) && reported > 0 ? reported : null);
-    let reset_at: number | null = null;
-    if (f.reset === "unix_seconds") {
-      const n = field(v, "resetsAt");
-      if (Number.isInteger(n) && n > 0) reset_at = n;
-    } else {
-      let raw = str(v, "resets_at"),
-        offset = 0;
-      const m = raw.match(/([+-])(\d{2}):(\d{2})$/);
-      if (m) {
-        if (Number(m[2]) > 23 || Number(m[3]) > 59) return new Window({ minutes, used: Math.round(used) });
-        offset = (Number(m[2]) * 60 + Number(m[3])) * 60 * (m[1] === "-" ? -1 : 1);
-        raw = raw.slice(0, -6) + "Z";
-      }
-      const stamp = timestampMs(raw);
-      if (stamp !== null) reset_at = Math.floor(stamp / 1000) - offset;
-    }
-    return new Window({ minutes, used: Math.round(used), reset_at });
-  }) as [Window | null, Window | null];
-  return windows.every(v => v === null) ? "none" : { windows };
+/** A window's percent used, rounded, if `value` is one. */
+export function used(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? Math.round(value) : null;
 }
-export function codexAccount(value: any) {
-  const info = new Info(),
-    email = str(value, "email"),
-    api = str(value, "type") === "apiKey";
-  info.signed_in = value !== null;
-  info.account = new Text(api ? "API key" : email || (!value ? "Not signed in" : "Signed in"));
-  info.plan = api ? new Text("API") : Codex.plan(str(value, "planType"));
-  if (api) info.limits = "metered";
-  return info;
-}
-export function claudeAccount(value: any) {
-  const info = new Info(),
-    logged = field(value, "loggedIn");
-  if (typeof logged !== "boolean") return info;
-  info.signed_in = logged;
-  const method = str(value, "authMethod"),
-    api = ["api_key", "api_key_helper"].includes(method),
-    external = method === "third_party",
-    email = str(value, "email");
-  info.account = new Text(
-    !logged ? "Not signed in" : api ? "API key" : external ? "External provider" : email || "Signed in",
-  );
-  if (logged) {
-    info.plan = api ? new Text("API") : Claude.plan(str(value, "subscriptionType"), "");
-    if (api || external) info.limits = "metered";
-  }
-  return info;
+export function windows(pair: [Window | null, Window | null]): Limits {
+  return pair.every(v => v === null) ? "none" : { windows: pair };
 }
 
 export function resetCountdown(reset_at: number, now: number) {

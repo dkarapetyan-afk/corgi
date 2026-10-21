@@ -16,6 +16,7 @@
   "browser": {
     "./src/review/git.ts": "./site/browser/git.ts",
     "./src/launch/command.ts": "./site/browser/command.ts",
+    "./src/providers.ts": "./site/browser/providers.ts",
     "./src/trackers/git_status.ts": "./site/browser/git_status.ts",
     "./src/trackers/ports.ts": "./site/browser/ports.ts",
     "./src/trackers/resource_os.ts": "./site/browser/resource_os.ts",

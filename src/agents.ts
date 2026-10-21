@@ -1,8 +1,9 @@
 import { BoundedText, Path, ascii } from "./bounded_text";
 import path from "node:path";
 import * as observation from "./observation";
-import { Provider, str } from "./providers";
+import { Provider, str, adapter } from "./providers";
 import * as worktrees from "./worktrees";
+import type { Permissions } from "./providers/adapter";
 export { observation, Provider, str, Path };
 export class Text extends BoundedText(160) {}
 export type State = "unknown" | "initializing" | "idle" | "working" | "blocked" | "done";
@@ -35,6 +36,9 @@ export class Agent {
   tool = new Text();
   tool_active = false;
   permission_review: number | null = null;
+  /** The permission checks and model its hooks last reported. */
+  permissions: Permissions | null = null;
+  model = new Text();
   compacting = false;
   /** When its current compaction began, in µs; 0 when not compacting. */
   compacting_since = 0;
@@ -220,6 +224,8 @@ export class Agent {
     )
       return null;
     if (path.isAbsolute(hook.transcript)) this.transcript = new Path(hook.transcript);
+    if (hook.permissions) this.permissions = hook.permissions;
+    if (hook.model) this.model = new Text(hook.model);
     this.paused = false;
     // A live conversation that is already shown is only announcing itself
     // again: after compaction, a Codex revert, or from a second pane.
@@ -235,7 +241,7 @@ export class Agent {
         tool_failure: "working",
         compact_start: "working",
         compact_end: "working",
-        permission: provider === "codex" ? "working" : "blocked",
+        permission: hook.confirm === "screen" ? "working" : "blocked",
         notification: "blocked",
         // A shown conversation ends when its process exits or its pane moves
         // on. Codex also ends one to revert a turn, and goes on.
@@ -245,7 +251,7 @@ export class Agent {
     if (start || next === "working" || next === "blocked") this.finished_since_activity = false;
     if (hook.turn && Buffer.byteLength(hook.turn) <= 160) this.setTurn(hook.turn);
     this.last_seq = seq;
-    this.permission_review = event === "permission" && provider === "codex" ? 0 : null;
+    this.permission_review = event === "permission" && hook.confirm === "screen" ? 0 : null;
     this.provider = provider;
     if (session && Buffer.byteLength(session) <= 160) this.session = new Text(session);
     const old = this.state;
@@ -278,7 +284,7 @@ export class Agent {
     if (event === "tool_finish" || event === "tool_failure")
       this.recent = new Text(`${event === "tool_failure" ? "failed" : "used"}: ${hook.tool}`.slice(0, 160));
     if (start || ["prompt", "interrupt", "session_end"].includes(event)) this.activity = new Text();
-    if (Provider.info(provider).prompt_turns) {
+    if (adapter(provider).caps.prompt_turns) {
       if (hook.prompt && Buffer.byteLength(hook.prompt) <= 160 && hook.prompt !== this.turnId()) {
         this.setTurn(hook.prompt);
         this.activity_inferred = false;

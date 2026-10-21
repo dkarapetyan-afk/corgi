@@ -10,7 +10,7 @@ The daemon owns one [conversation actor](../src/conversations.ts) per provider
 and session ID. An actor holds lifecycle, completion/read receipts, transcript
 identity and activity independently of whether a pane currently shows it.
 
-An attachment represents a terminal or native transport's current selection.
+An attachment represents a terminal or headless transport's current selection.
 Switching from A to B changes the attachment, not A's identity. Attachments that
 select the same actor share its receipts. Before identity is known, screen
 observations may supply provisional status. Process replacement clears the old
@@ -19,20 +19,84 @@ source associations.
 Workers receive snapshots and return observations; the daemon applies them to
 the addressed actor after checking identity and generation. Delayed results from
 before a selection change must not update its replacement, including A → B → A.
-Native approvals retain their original conversation and transport ownership.
+Headless approvals retain their original conversation and transport ownership.
+
+`corgi headless start PROVIDER PROMPT` sends the first prompt and waits for
+the provider's session ID. Later `send`, `events` and `stop` commands take
+`PROVIDER SESSION`; Corgi does not return another numeric session ID.
+Startup stays asynchronous and its pending reply survives live handoff.
+The numeric transport handles in snapshots and saved state are internal
+bookkeeping for viewer selection and ordering. See [CONTEXT.md](../CONTEXT.md).
 
 `conversation.list` and `session.snapshot` expose actors separately from panes.
 Pane acknowledgements include conversation identity and binding generation so
 stale selections cannot mark a different conversation read. Runtime-local actor
 IDs survive checkpoint restoration but are not globally unique.
 
+## Providers
+
+Each provider is one plain object, `adapter` in
+`src/providers/<name>/index.ts`, and everything specific to it lives in that
+directory. [providers.ts](../src/providers.ts) lists them in UI order; the
+first is the one Corgi offers before the user picks one. Core code asks
+`adapter(id)` and never names a provider. A provider calls its own modules
+rather than looking itself up.
+
+[adapter.ts](../src/providers/adapter.ts) is the contract. Every provider says
+what it is (names, command, install locations, `owns`), the few `caps` core has
+to know, how to read its hooks and launcher commands, how to start, resume,
+attach to and fork a session, and how it runs headless sessions, the
+tool-less summarizer and its hook integration. Optional members exist only
+where a provider has one: a title reader, hook origin, transcripts, an
+observer of its own protocol, rename, and the launcher's account and history.
+Shared helpers sit beside the contract: the hook codec, screen readings and
+watcher, hook settings files, typed command lines and observer snapshots.
+
+Each provider judges its own clues through a `Watcher`, one per provider and
+account. It routes each hook to the pane whose conversation it is, since only
+the provider knows when a hook names the wrong pane, and reads its panes'
+screens for what its hooks leave out: a state before any hook speaks, a
+compaction, a turn interrupted without a hook, a prompt answered, a
+permission prompt shown. Core keeps what the watcher remembers about each
+pane and applies what it decides.
+
+Headless sessions and summaries run through a `Client` the adapter starts,
+which runs the provider however it does (Claude and Codex as a child process,
+on [stdio.ts](../src/providers/stdio.ts)) and speaks its protocol. Core sends
+it `Input`, a prompt, an answer to a request or an interrupt, and takes back
+`Event`s: conversations, turns, messages, tools, requests and usage. Provider
+JSON never leaves the adapter. A summary is a prompt and the last message
+before its turn ends. `save` keeps what a checkpoint or handoff needs, and a
+handoff passes the client's `handles` to the next daemon.
+
+A provider's `index.ts` must not statically import a module that imports
+`./providers` while loading (discovery, inference, usage, launch). Those load
+with `import()`, or loading fails with "Cannot access 'adapter' before
+initialization". `providers/sim` exists only in tests; `sim.register()` adds it
+so a test finds code that still assumes Claude or Codex. `native/hook.zig` and
+`native/zig/detection.zig` keep small copies of the hook origin and executable
+checks, since they run without the adapters.
+
+## Resuming and forking
+
+A resume or fork starts the agent with the permission mode and model its hooks
+last reported. The resume hint keeps them across reloads and closed agents.
+Until a hook reports, an agent the launcher started keeps the launch's yolo
+choice.
+
+For an agent typed into a pane's shell, Corgi reads the process's command line
+and environment. `launch.keep` saves the options and variables that pick an
+account, MCP servers or features, and drops the session, prompt, model and
+permission flags. Kept variables, credentials included, go into the 0600
+checkpoint and the pane's environment, never onto a command line. Codex's hooks
+report any run that never asks as bypassing permissions, so a typed Codex
+command's own approval and sandbox options win over a reported bypass. macOS
+hides the environment of system binaries, so an agent started through a system
+`/bin/sh` script keeps only its options.
+
 ## Observations and lifecycle
 
-Provider metadata and parsing live in [providers/](../src/providers/), selected
-through [providers.ts](../src/providers.ts). Extend that vocabulary rather than
-adding provider-name checks or copies elsewhere.
-
-Hooks, transcript readers, the Codex observer, native transports and terminal
+Hooks, transcript readers, the Codex observer, headless transports and terminal
 screens supply different evidence. Fresh structured evidence takes precedence
 over screen inference. An unavailable source is not a completion event; idle
 screen text alone must not create completion receipts or sounds.
@@ -43,7 +107,7 @@ screen text alone must not create completion receipts or sounds.
   authorize them to take over the pane's selected conversation.
 - Completion checking validates the transcript's session and turn. A Stop
   hook or assistant message alone is not proof that the turn finished.
-- Native events use explicit conversation identity. A transport exiting does
+- Headless events use explicit conversation identity. A transport exiting does
   not imply that its conversation ended.
 - Live reload preserves bindings. Cold recovery preserves identity and receipts
   but requires fresh evidence for active lifecycle state.
@@ -76,8 +140,8 @@ from provider account rate limits.
 
 Context comes from provider records, not summed lifetime usage. Model aliases
 and platform-specific IDs normalize at the provider boundary; unknown IDs stay
-recognizable. Provider-specific assumptions and exceptions belong in
-[usage/](../src/usage/) and the adapters. Live meters are not a durable ledger.
+recognizable. Provider-specific assumptions and exceptions belong in the
+adapters. Live meters are not a durable ledger.
 
 ## Inference and data boundaries
 

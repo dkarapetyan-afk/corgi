@@ -1,12 +1,15 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jobIn, attachCommand } from "./daemon";
-import { Text } from "../common";
+import { jobIn } from "./daemon";
+import { adapter } from "./index";
 test("a session attaches only to the live background job that holds it", () => {
-  const directory = mkdtempSync(join(tmpdir(), "corgi-daemon-"));
+  const root = mkdtempSync(join(tmpdir(), "corgi-daemon-")),
+    directory = join(root, "sessions"),
+    prior = process.env.CLAUDE_CONFIG_DIR;
   try {
+    mkdirSync(directory);
     for (const [i, record] of [
       { sessionId: "bg", pid: process.pid, kind: "bg", jobId: "19e909c5" },
       { sessionId: "terminal", pid: process.pid, kind: "interactive" },
@@ -26,8 +29,12 @@ test("a session attaches only to the live background job that holds it", () => {
     for (const session of ["terminal", "exited", "no-job", "unsafe", "future", "missing"])
       expect(jobIn(directory, session)).toBeNull();
     expect(jobIn("/nonexistent/sessions", "bg")).toBeNull();
-    expect(attachCommand(new Text("19e909c5"))).toBe("claude attach 19e909c5");
+    process.env.CLAUDE_CONFIG_DIR = root;
+    expect(adapter.launch.attach?.("bg")).toEqual(["attach", "19e909c5"]);
+    expect(adapter.launch.attach?.("terminal")).toBeNull();
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prior;
+    rmSync(root, { recursive: true, force: true });
   }
 });

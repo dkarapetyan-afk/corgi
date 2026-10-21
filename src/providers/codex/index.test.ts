@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { Codex } from "./index";
+import * as codex from "./index";
 test("rollout lines decode their envelope and payload kind", () => {
-  const rollout = Codex.Rollout.decode({
+  const rollout = codex.Rollout.decode({
     type: "event_msg",
     timestamp: "t",
     payload: { type: "token_count" },
@@ -9,7 +9,7 @@ test("rollout lines decode their envelope and payload kind", () => {
   expect(rollout.type).toBe("event_msg");
   expect(rollout.timestamp).toBe("t");
   expect(rollout.payloadType()).toBe("token_count");
-  const other = Codex.Rollout.decode({ type: "compacted", payload: "summary" });
+  const other = codex.Rollout.decode({ type: "compacted", payload: "summary" });
   expect(other.type).toBeNull();
   expect(other.payloadType()).toBeNull();
 });
@@ -27,14 +27,14 @@ test("plans read as Codex's /status names them", () => {
     ["unknown", "Unknown"],
     ["", ""],
   ])
-    expect(Codex.plan(code).text()).toBe(label);
+    expect(codex.plan(code).text()).toBe(label);
 });
 test("file-change evidence uses only completed edits and the latest edit location", () => {
   const change = { type: "fileChange", status: "completed", changes: [{ path: ".worktrees/search/file" }] };
-  expect(Codex.writes([change], "/repo")).toEqual(["/repo/.worktrees/search/file"]);
-  expect(Codex.writes([{ ...change, status: "failed" }], "/repo")).toEqual([]);
-  expect(Codex.writes([change], "")).toEqual([]);
-  expect(Codex.writes([change, { ...change, changes: [{ path: "/repo/main-file" }] }], "/repo")).toEqual([
+  expect(codex.writes([change], "/repo")).toEqual(["/repo/.worktrees/search/file"]);
+  expect(codex.writes([{ ...change, status: "failed" }], "/repo")).toEqual([]);
+  expect(codex.writes([change], "")).toEqual([]);
+  expect(codex.writes([change, { ...change, changes: [{ path: "/repo/main-file" }] }], "/repo")).toEqual([
     "/repo/main-file",
   ]);
 });
@@ -45,8 +45,8 @@ test("command locations come from structured absolute cwd, not command text", ()
     cwd: "/repo/.worktrees/search",
     command: "cat /repo/.worktrees/other/file",
   };
-  expect(Codex.commandDirectory(item)).toBe(item.cwd);
-  expect(Codex.commandDirectory({ ...item, status: "inProgress" })).toBe(item.cwd);
+  expect(codex.commandDirectory(item)).toBe(item.cwd);
+  expect(codex.commandDirectory({ ...item, status: "inProgress" })).toBe(item.cwd);
   for (const changed of [
     { status: "failed" },
     { status: "declined" },
@@ -54,5 +54,5 @@ test("command locations come from structured absolute cwd, not command text", ()
     { cwd: "" },
     { type: "fileChange" },
   ])
-    expect(Codex.commandDirectory({ ...item, ...changed })).toBeNull();
+    expect(codex.commandDirectory({ ...item, ...changed })).toBeNull();
 });

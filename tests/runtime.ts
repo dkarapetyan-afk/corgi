@@ -236,7 +236,7 @@ export class Runtime extends TestCase {
         // Another wait may have subscribed meanwhile.
         if (this.#changes && !this.#changes.closed) socket.close();
         else {
-          socket.send({ op: "session.subscribe", protocol: 1 });
+          socket.send({ op: "session.subscribe", protocol: 2 });
           this.#changes = socket;
         }
       }
@@ -300,11 +300,21 @@ export class Runtime extends TestCase {
     await pump(this);
     return result;
   }
+  /** Has the fake provider behind headless session `session` run a test
+   * command, sent as a prompt to its thread `t`. */
+  headless_command(session: string, text: string, provider = "codex") {
+    return this.rpc({ op: "headless.send", protocol: 2, provider, session, input: { kind: "prompt", text } });
+  }
+  /** Answers the approval the fake provider asks for. */
+  headless_answer(session: string, provider: string, allow = true) {
+    const request = provider === "codex" ? "900" : "permission-1";
+    return this.rpc({ op: "headless.send", protocol: 2, provider, session, input: { kind: "answer", request, allow } });
+  }
   async command(operation: string, payload: any = {}) {
     return (
       await this.rpc({
         op: "session.command",
-        protocol: 1,
+        protocol: 2,
         command: { [operation]: payload },
       })
     ).result;
@@ -318,7 +328,7 @@ export class Runtime extends TestCase {
     }
   }
   session() {
-    return this.rpc({ op: "session.snapshot", protocol: 1 });
+    return this.rpc({ op: "session.snapshot", protocol: 2 });
   }
   async open_pane(options: any = {}) {
     options = { ...options };

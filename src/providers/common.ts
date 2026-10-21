@@ -1,6 +1,8 @@
+import { readdirSync } from "node:fs";
 import { BoundedText } from "../bounded_text";
 import path from "node:path";
 import { field, str } from "../json";
+import type { Permissions } from "./adapter";
 export { field, str } from "../json";
 export type Outcome = "completed" | "interrupted" | "failed";
 export type SessionRef = { id: string } | { path: string };
@@ -11,49 +13,53 @@ export function validRef(r: SessionRef) {
     s.length > 0 && Buffer.byteLength(s) <= 4096 && !/[\x00-\x1f\x7f]/.test(s) && ("id" in r || path.isAbsolute(s))
   );
 }
-export class Info {
-  [key: string]: any;
-  constructor(fields: Record<string, any>) {
-    Object.assign(
-      this,
-      {
-        install_markers: [],
-        scripts: [],
-        app_bundles: [],
-        version_prefix: null,
-        fork_session_flag: null,
-        name_flag: null,
-        oauth_env: null,
-        model_env: null,
-        prompt_turns: false,
-        children_at_stop: false,
-        // Whether the cwd its hooks report follows the shell's `cd`.
-        follows_cd: false,
-        screen: {},
-      },
-      fields,
-    );
-  }
-  configDir(env = process.env) {
-    const configured = env[this.config_env];
-    if (configured !== undefined) return configured;
-    if (!env.HOME) throw Error("NoHome");
-    return path.join(env.HOME, this.config_dir);
-  }
-  resumeArgs(ref: SessionRef) {
-    if (!("id" in ref) || !validRef(ref)) throw Error("InvalidSessionRef");
-    return [...this.resume_args, ref.id];
-  }
-  envOverride(name: string, value: string): "credential" | "oauth" | "endpoint" | null {
-    if (!value) return null;
-    if (this.credential_env.includes(name)) return "credential";
-    if (name === this.oauth_env) return "oauth";
-    if (this.endpoint_env.includes(name)) return "endpoint";
-    if (this.provider_env.includes(name) && /^(1|true|yes|on)$/i.test(value.trim())) return "endpoint";
-    return null;
-  }
-}
 export class Text extends BoundedText(Infinity) {}
+/** A token count `v` reports at `key`: a whole number that fits 64 bits. */
+export function number(v: any, key: string): bigint | null {
+  const n = field(v, key);
+  if (typeof n === "bigint") return n >= 0n && n <= (1n << 64n) - 1n ? n : null;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? BigInt(n) : null;
+}
+/** A provider's settings directory: `variable` when it's set, else `dir` in HOME. */
+export function configHome(env: NodeJS.ProcessEnv, variable: string, dir: string) {
+  const configured = env[variable];
+  if (configured !== undefined) return configured;
+  if (!env.HOME) throw Error("NoHome");
+  return path.join(env.HOME, dir);
+}
+/** `command` inside macOS app bundles: `names` first, then every other app,
+ * in the user's Applications and then the system's. */
+export function appBundles(names: string[], command: string, at: { home: string | null; root: string }) {
+  if (process.platform !== "darwin") return [];
+  const paths: string[] = [];
+  for (const apps of [at.home ? path.join(at.home, "Applications") : null, at.root + "/Applications"]) {
+    if (!apps) continue;
+    let found: string[] = [];
+    try {
+      found = readdirSync(apps)
+        .filter(x => x.endsWith(".app"))
+        .sort();
+    } catch {}
+    for (const name of [...names, ...found]) paths.push(path.join(apps, name, "Contents/Resources", command));
+  }
+  return paths;
+}
+/** A screen's last rows, lowercased, as screen readers compare them. */
+export function screenTail(screen: string) {
+  return screen.trimEnd().split("\n").slice(-8).join("\n").slice(0, 8192).toLowerCase();
+}
+/** What the prompts Claude Code and Codex share show: a question waiting
+ * for an answer, or a turn the user can interrupt. */
+export function sharedPrompt(screen: string): "blocked" | "working" | null {
+  const text = screenTail(screen);
+  if (
+    (text.includes("enter to confirm") && text.includes("esc to cancel")) ||
+    text.includes("enter to submit answer") ||
+    text.includes("enter to submit all")
+  )
+    return "blocked";
+  return text.includes("esc to interrupt") ? "working" : null;
+}
 
 export function planLabel(code: string) {
   return new Text(
@@ -77,33 +83,6 @@ export function timestampMs(s: string): number | null {
     ms = Number(s.slice(20, 23));
   }
   return Date.UTC(y, m - 1, d, h, min, sec, ms);
-}
-export type NativeEvent = {
-  session: string;
-  thread: string;
-  turn: string;
-  phase: "none" | "working" | "completed";
-  outcome: Outcome;
-  request_id: any;
-  response_id: any;
-  initialize: boolean;
-  initialization_failed: boolean;
-  tool_request: boolean;
-};
-export function nativeEvent(fields: Partial<NativeEvent> = {}): NativeEvent {
-  return {
-    session: "",
-    thread: "",
-    turn: "",
-    phase: "none",
-    outcome: "completed",
-    request_id: null,
-    response_id: null,
-    initialize: false,
-    initialization_failed: false,
-    tool_request: false,
-    ...fields,
-  };
 }
 export type Hook = ReturnType<Hooks["decode"]>;
 /** Where Claude's EnterWorktree and ExitWorktree report moving the session. */
@@ -149,6 +128,12 @@ export class Hooks {
       transcript: str(v, "transcript_path"),
       cwd: str(v, "cwd"),
       model: str(v, "model"),
+      /** The permission checks it runs with now, when it says. */
+      permissions: (str(v, "permission_mode") === "bypassPermissions"
+        ? "bypass"
+        : str(v, "permission_mode")
+          ? "default"
+          : null) as Permissions | null,
       tool,
       writes:
         kind === "tool_finish" &&
@@ -170,6 +155,8 @@ export class Hooks {
           .find(Boolean) ?? "",
       asking: kind === "tool_start" && ["AskUserQuestion", "request_user_input"].includes(tool),
       permission_notification: kind === "notification" && notification === "permission_prompt",
+      /** A permission hook blocks the agent at once, or only once its screen shows the prompt. */
+      confirm: "now" as "now" | "screen",
     };
   }
 }

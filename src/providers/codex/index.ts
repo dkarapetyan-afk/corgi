@@ -1,154 +1,180 @@
-import { field, str, Hooks, nativeEvent, Text, planLabel } from "../common";
-import { info } from "./info";
-import path from "node:path";
-export const Method = [
-  "turn/started",
-  "turn/completed",
-  "thread/started",
-  "thread/tokenUsage/updated",
-  "item/started",
-  "item/completed",
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  "item/tool/call",
-  "item/tool/requestUserInput",
-] as const;
-export const ItemType = [
-  "commandExecution",
-  "fileChange",
-  "mcpToolCall",
-  "dynamicToolCall",
-  "collabAgentToolCall",
-  "webSearch",
-  "imageView",
-  "imageGeneration",
-] as const;
-export const RolloutKind = ["session_meta", "turn_context", "event_msg", "response_item"] as const;
-export const EventKind = [
-  "task_started",
-  "task_complete",
-  "turn_complete",
-  "turn_aborted",
-  "token_count",
-  "message",
-  "function_call",
-  "function_call_output",
-  "custom_tool_call",
-  "custom_tool_call_output",
-  "local_shell_call",
-  "web_search_call",
-] as const;
-export class Rollout {
-  type: string | null = null;
-  timestamp = "";
-  payload: any = null;
-  static decode(v: any) {
-    return Object.assign(new Rollout(), {
-      type: RolloutKind.includes(str(v, "type") as any) ? str(v, "type") : null,
-      timestamp: str(v, "timestamp"),
-      payload: field(v, "payload"),
-    });
+import { appBundles, configHome, str, Hooks, Text, planLabel } from "../common";
+import type { Adapter } from "../adapter";
+import * as hooksFile from "../hooks_file";
+import * as integration from "./integration";
+import { Codex } from "./headless";
+import { toolless } from "./app_server";
+import { transcript } from "./transcript";
+import * as usage from "./usage";
+import * as observer from "./observer";
+export { EventKind, Method, Rollout, RolloutKind } from "./transcript";
+export { ItemType, commandDirectory, writes } from "./headless";
+import { screen, Watcher } from "./screen";
+import * as renaming from "./rename";
+export { screen };
+import { caps, info, keeping, vocabulary } from "./info";
+import * as commandLine from "../command_line";
+import { existsSync, realpathSync } from "node:fs";
+import path, { join } from "node:path";
+export function configDir(env = process.env) {
+  return configHome(env, vocabulary.config_env, ".codex");
+}
+/** The thread a terminal title names, as Codex's titles spell its ID. */
+export function titleSession(title: string) {
+  let found: Text | null = null;
+  for (const word of title.split(/[ |\t]+/)) {
+    const s = word.length === 36 ? word : word.length === 32 && word.endsWith("...") ? word.slice(0, 29) : "";
+    if (!s || !/^([\da-f]{8})-([\da-f]{4})-([\da-f]{4})-([\da-f]{4})-([\da-f]{5}|[\da-f]{12})$/i.test(s)) continue;
+    if (found) return null;
+    found = new Text(s);
   }
-  payloadType() {
-    const t = str(this.payload, "type");
-    return EventKind.includes(t as any) ? t : null;
+  return found;
+}
+export function plan(code: string) {
+  const names: Record<string, string> = {
+    prolite: "Pro 100",
+    pro: "Pro 200",
+    promax: "Pro 500",
+    team: "Business",
+    self_serve_business_usage_based: "Business",
+    self_serve_business_prolite: "Business Premium",
+    business: "Enterprise",
+    ent26: "Enterprise",
+    enterprise_cbp_usage_based: "Enterprise",
+    enterprise_cbp_automation: "Enterprise (Automation)",
+  };
+  return names[code] ? new Text(names[code]) : planLabel(code);
+}
+/** The hook events Corgi listens to. */
+export const events = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PermissionRequest",
+  "Stop",
+  "SessionEnd",
+  "PreCompact",
+  "Interrupt",
+  "PostCompact",
+];
+const settings = () => new hooksFile.File("codex", configDir(), "hooks.json", events);
+async function title(directory: string) {
+  try {
+    return await integration.installTitle(directory);
+  } catch (error) {
+    return hooksFile.failed("title", join(directory, "config.toml"), error);
   }
 }
-export class Codex {
-  static commandDirectory(item: unknown): string | null {
-    const cwd = str(item, "cwd"),
-      status = str(item, "status");
-    return str(item, "type") === "commandExecution" &&
-      (status === "completed" || status === "inProgress") &&
-      path.isAbsolute(cwd)
-      ? cwd
-      : null;
-  }
-  static writes(items: unknown, cwd: string): string[] {
-    if (!Array.isArray(items)) return [];
-    let paths: string[] = [];
-    for (const item of items) {
-      if (str(item, "type") !== "fileChange" || str(item, "status") !== "completed") continue;
-      const changes = field(item, "changes");
-      if (!Array.isArray(changes)) continue;
-      const written = changes
-        .map(change => str(change, "path"))
-        .filter(p => p.length > 0 && (path.isAbsolute(p) || path.isAbsolute(cwd)))
-        .map(p => path.resolve(cwd, p));
-      if (written.length) paths = written.slice(0, 32);
-    }
-    return paths;
-  }
-  static info = info;
-  static Method = Method;
-  static ItemType = ItemType;
-  static RolloutKind = RolloutKind;
-  static EventKind = EventKind;
-  static Rollout = Rollout;
-  static hook_events = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-    "SessionEnd",
-    "PreCompact",
-    "Interrupt",
-    "PostCompact",
-  ];
-  hooks = new Hooks();
-  hook(v: any) {
-    return this.hooks.decode(v);
-  }
-  nativeEvent(v: any) {
-    const method = str(v, "method"),
-      params = field(v, "params"),
-      thread = str(params, "threadId"),
-      turn = field(params, "turn"),
-      result = field(v, "result") ?? params;
-    const status = str(turn, "status");
-    return nativeEvent({
-      session: thread || str(field(result, "thread"), "id"),
-      thread,
-      turn: str(turn, "id"),
-      phase: method === "turn/started" ? "working" : method === "turn/completed" ? "completed" : "none",
-      outcome: ["completed", "interrupted", "failed"].includes(status) ? (status as any) : "completed",
-      request_id: method ? field(v, "id") : null,
-      response_id: v && typeof v === "object" && ("result" in v || "error" in v) ? field(v, "id") : null,
-      initialize: str(v, "id") === "__corgi_init",
-      initialization_failed: !!v && Object.hasOwn(v, "error"),
-      tool_request: [
-        "item/commandExecution/requestApproval",
-        "item/fileChange/requestApproval",
-        "item/tool/call",
-        "item/tool/requestUserInput",
-      ].includes(method),
-    });
-  }
-  static titleSession(title: string) {
-    let found: Text | null = null;
-    for (const word of title.split(/[ |\t]+/)) {
-      const s = word.length === 36 ? word : word.length === 32 && word.endsWith("...") ? word.slice(0, 29) : "";
-      if (!s || !/^([\da-f]{8})-([\da-f]{4})-([\da-f]{4})-([\da-f]{4})-([\da-f]{5}|[\da-f]{12})$/i.test(s)) continue;
-      if (found) return null;
-      found = new Text(s);
-    }
-    return found;
-  }
-  static plan(code: string) {
-    const names: Record<string, string> = {
-      prolite: "Pro 100",
-      pro: "Pro 200",
-      promax: "Pro 500",
-      team: "Business",
-      self_serve_business_usage_based: "Business",
-      self_serve_business_prolite: "Business Premium",
-      business: "Enterprise",
-      ent26: "Enterprise",
-      enterprise_cbp_usage_based: "Enterprise",
-      enterprise_cbp_automation: "Enterprise (Automation)",
-    };
-    return names[code] ? new Text(names[code]) : planLabel(code);
-  }
-}
+const hooks = new Hooks();
+export const adapter: Adapter = {
+  ...info,
+  caps,
+  inspect: c => commandLine.inspect(c, vocabulary),
+  owns: p => path.basename(p) === "codex" || p.endsWith("/@openai/codex/bin/codex.js"),
+  installs: at => [
+    ...(at.home
+      ? [".local/bin", ".bun/bin", ".npm-global/bin", ".volta/bin", ".cargo/bin"].map(dir =>
+          join(at.home!, dir, "codex"),
+        )
+      : []),
+    ...["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(dir => at.root + dir + "/codex"),
+    ...appBundles(["Codex.app", "ChatGPT.app"], "codex", at),
+  ],
+  // Other tools are called codex too.
+  version(stdout) {
+    const line = stdout.trim();
+    return line.startsWith("codex-cli ") && /^\d/.test(line.slice("codex-cli ".length));
+  },
+  watch: () => new Watcher(),
+  hook(v) {
+    const hook = hooks.decode(v);
+    // A Codex permission hook doesn't mean a prompt shows: its screen says when one does.
+    if (hook?.kind === "permission") hook.confirm = "screen";
+    return hook;
+  },
+  // Its tools and subagents inherit the pane's environment, but their
+  // sessions mustn't take over the pane's conversation.
+  origin(event) {
+    const parent = process.env.CODEX_THREAD_ID;
+    return parent && parent !== str(event, "session_id") ? null : { pid: 0, background: false };
+  },
+  unnest: env => {
+    delete env.CODEX_THREAD_ID;
+  },
+  titleSession,
+  launch: {
+    start: s => [
+      // Its hooks report a run that never asks as bypassing permissions,
+      // sandboxed or not, so approval and sandbox options it kept win.
+      ...(s.permissions === "bypass" &&
+      !s.args.some(w => /^(-a|--ask-for-approval|-s|--sandbox|--full-auto)(=|$)/.test(w))
+        ? [vocabulary.yolo]
+        : []),
+      ...(s.model ? ["--model", s.model] : []),
+      ...s.args,
+    ],
+    keep: c => commandLine.keep(c, keeping),
+    resume: session => ["resume", session],
+    fork: ({ session }) => (session.length === 36 ? { args: ["fork", session], session: null, named: false } : null),
+  },
+  rename: {
+    channel: async (session, connected) =>
+      session.length === 36 && connected
+        ? name => renaming.rename(join(configDir(), "app-server-control/app-server-control.sock"), session, name)
+        : null,
+    typed: { command: renaming.command, empty: renaming.empty, holds: renaming.holds },
+  },
+  headless: {
+    start: at => Codex.start(at, null),
+    restore: Codex.restore,
+  },
+  inference: {
+    model: "gpt-6-luna",
+    start: (r, at) => Codex.start(at, r, toolless),
+    restore: Codex.restore,
+    renew: (c, r) => c instanceof Codex && c.renew(r),
+  },
+  launcher: () => import("./launcher").then(m => m.open()),
+  history: () => import("./history").then(m => m.open()),
+  transcript: { ...transcript, reader: () => usage.open(() => join(configDir(), "session_index.jsonl")) },
+  observer: () => observer.Worker.start(),
+  integration: {
+    directory: () => configDir(),
+    async install() {
+      const file = settings(),
+        hooks = file.install();
+      if (hooks.outcome === "no_config" || hooks.outcome === "failed") return [hooks];
+      if (hooks.outcome === "added") hooks.note = "; trust them in /hooks";
+      return [hooks, await title(file.directory)];
+    },
+    async uninstall() {
+      const file = settings(),
+        { result, removal } = file.uninstall();
+      if (result.outcome === "no_config" || result.outcome === "failed") return [result];
+      const config = await integration.uninstallConfig(file.directory, removal),
+        backups = [file.path + ".corgi-backup"];
+      // A failed edit keeps the backup that tells a retry what to restore.
+      if (!config.some(r => r.outcome === "failed")) backups.push(join(file.directory, "config.toml.corgi-backup"));
+      return [result, ...config, ...file.cleanup(backups)];
+    },
+    async status() {
+      const file = settings(),
+        hooks = file.status();
+      if (hooks.outcome === "no_config") return [hooks];
+      if (hooks.events?.[0]) {
+        const files = [file.path, ...(existsSync(file.path) ? [realpathSync(file.path)] : [])];
+        Object.assign(hooks, await integration.trust(file.command, files));
+      }
+      return [hooks, integration.titleStatus(file.directory)];
+    },
+    async startup(handoff) {
+      const file = settings(),
+        hooks = file.install();
+      if (hooks.outcome === "failed") console.error("hook setup:", hooks.error);
+      if (!handoff)
+        void title(file.directory).then(r => r.outcome === "failed" && console.error("Codex title setup:", r.error));
+    },
+    snippet: executable => hooksFile.snippet("codex", events, executable),
+  },
+};

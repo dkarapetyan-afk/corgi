@@ -8,6 +8,10 @@ import { Agent, Text, Path } from "../agents";
 import { Result as ActivityResult, Request as ActivityRequest, Slot } from "../activity/worker";
 import { Actor } from "../conversations";
 import { hash } from "../activity/summary";
+import * as claudeUsage from "../providers/claude/usage";
+import * as codexUsage from "../providers/codex/usage";
+const readers = { codex: codexUsage.open(() => "/nonexistent/session_index.jsonl"), claude: claudeUsage.open() };
+const reader = (req: Request) => readers[req.agent.provider as "codex" | "claude"];
 function request(provider: "codex" | "claude"): Request {
   const agent = new Agent({ provider });
   agent.session = new Text("session");
@@ -35,43 +39,46 @@ test("usage tail frames records, ignores history and advances baselines while wa
       },
     }) + "\n";
   const baseline = line("1970-01-01T00:00:00.000Z", 100, 10);
-  expect(t.ingest(r, baseline, 0).any()).toBe(false);
+  expect(t.ingest(r, reader(r), baseline, 0).any()).toBe(false);
   const call = JSON.stringify({
     type: "response_item",
     timestamp: "1970-01-01T00:00:02.000Z",
     payload: { type: "function_call", call_id: "c1" },
   });
-  expect(t.ingest(r, call, baseline.length).any()).toBe(false);
-  expect(t.ingest(r, "\n", baseline.length + call.length).tools).toBe(1n);
-  expect(t.ingest(r, call + "\n", 0).any()).toBe(false);
+  expect(t.ingest(r, reader(r), call, baseline.length).any()).toBe(false);
+  expect(t.ingest(r, reader(r), "\n", baseline.length + call.length).tools).toBe(1n);
+  expect(t.ingest(r, reader(r), call + "\n", 0).any()).toBe(false);
   r.since = 3000;
-  expect(t.ingest(r, line("1970-01-01T00:00:02.500Z", 150, 20), 0).any()).toBe(false);
-  const delta = t.ingest(r, line("1970-01-01T00:00:04.000Z", 180, 25), 0);
+  expect(t.ingest(r, reader(r), line("1970-01-01T00:00:02.500Z", 150, 20), 0).any()).toBe(false);
+  const delta = t.ingest(r, reader(r), line("1970-01-01T00:00:04.000Z", 180, 25), 0);
   expect(delta.input).toBe(30n);
   expect(delta.output).toBe(5n);
 });
 test("Claude chosen names outrank generated names and continued session clears on resumed speech", () => {
   const t = new Tail();
-  t.claudeRecord("s", {
+  const said = request("claude");
+  said.agent.session = new Text("s");
+  const note = (v: any) => readers.claude.record(t, said, v, true, null);
+  note({
     type: "ai-title",
     sessionId: "s",
     aiTitle: "Generated",
   });
   expect(t.name.text()).toBe("Generated");
-  t.claudeRecord("s", {
+  note({
     type: "custom-title",
     sessionId: "s",
     customTitle: "Chosen",
   });
-  t.claudeRecord("s", { type: "ai-title", sessionId: "s", aiTitle: "Later" });
+  note({ type: "ai-title", sessionId: "s", aiTitle: "Later" });
   expect(t.name.text()).toBe("Chosen");
-  t.claudeRecord("s", {
+  note({
     type: "continued-in",
     sessionId: "s",
     continuedInSessionId: "new",
   });
   expect(t.continued.text()).toBe("new");
-  t.claudeRecord("s", {
+  note({
     type: "assistant",
     sessionId: "s",
     timestamp: "1970-01-01T00:00:02.000Z",
@@ -121,7 +128,7 @@ test("unchanged evidence does not schedule paid summaries and tool changes wait 
 });
 
 function ingestLine(tail: Tail, req: Request, value: any) {
-  return tail.ingest(req, JSON.stringify(value) + "\n", 0);
+  return tail.ingest(req, reader(req), JSON.stringify(value) + "\n", 0);
 }
 
 test("usage tail retains the latest reported model across unrelated records", () => {
@@ -428,7 +435,7 @@ test("real file usage reader accepts large Codex metadata and counts later activ
     req.agent.session = new Text("large-session");
     req.agent.transcript = new Path(file);
     const tail = new Tail();
-    expect((await tail.poll(req)).any()).toBe(false);
+    expect((await tail.poll(req, reader(req))).any()).toBe(false);
     const offset = tail.offset;
     appendFileSync(
       file,
@@ -449,14 +456,14 @@ test("real file usage reader accepts large Codex metadata and counts later activ
         },
       }) + "\n",
     );
-    const delta = await tail.poll(req);
+    const delta = await tail.poll(req, reader(req));
     expect(tail.offset).toBeGreaterThan(offset);
     expect(delta.tools).toBe(1n);
     expect(delta.input).toBe(100n);
     expect(delta.output).toBe(20n);
-    expect((await tail.poll(req)).any()).toBe(false);
+    expect((await tail.poll(req, reader(req))).any()).toBe(false);
     req.agent.session = new Text("other-session");
-    await expect(new Tail().poll(req)).rejects.toThrow("WrongSession");
+    await expect(new Tail().poll(req, reader(req))).rejects.toThrow("WrongSession");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

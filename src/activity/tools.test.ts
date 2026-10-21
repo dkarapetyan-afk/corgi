@@ -1,8 +1,11 @@
 import { test, expect } from "bun:test";
 import { Tracker, Call } from "./tools";
+import * as claudeUsage from "../providers/claude/usage";
+import * as codexUsage from "../providers/codex/usage";
 import { parseLabel } from "./summary";
 import * as prompt from "./prompt";
-import { Children, Inventory, classify } from "./background_tasks";
+import { classify } from "./background_tasks";
+import * as claudeConversation from "../providers/claude/conversation";
 test("completed tools are deduplicated, historical calls do not advance waves, and turns reset", () => {
   const t = new Tracker(),
     call = {
@@ -19,24 +22,25 @@ test("completed tools are deduplicated, historical calls do not advance waves, a
       payload: { type: "function_call_output", call_id: "c1" },
     };
   t.bind("a");
-  t.ingest(call, false);
-  t.ingest(output, false);
-  t.ingest(output, true);
+  codexUsage.progress(t, call, false);
+  codexUsage.progress(t, output, false);
+  codexUsage.progress(t, output, true);
   expect(t.completed).toBe(0n);
   t.bind("b");
-  t.ingest(call, true);
-  t.ingest(output, true);
-  t.ingest(output, true);
+  codexUsage.progress(t, call, true);
+  codexUsage.progress(t, output, true);
+  codexUsage.progress(t, output, true);
   expect(t.completed).toBe(1n);
   expect(t.view().evidence.text()).toContain("rg focus src");
   t.bind("c");
-  t.ingest(output, true);
+  codexUsage.progress(t, output, true);
   expect(t.completed).toBe(0n);
 });
 test("code-mode evidence keeps commands and patch files while dropping wrapper", () => {
   const t = new Tracker();
   t.bind("a");
-  t.ingest(
+  codexUsage.progress(
+    t,
     {
       type: "response_item",
       payload: {
@@ -54,7 +58,8 @@ test("code-mode evidence keeps commands and patch files while dropping wrapper",
 test("Claude tool progress joins hook turn and text commentary", () => {
   const t = new Tracker();
   t.bind("p");
-  t.ingestClaude(
+  claudeUsage.progress(
+    t,
     {
       type: "assistant",
       message: {
@@ -73,7 +78,8 @@ test("Claude tool progress joins hook turn and text commentary", () => {
   );
   expect(t.view().running).toBe(1);
   expect(t.view().evidence.text()).toContain("src/parse.zig");
-  t.ingestClaude(
+  claudeUsage.progress(
+    t,
     {
       type: "user",
       message: { content: [{ type: "tool_result", tool_use_id: "c1" }] },
@@ -99,7 +105,7 @@ test("abstention is valid and invalid labels fail separately", () => {
   expect(parseLabel("This label has far too many words")).toBeNull();
 });
 test("provider task identities and categories remain bounded", () => {
-  const inv = Inventory.claude(
+  const inv = claudeConversation.inventory(
     [
       {
         id: "1",
@@ -120,7 +126,7 @@ test("provider task identities and categories remain bounded", () => {
   expect(classify("./scripts/zig build test")).toBe("tests");
   expect(classify("bun run dev")).toBe("servers");
   expect(classify("echo 'test server'")).toBe("commands");
-  const children = Children.claude([
+  const children = claudeConversation.children([
     { id: "a1", type: "subagent" },
     { id: "a1", type: "subagent" },
     { id: "b1", type: "shell" },
@@ -175,7 +181,8 @@ test("polling the same call leaves the evidence unchanged", () => {
   let before = "";
   for (let i = 0; i < 3; i++) {
     const id = `poll-${i}`;
-    tracker.ingest(
+    codexUsage.progress(
+      tracker,
       {
         type: "response_item",
         payload: {
@@ -188,7 +195,8 @@ test("polling the same call leaves the evidence unchanged", () => {
       true,
     );
     if (i > 0) expect(tracker.view().evidence.text()).toBe(before);
-    tracker.ingest(
+    codexUsage.progress(
+      tracker,
       {
         type: "response_item",
         payload: {
@@ -234,11 +242,12 @@ test("Claude text and completed tools become evidence for the bound turn", () =>
       ],
     },
   };
-  tracker.ingestClaude(assistant, true);
+  claudeUsage.progress(tracker, assistant, true);
   expect(tracker.commentary.len).toBe(0);
   tracker.bind("prompt-1");
-  tracker.ingestClaude(assistant, true);
-  tracker.ingestClaude(
+  claudeUsage.progress(tracker, assistant, true);
+  claudeUsage.progress(
+    tracker,
     {
       type: "assistant",
       isSidechain: true,
@@ -247,11 +256,11 @@ test("Claude text and completed tools become evidence for the bound turn", () =>
     true,
   );
   expect(tracker.commentary.text()).toBe("Latest agent update: Tracing the hook router");
-  tracker.ingestClaude(result, true);
-  tracker.ingestClaude(result, true);
+  claudeUsage.progress(tracker, result, true);
+  claudeUsage.progress(tracker, result, true);
   expect(tracker.completed).toBe(1n);
   expect(tracker.view().evidence.text()).toContain("Bash: Find hook routing");
-  tracker.ingestClaude({ type: "system", subtype: "turn_duration" }, true);
+  claudeUsage.progress(tracker, { type: "system", subtype: "turn_duration" }, true);
   expect(tracker.view().ended).toBe(true);
   tracker.bind("prompt-2");
   expect(tracker.view().ended).toBe(false);
@@ -304,7 +313,7 @@ test("running tools publish stable evidence before completion for both providers
   for (const [index, [start, done]] of cases.entries()) {
     const tracker = new Tracker();
     const ingest = (value: any, live: boolean) =>
-      index === 0 ? tracker.ingest(value, live) : tracker.ingestClaude(value, live);
+      index === 0 ? codexUsage.progress(tracker, value, live) : claudeUsage.progress(tracker, value, live);
     tracker.bind("turn");
     tracker.dirty = false;
     ingest(start, false);

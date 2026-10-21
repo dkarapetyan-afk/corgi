@@ -1,0 +1,58 @@
+{
+  "version": 5,
+  "workspaces": [
+    {
+      "id": 1,
+      "agent_order": [
+        {
+          "pane": 1
+        },
+        {
+          "headless": 2
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "id": 2,
+      "provider": "codex",
+      "cwd": "/tmp/project",
+      "ready": true,
+      "exited": false,
+      "events": [],
+      "approvals": [],
+      "turns": [
+        {
+          "thread": "a",
+          "turn": "t"
+        }
+      ],
+      "next_seq": 4,
+      "journal_bytes": 0,
+      "client": {
+        "state": {
+          "pid": 41,
+          "input": "",
+          "output": "e30KeyJpZCI6MX0K",
+          "exited": false,
+          "ready": true,
+          "cwd": "/tmp/project",
+          "lines": [
+            "{\"id\":9,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"a\"}}"
+          ],
+          "active": [
+            [
+              "a",
+              "t"
+            ]
+          ]
+        },
+        "handles": [
+          7,
+          8
+        ]
+      }
+    }
+  ]
+}

@@ -117,6 +117,31 @@ class Reloads extends Runtime {
   reload(exe = EXE) {
     return this.rpc({ op: "server.reload", protocol: 1, executable: exe });
   }
+  async test_management_version_is_strict_and_independent_of_runtime() {
+    const pane = await this.new(),
+      before = await this.session();
+    const socket = await JsonSocket.connect(this.path);
+    try {
+      await socket.request({ op: "hello", protocol: 1, runtime_protocol: 2 });
+      for (const op of ["hello", "server.reload"]) {
+        for (const protocol of [0, 2, 999, -1, "1", undefined]) {
+          const reply = await socket.request({ op, protocol, executable: EXE });
+          this.assertEqual(reply.err, protocol === undefined ? "ProtocolRequired" : "UnsupportedManagementProtocol");
+        }
+      }
+      this.assertEqual((await this.session()).server_pid, before.server_pid);
+      this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol: 999 })).protocol, 2);
+      this.assertEqual((await socket.request({ op: "session.snapshot" })).err, "ProtocolRequired");
+      this.assertEqual((await socket.request({ op: "server.reload", protocol: 1, executable: EXE })).ok, true);
+    } finally {
+      socket.close();
+    }
+    const after = await this.session();
+    this.assertNotEqual(after.server_pid, before.server_pid);
+    this.assertEqual(after.panes.find((p: any) => p.id === pane).pid, before.panes.find((p: any) => p.id === pane).pid);
+    await this.command("pane.input", { target: pane, data: "printf 'MANAGEMENT_RELOADED\\n'\r" });
+    await this.until(async () => (await this.screen(pane)).includes("MANAGEMENT_RELOADED"));
+  }
   candidate(mutation: string) {
     const candidate = join(this.temp.name, "candidate"),
       transformer = join(this.temp.name, "mutate.ts");
@@ -254,9 +279,9 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     this.assertEqual((await viewer.poll()).pane, first);
     await viewer.input("printf 'MIGRATED_%s\\n' ALIVE\r");
     await this.until(async () => (await this.screen(first)).includes("MIGRATED_ALIVE"));
-    const saved = (await this.rpc({ op: "recovery.save", protocol: 1 })).path;
+    const saved = (await this.rpc({ op: "recovery.save", protocol: 2 })).path;
     const state = JSON.parse(readFileSync(saved, "utf8"));
-    this.assertEqual(state.version, 5);
+    this.assertEqual(state.version, 6);
     this.assertEqual(state.panes[0].binding.provisional.provider, null);
     await this.reload();
     this.assertEqual((await viewer.poll()).pane, first);
@@ -265,7 +290,7 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     const first = await this.new("printf 'MIGRATION_%s\\n' HISTORY; exec /bin/sh");
     await this.until(async () => (await this.screen(first)).includes("MIGRATION_HISTORY"));
     const before = await this.session();
-    const saved = (await this.rpc({ op: "recovery.save", protocol: 1 })).path;
+    const saved = (await this.rpc({ op: "recovery.save", protocol: 2 })).path;
     await this.run_cli("shutdown");
     await this.until(() => {
       try {
@@ -297,7 +322,7 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     this.assertFalse(existsSync(`${saved}.v2`));
     writeFileSync(saved, JSON.stringify(original));
     await this.run_cli("start");
-    this.assertEqual(JSON.parse(readFileSync(saved, "utf8")).version, 5);
+    this.assertEqual(JSON.parse(readFileSync(saved, "utf8")).version, 6);
     this.assertEqual(statSync(saved).mode & 0o777, 0o600);
     this.assertEqual(readFileSync(`${saved}.v2`, "utf8"), JSON.stringify(original));
     this.assertEqual(statSync(`${saved}.v2`).mode & 0o777, 0o600);
@@ -313,7 +338,7 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
       client.socket.write('{"op":"session.snap');
       await sleep(0.05);
       await this.reload();
-      client.socket.write('shot","protocol":1}\n');
+      client.socket.write('shot","protocol":2}\n');
       this.assertEqual((await client.read()).type, "session");
     } finally {
       client.close();
@@ -321,38 +346,40 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     await a.input("SURVIVED\\n\x1b[201~\r");
     await this.until(async () => (await this.screen(first)).includes("PASTE_SURVIVED"));
   }
-  async test_native_session_retains_pid_approvals_and_transport() {
+  async test_headless_session_retains_pid_approvals_and_transport() {
     const session = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].ready);
-    await this.rpc({
-      op: "native.send",
-      session,
-      message: { method: "test/approval" },
-    });
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].pending_requests === 1);
-    const before = await this.rpc({ op: "native.events", session });
-    const pid = (await this.rpc({ op: "native.list" })).sessions[0].pid;
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].ready);
+    await this.headless_command(session, "test/approval");
+    await this.until(
+      async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pending_requests === 1,
+    );
+    const before = await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session });
+    const pid = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid;
     await this.reload();
-    this.assertEqual((await this.rpc({ op: "native.events", session })).pending_requests, before.pending_requests);
-    this.assertEqual((await this.rpc({ op: "native.list" })).sessions[0].pid, pid);
-    await this.rpc({
-      op: "native.send",
-      session,
-      message: { id: 900, result: {} },
-    });
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].pending_requests === 0);
-    await this.rpc({
-      op: "native.send",
-      session,
-      message: { method: "test/exit" },
-    });
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].exited);
+    await this.reload(
+      this.candidate(
+        "for (const s of m.runtime.sessions) delete s.session; for (const c of m.clients) delete c.headless_start",
+      ),
+    );
+    this.assertEqual(
+      (await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session })).pending_requests,
+      before.pending_requests,
+    );
+    this.assertEqual((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid, pid);
+    await this.headless_answer(session, "codex");
+    await this.until(
+      async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pending_requests === 0,
+    );
+    await this.headless_command(session, "test/exit");
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].exited);
   }
   async test_cold_recovery_preserves_layout_cwd_history_and_resume_hint() {
     this.env.SHELL = "/bin/bash";
@@ -381,7 +408,7 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
       async () => (await this.session()).panes[0].agent.session === "01901234-1234-1234-1234-123456789abc",
     );
     const before = await this.session(),
-      saved = (await this.rpc({ op: "recovery.save", protocol: 1 })).path;
+      saved = (await this.rpc({ op: "recovery.save", protocol: 2 })).path;
     this.assertTrue(saved.startsWith(join(this.env.XDG_STATE_HOME!, "corgi", "recovery") + "/"));
     this.assertEqual(statSync(saved).mode & 0o777, 0o600);
     process.kill(before.server_pid, "SIGKILL");
@@ -403,16 +430,16 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     );
     this.assertEqual(after.panes[0].id, first);
     this.assertEqual([after.panes[0].dormant, after.panes[0].pid], [true, -1]);
-    this.assertEqual(after.panes[0].restoring, "codex resume '01901234-1234-1234-1234-123456789abc'");
+    this.assertEqual(after.panes[0].restoring, "codex resume 01901234-1234-1234-1234-123456789abc");
     this.assertIn("BEFORE_CRASH", await this.screen(first));
     await this.command("pane.wake", { target: first, shell: true });
     await this.until(async () =>
-      (await this.history(first)).includes("codex resume '01901234-1234-1234-1234-123456789abc'"),
+      (await this.history(first)).includes("codex resume 01901234-1234-1234-1234-123456789abc"),
     );
     this.assertNotEqual((await this.session()).panes[0].pid, before.panes[0].pid);
     const text = await this.history(first);
     this.assertIn("BEFORE_CRASH", text);
-    this.assertIn("codex resume '01901234-1234-1234-1234-123456789abc'", text);
+    this.assertIn("codex resume 01901234-1234-1234-1234-123456789abc", text);
     this.assertEqual(after.panes[0].cwd, physicalProject);
     const restored = after.panes[0].agent;
     this.assertEqual(restored.provider, "codex");
@@ -464,11 +491,11 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
           (p: any) => p.id === first && p.agent.session === "01901234-1234-1234-1234-123456789def",
         ),
       );
-      await this.rpc({ op: "recovery.save", protocol: 1 });
+      await this.rpc({ op: "recovery.save", protocol: 2 });
       await this.restart_runtime();
       await this.command("pane.wake", { target: first, shell: true });
       await this.until(async () =>
-        (await this.history(first)).includes("codex resume '01901234-1234-1234-1234-123456789def'"),
+        (await this.history(first)).includes("codex resume 01901234-1234-1234-1234-123456789def"),
       );
       this.assertFalse(existsSync(marker));
       await this.command("pane.input", { data: "\r", target: first });
@@ -498,11 +525,11 @@ await Bun.sleep(120000);
     const first = await this.new("printf 'BEFORE_%s\\n' CRASH; exec /bin/sh");
     await this.until(async () => (await this.screen(first)).includes("BEFORE_CRASH"));
     await this.pair(first, session);
-    await this.rpc({ op: "recovery.save", protocol: 1 });
+    await this.rpc({ op: "recovery.save", protocol: 2 });
     await this.restart_runtime();
     const pane = async () => (await this.session()).panes.find((p: any) => p.id === first);
     this.assertEqual([(await pane()).dormant, (await pane()).pid], [true, -1]);
-    this.assertEqual((await pane()).restoring, `codex resume '${session}'`);
+    this.assertEqual((await pane()).restoring, `codex resume ${session}`);
     await this.reload();
     this.assertTrue((await pane()).dormant);
     const viewer = await Viewer.create(this);
@@ -577,33 +604,33 @@ process.stdin.resume();
     await this.until(() => existsSync(received) && readFileSync(received).toString().endsWith("END"));
     this.assertTrue(statSync(received).size < 8 * 65536 + 3);
   }
-  async test_native_cold_recovery_displays_resume_without_starting_agent() {
+  async test_headless_cold_recovery_displays_resume_without_starting_agent() {
     this.env.SHELL = "/bin/bash";
     await this.restart_runtime();
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].ready);
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { method: "test/approval" },
-    });
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].session_id === "t");
-    await this.rpc({ op: "recovery.save", protocol: 1 });
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].ready);
+    await this.headless_command(ident, "test/approval");
+    await this.until(
+      async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pending_requests === 1,
+    );
+    await this.rpc({ op: "recovery.save", protocol: 2 });
     await this.restart_runtime();
-    const sessions = (await this.rpc({ op: "native.list" })).sessions;
+    const sessions = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions;
     this.assertTrue(sessions[0].exited);
     this.assertEqual(sessions[0].pid, -1);
     this.assertEqual((await this.session()).panes.length, 1);
     const pane = (await this.session()).panes[0].id;
-    await this.until(async () => (await this.screen(pane)).includes("codex resume 't'"));
+    await this.until(async () => (await this.screen(pane)).includes("codex resume t"));
     const text = await this.screen(pane);
-    this.assertIn("codex resume 't'", text);
+    this.assertIn("codex resume t", text);
     this.assertIn("requestApproval", text);
   }
   async test_missing_directory_and_removed_socket_directory_do_not_lose_recovery() {
@@ -615,7 +642,7 @@ process.stdin.resume();
       data: `cd ${quote(folder)}\r`,
     });
     await this.until(async () => (await this.session()).panes[0].cwd === realpathSync(folder));
-    await this.rpc({ op: "recovery.save", protocol: 1 });
+    await this.rpc({ op: "recovery.save", protocol: 2 });
     await this.run_cli("shutdown");
     await this.until(() => !existsSync(this.path));
     rmdirSync(folder);
@@ -634,7 +661,7 @@ process.stdin.resume();
       client.socket.write(
         JSON.stringify({ op: "server.reload", protocol: 1, executable: EXE }) +
           "\n" +
-          JSON.stringify({ op: "session.snapshot", protocol: 1 }) +
+          JSON.stringify({ op: "session.snapshot", protocol: 2 }) +
           "\n",
       );
       const first = await client.read(),
@@ -647,8 +674,8 @@ process.stdin.resume();
       client.close();
     }
   }
-  async test_native_partial_initialization_and_deferred_request_survive() {
-    const gate = join(this.temp.name, "native-gate"),
+  async test_headless_partial_initialization_and_deferred_request_survive() {
+    const gate = join(this.temp.name, "headless-gate"),
       provider = join(this.temp.name, "provider");
     writeExecutable(
       provider,
@@ -665,37 +692,48 @@ process.stdin.on('data', data => {
     pending = pending.then(async () => {
       const v = JSON.parse(line);
       if (v.method === 'initialize') {
-        process.stdout.write(JSON.stringify({ id: '__corgi_init', result: {} }).slice(0, -3));
+        process.stdout.write(JSON.stringify({ id: v.id, result: {} }).slice(0, -3));
         while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(10);
         process.stdout.write('{}}\\n');
-      } else if ('id' in v) console.log(JSON.stringify({ id: v.id, result: 'deferred-survived' }));
+      } else if (v.method === 'thread/start') {
+        console.log(JSON.stringify({ id: v.id, result: { thread: { id: 't' } } }));
+      } else if (v.method === 'turn/start') {
+        console.log(JSON.stringify({ method: 'turn/started', params: { threadId: 't', turn: { id: 'deferred-survived' } } }));
+        console.log(JSON.stringify({ id: v.id, result: {} }));
+      }
     });
   }
 });
 process.stdin.resume();
 `,
     );
-    const ident = (
-      await this.rpc({
-        op: "native.start",
-        provider: "codex",
-        cwd: this.temp.name,
-      })
-    ).session;
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { id: 42, method: "ping" },
-    });
-    await sleep(0.1);
-    const pid = (await this.rpc({ op: "native.list" })).sessions[0].pid;
-    await this.reload();
-    writeFileSync(gate, "");
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].ready);
-    this.assertEqual(pid, (await this.rpc({ op: "native.list" })).sessions[0].pid);
-    await this.until(async () =>
-      (await this.rpc({ op: "native.events", session: ident })).events.some((e: any) => JSON.parse(e.line).id === 42),
-    );
+    const cancelled = await JsonSocket.connect(this.path);
+    cancelled.send({ op: "headless.start", protocol: 2, prompt: "ping", provider: "codex", cwd: this.temp.name });
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.length === 1);
+    cancelled.close();
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.length === 0);
+    const client = await JsonSocket.connect(this.path);
+    try {
+      client.send({ op: "headless.start", protocol: 2, prompt: "ping", provider: "codex", cwd: this.temp.name });
+      client.send({ op: "ping" });
+      await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.length === 1);
+      const starting = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0];
+      this.assertEqual(starting.session, null);
+      this.assertTrue((await this.rpc({ op: "ping" })).ok);
+      await this.reload();
+      writeFileSync(gate, "");
+      const started = await client.read();
+      this.assertEqual(started, { ok: true, provider: "codex", session: "t" });
+      this.assertTrue((await client.read()).ok);
+      this.assertEqual(starting.pid, (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid);
+      await this.until(async () =>
+        (
+          await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session: started.session })
+        ).events.some((e: any) => e.event.kind === "turn" && e.event.turn === "deferred-survived"),
+      );
+    } finally {
+      client.close();
+    }
   }
   async test_removed_attachment_cannot_create_a_shell_or_block_reload() {
     const before = await this.session();

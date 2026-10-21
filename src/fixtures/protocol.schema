@@ -4,11 +4,11 @@ $.requests|session.command.command: one of
 $.requests|session.command.command|agent.move.workspace: u32
 $.requests|session.command.command|agent.move.target: one of
 $.requests|session.command.command|agent.move.target|pane: u32
-$.requests|session.command.command|agent.move.target|native: u32
+$.requests|session.command.command|agent.move.target|headless: u32
 $.requests|session.command.command|agent.move.before: optional
 $.requests|session.command.command|agent.move.before?: one of
 $.requests|session.command.command|agent.move.before?|pane: u32
-$.requests|session.command.command|agent.move.before?|native: u32
+$.requests|session.command.command|agent.move.before?|headless: u32
 $.requests|session.command.command|agent.command.index: usize
 $.requests|session.command.command|agent.command.command: string
 $.requests|session.command.command|agent.command.hidden: bool
@@ -264,16 +264,20 @@ $.requests|focus.viewer?: u32
 $.requests|workspace.switch.workspace: u32
 $.requests|workspace.switch.viewer: optional
 $.requests|workspace.switch.viewer?: u32
-$.requests|native.start.provider: enum codex claude
-$.requests|native.start.cwd: string
-$.requests|native.start.workspace: optional
-$.requests|native.start.workspace?: u32
-$.requests|native.list: {}
-$.requests|native.stop.session: u32
-$.requests|native.send.session: u32
-$.requests|native.send.message: any
-$.requests|native.events.session: u32
-$.requests|native.events.after: u64
+$.requests|headless.start.provider: enum codex claude
+$.requests|headless.start.prompt: string
+$.requests|headless.start.cwd: string
+$.requests|headless.start.workspace: optional
+$.requests|headless.start.workspace?: u32
+$.requests|headless.list: {}
+$.requests|headless.stop.provider: enum codex claude
+$.requests|headless.stop.session: string
+$.requests|headless.send.provider: enum codex claude
+$.requests|headless.send.session: string
+$.requests|headless.send.input: any
+$.requests|headless.events.provider: enum codex claude
+$.requests|headless.events.session: string
+$.requests|headless.events.after: u64
 $.requests|theme.theme: optional
 $.requests|theme.theme?.foreground: optional
 $.requests|theme.theme?.foreground?.r: u8
@@ -494,7 +498,7 @@ $.snapshot.workspaces[].cwd: string
 $.snapshot.workspaces[].model: custom layout.Model
 $.snapshot.workspaces[].agent_order[]: one of
 $.snapshot.workspaces[].agent_order[]|pane: u32
-$.snapshot.workspaces[].agent_order[]|native: u32
+$.snapshot.workspaces[].agent_order[]|headless: u32
 $.snapshot.workspaces[].last_agent: optional
 $.snapshot.workspaces[].last_agent?: enum codex claude
 $.snapshot.workspaces[].closed_agents: usize
@@ -542,7 +546,7 @@ $.snapshot.workspaces[].worktrees?.entries[].edited: optional
 $.snapshot.workspaces[].worktrees?.entries[].edited?: i64
 $.snapshot.workspaces[].worktrees?.agents[].target: one of
 $.snapshot.workspaces[].worktrees?.agents[].target|pane: u32
-$.snapshot.workspaces[].worktrees?.agents[].target|native: u32
+$.snapshot.workspaces[].worktrees?.agents[].target|headless: u32
 $.snapshot.workspaces[].worktrees?.agents[].path: string
 $.snapshot.workspaces[].worktrees?.agents[].source: enum cwd write
 $.snapshot.workspaces[].worktrees?.agents[].stale: bool
@@ -605,47 +609,48 @@ $.snapshot.panes[].agent.paused: bool
 $.snapshot.panes[].restoring: string
 $.snapshot.panes[].forking: bool
 $.snapshot.panes[].dormant: bool
-$.snapshot.native_sessions[].agent: optional
-$.snapshot.native_sessions[].agent?.conversation: u32
-$.snapshot.native_sessions[].agent?.subagents.running: u32
-$.snapshot.native_sessions[].agent?.subagents.blocked: u32
-$.snapshot.native_sessions[].agent?.subagents.waiting: bool
-$.snapshot.native_sessions[].agent?.name: string
-$.snapshot.native_sessions[].agent?.observation.source: enum unknown screen hook transcript protocol
-$.snapshot.native_sessions[].agent?.observation.pending_stop: bool
-$.snapshot.native_sessions[].agent?.observation.completed: u64
-$.snapshot.native_sessions[].agent?.observation.read: u64
-$.snapshot.native_sessions[].agent?.observation.outcome: enum completed interrupted failed
-$.snapshot.native_sessions[].agent?.recent_activity: string
-$.snapshot.native_sessions[].agent?.changed_at: i64
-$.snapshot.native_sessions[].agent?.working_since: i64
-$.snapshot.native_sessions[].agent?.provider: optional
-$.snapshot.native_sessions[].agent?.provider?: enum codex claude
-$.snapshot.native_sessions[].agent?.state: enum unknown initializing idle working blocked done
-$.snapshot.native_sessions[].agent?.attention: enum none finished needs_input
-$.snapshot.native_sessions[].agent?.session: string
-$.snapshot.native_sessions[].agent?.transcript: string
-$.snapshot.native_sessions[].agent?.activity: string
-$.snapshot.native_sessions[].agent?.cwd: string
-$.snapshot.native_sessions[].agent?.tool_active: bool
-$.snapshot.native_sessions[].agent?.compacting: bool
-$.snapshot.native_sessions[].agent?.compacting_since: i64
-$.snapshot.native_sessions[].agent?.paused: bool
-$.snapshot.native_sessions[].observation.source: enum unknown screen hook transcript protocol
-$.snapshot.native_sessions[].observation.pending_stop: bool
-$.snapshot.native_sessions[].observation.completed: u64
-$.snapshot.native_sessions[].observation.read: u64
-$.snapshot.native_sessions[].observation.outcome: enum completed interrupted failed
-$.snapshot.native_sessions[].id: u32
-$.snapshot.native_sessions[].workspace: u32
-$.snapshot.native_sessions[].provider: enum codex claude
-$.snapshot.native_sessions[].cwd: string
-$.snapshot.native_sessions[].ready: bool
-$.snapshot.native_sessions[].exited: bool
-$.snapshot.native_sessions[].state: enum unknown initializing idle working blocked done
-$.snapshot.native_sessions[].attention: enum none finished needs_input
-$.snapshot.native_sessions[].tool_active: bool
-$.snapshot.native_sessions[].compacting: bool
+$.snapshot.headless_sessions[].agent: optional
+$.snapshot.headless_sessions[].agent?.conversation: u32
+$.snapshot.headless_sessions[].agent?.subagents.running: u32
+$.snapshot.headless_sessions[].agent?.subagents.blocked: u32
+$.snapshot.headless_sessions[].agent?.subagents.waiting: bool
+$.snapshot.headless_sessions[].agent?.name: string
+$.snapshot.headless_sessions[].agent?.observation.source: enum unknown screen hook transcript protocol
+$.snapshot.headless_sessions[].agent?.observation.pending_stop: bool
+$.snapshot.headless_sessions[].agent?.observation.completed: u64
+$.snapshot.headless_sessions[].agent?.observation.read: u64
+$.snapshot.headless_sessions[].agent?.observation.outcome: enum completed interrupted failed
+$.snapshot.headless_sessions[].agent?.recent_activity: string
+$.snapshot.headless_sessions[].agent?.changed_at: i64
+$.snapshot.headless_sessions[].agent?.working_since: i64
+$.snapshot.headless_sessions[].agent?.provider: optional
+$.snapshot.headless_sessions[].agent?.provider?: enum codex claude
+$.snapshot.headless_sessions[].agent?.state: enum unknown initializing idle working blocked done
+$.snapshot.headless_sessions[].agent?.attention: enum none finished needs_input
+$.snapshot.headless_sessions[].agent?.session: string
+$.snapshot.headless_sessions[].agent?.transcript: string
+$.snapshot.headless_sessions[].agent?.activity: string
+$.snapshot.headless_sessions[].agent?.cwd: string
+$.snapshot.headless_sessions[].agent?.tool_active: bool
+$.snapshot.headless_sessions[].agent?.compacting: bool
+$.snapshot.headless_sessions[].agent?.compacting_since: i64
+$.snapshot.headless_sessions[].agent?.paused: bool
+$.snapshot.headless_sessions[].observation.source: enum unknown screen hook transcript protocol
+$.snapshot.headless_sessions[].observation.pending_stop: bool
+$.snapshot.headless_sessions[].observation.completed: u64
+$.snapshot.headless_sessions[].observation.read: u64
+$.snapshot.headless_sessions[].observation.outcome: enum completed interrupted failed
+$.snapshot.headless_sessions[].id: u32
+$.snapshot.headless_sessions[].session: string
+$.snapshot.headless_sessions[].workspace: u32
+$.snapshot.headless_sessions[].provider: enum codex claude
+$.snapshot.headless_sessions[].cwd: string
+$.snapshot.headless_sessions[].ready: bool
+$.snapshot.headless_sessions[].exited: bool
+$.snapshot.headless_sessions[].state: enum unknown initializing idle working blocked done
+$.snapshot.headless_sessions[].attention: enum none finished needs_input
+$.snapshot.headless_sessions[].tool_active: bool
+$.snapshot.headless_sessions[].compacting: bool
 $.snapshot.closed_panes: usize
 $.replies.hello.type: string
 $.replies.hello.protocol: u32

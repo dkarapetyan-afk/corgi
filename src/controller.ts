@@ -39,11 +39,12 @@ import {
   acknowledge,
   providerName,
   statsAny,
+  type Agent,
   type Transport,
   type Pane,
   type Terminal,
   type Workspace,
-  type Native,
+  type Headless,
 } from "./mirror";
 import { needsPane, type Action } from "./action";
 import * as corgiBadge from "./corgi_badge";
@@ -80,7 +81,7 @@ import * as panel from "./review/panel";
 import * as summaries from "./review/summaries";
 import * as subagentTooltip from "./subagent_tooltip";
 import * as viewerNative from "./viewer_native";
-import { Provider } from "./providers";
+import { Provider, adapter } from "./providers";
 import { sat, byteLength, type Writer } from "./text";
 import * as errors from "./errors";
 import * as moonlanderTerminal from "./moonlander/terminal";
@@ -296,7 +297,7 @@ export class Controller {
   copy_mode = false;
   name_dialog: Dialog | null = null;
   message = "";
-  native_notice: number | null = null;
+  headless_notice: number | null = null;
   copy_feedback_until = 0;
   muted = false;
   selection: { pane: number; x: number; y: number; moved: boolean } | null = null;
@@ -399,7 +400,7 @@ export class Controller {
     this.selection = null;
     this.cancelDividers();
     this.message = "";
-    this.native_notice = null;
+    this.headless_notice = null;
     this.rememberAgent();
     this.dirty = true;
   }
@@ -584,7 +585,7 @@ export class Controller {
     this.rememberAgent();
     if (owner.id !== this.current().id) this.switchWorkspace(owner.id);
     this.nav().focus(this.model(), id);
-    this.native_notice = null;
+    this.headless_notice = null;
     this.rememberAgent();
   }
   area(): Rect {
@@ -812,7 +813,7 @@ export class Controller {
               provider: p.agent.provider,
               state: p.agent.state,
               attention: p.agent.attention,
-              focused: this.native_notice === null && focus === p.id,
+              focused: this.headless_notice === null && focus === p.id,
               cwd: p.agent.cwd.length > 0 ? p.agent.cwd : p.cwd,
               tool_active: p.agent.tool_active,
               compacting: p.agent.compacting,
@@ -829,11 +830,11 @@ export class Controller {
       for (const session of this.runtime.sessions) {
         if (session.workspace !== ws.id) continue;
         const e = sidebar.entry({
-          target: { native: session.id },
+          target: { headless: session.id },
           provider: session.provider,
           state: session.state,
           attention: session.attention,
-          focused: this.native_notice === session.id,
+          focused: this.headless_notice === session.id,
           cwd: session.cwd,
           tool_active: session.tool_active,
           unread: unread(session.observation),
@@ -914,7 +915,7 @@ export class Controller {
         if (p.agent.provider !== null && ws.model.tabForPane(p.id) === tab_index && unread(p.agent.observation))
           return { pane: p.id };
     for (const session of this.runtime.sessions)
-      if (session.workspace === ws.id && unread(session.observation)) return { native: session.id };
+      if (session.workspace === ws.id && unread(session.observation)) return { headless: session.id };
     return null;
   }
   private selectAgent(target: Target): void {
@@ -929,11 +930,11 @@ export class Controller {
     if ("pane" in target) {
       this.focusPane(target.pane);
       this.dirty = true;
-    } else if ("native" in target) {
-      const session = this.runtime.sessions.find(s => s.id === target.native);
+    } else if ("headless" in target) {
+      const session = this.runtime.sessions.find(s => s.id === target.headless);
       if (session) {
         if (session.workspace !== this.current().id) this.switchWorkspace(session.workspace);
-        this.noticeNativeSession(session);
+        this.noticeHeadlessSession(session);
       }
     } else if ("group" in target) this.toggleGroup(target.group);
     this.rememberAgent();
@@ -956,10 +957,10 @@ export class Controller {
     this.launched = 0;
   }
   private focusedAgent(): Target | null {
-    if (this.native_notice !== null) {
-      const id = this.native_notice;
+    if (this.headless_notice !== null) {
+      const id = this.headless_notice;
       for (const session of this.runtime.sessions)
-        if (session.id === id && session.workspace === this.current().id) return { native: id };
+        if (session.id === id && session.workspace === this.current().id) return { headless: id };
     }
     const p = this.focused();
     if (p && p.agent.provider !== null) return { pane: p.id };
@@ -1026,14 +1027,16 @@ export class Controller {
     this.message = Array.from(Buffer.from(msg).subarray(0, 512), ch =>
       ch >= 32 && ch < 127 ? String.fromCharCode(ch) : " ",
     ).join("");
-    this.native_notice = null;
+    this.headless_notice = null;
     this.dirty = true;
   }
-  private noticeNativeSession(session: Native): void {
+  private noticeHeadlessSession(session: Headless): void {
     this.notice(
-      ` ${session.provider} native session ${session.id}: ${session.state}. Inspect: corgi native events ${session.id}`,
+      session.session
+        ? ` ${session.provider} session ${session.session}: ${session.state}. Inspect: corgi headless events ${session.provider} ${session.session}`
+        : ` ${session.provider}: waiting for a session ID`,
     );
-    this.native_notice = session.id;
+    this.headless_notice = session.id;
   }
   menu(): ResizeView | null {
     if (!this.resize_mode) return null;
@@ -1308,7 +1311,7 @@ export class Controller {
     const index = this.tabIndex(context.tab);
     if (index === null) return;
     this.nav().active = index;
-    this.native_notice = null;
+    this.headless_notice = null;
     this.rememberAgent();
     this.copy_mode = false;
     this.dirty = true;
@@ -1520,7 +1523,9 @@ export class Controller {
             await this.edit({ "agent.rename": { target: target.agent, name: dialog.name() } });
           } catch (error) {
             this.dismissName();
-            this.notice(agentMessage((error as Error).message, " Could not rename this agent"));
+            this.notice(
+              agentMessage((error as Error).message, " Could not rename this agent", this.pane(target.agent)?.agent),
+            );
             return;
           }
         }
@@ -1537,7 +1542,9 @@ export class Controller {
           created = await this.execute({ "agent.fork": { target: target.fork, name } });
         } catch (error) {
           this.dismissName();
-          this.notice(agentMessage((error as Error).message, " Could not fork this agent"));
+          this.notice(
+            agentMessage((error as Error).message, " Could not fork this agent", this.pane(target.fork)?.agent),
+          );
           return;
         }
         try {
@@ -1607,7 +1614,7 @@ export class Controller {
       for (const session of this.runtime.sessions)
         if (session.attention === priority) {
           if (session.workspace !== this.current().id) this.switchWorkspace(session.workspace);
-          this.noticeNativeSession(session);
+          this.noticeHeadlessSession(session);
           return;
         }
     this.notice(" Nothing needs your attention");
@@ -2357,10 +2364,7 @@ export class Controller {
   }
   private async trackLauncherUsage(provider: Provider): Promise<void> {
     const launch = this.agent_launcher;
-    if (!launch) return;
-    // Tracking asks for access to Claude's stored credentials.
-    if (provider === "codex") return;
-    if (!launch.trackable(Row.of(provider))) return;
+    if (!launch || !launch.trackable(Row.of(provider))) return;
     launch.pinned = true;
     try {
       await call(this.connection, "agent.track_usage", { workspace: launch.workspace, cwd: launch.cwd });
@@ -2822,7 +2826,7 @@ export class Controller {
         ? "Auto (follows your agents)"
         : choice === "off"
           ? "Off"
-          : Provider.info(Summarizer.provider(choice)!).label;
+          : adapter(Summarizer.provider(choice)!).label;
     this.notice(` Summaries and link names: ${label}${saved ? "" : " (not saved for next start)"}`);
   }
   private async configureUse(use: Use, on: boolean): Promise<void> {
@@ -3536,7 +3540,7 @@ export class Controller {
     if (!clipboard) return false;
     const p = this.focused();
     if (!p) return false;
-    const agent = p.agent.provider ? Provider.info(p.agent.provider).name : "The program";
+    const agent = p.agent.provider ? adapter(p.agent.provider).name : "The program";
     let host = "this machine";
     try {
       const full = hostname();
@@ -4697,7 +4701,7 @@ export class Controller {
                 const owner =
                   "pane" in target
                     ? this.runtime.workspaces.owner(target.pane)!.id
-                    : this.runtime.sessions.find(s => s.id === (target as { native: number }).native)!.workspace;
+                    : this.runtime.sessions.find(s => s.id === (target as { headless: number }).headless)!.workspace;
                 this.agent_drag = AgentDrag.init(view, at, x, y, owner, this.current().id);
               }
             }
@@ -4777,7 +4781,7 @@ export class Controller {
         if (index !== null) {
           this.rememberAgent();
           this.nav().active = index;
-          this.native_notice = null;
+          this.headless_notice = null;
           this.rememberAgent();
           cl.tab_drag = {
             workspace_id: this.current().id,
@@ -4934,7 +4938,7 @@ export class Controller {
       this.search_mode = false;
       this.selection = null;
       this.message = "";
-      this.native_notice = null;
+      this.headless_notice = null;
     }
     this.reconcile();
   }
@@ -5684,7 +5688,7 @@ export function forkName(title: string): string {
 export function breadcrumbs(p: Pane): string {
   const name = p.label.length > 0 ? p.label : p.agent.name;
   return [
-    ["harness", p.agent.provider ? Provider.info(p.agent.provider).label : ""],
+    ["harness", p.agent.provider ? adapter(p.agent.provider).label : ""],
     ["session", name],
     ["id", p.agent.session],
     ["cwd", p.agent.cwd.length > 0 ? p.agent.cwd : p.cwd],
@@ -5694,11 +5698,11 @@ export function breadcrumbs(p: Pane): string {
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
 }
-/** What a viewer says when an agent rename or fork fails with `err`. */
-function agentMessage(err: string, fallback: string): string {
+/** What a viewer says when renaming or forking `agent` fails with `err`. */
+export function agentMessage(err: string, fallback: string, agent: Agent | undefined): string {
   switch (err) {
     case "AgentBusy":
-      return " Codex is busy: rename it once its input box is empty";
+      return ` ${agent?.provider ? adapter(agent.provider).name : "This agent"} is busy: rename it once its input box is empty`;
     case "RenameUnavailable":
       return " This agent can't be renamed from outside";
     case "NoConversation":

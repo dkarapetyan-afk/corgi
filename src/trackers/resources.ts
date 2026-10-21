@@ -300,7 +300,7 @@ export class Tracker {
           runtime.sessions.some(
             s =>
               !s.exited &&
-              (s.child?.pid ?? s.child?.id) === root.pid &&
+              s.client.processes?.()[0] === root.pid &&
               s.workspace_id === root.workspace &&
               s.id * 2 + 1 === root.key,
           ),
@@ -336,7 +336,7 @@ export class Tracker {
           : [];
       });
     for (const s of runtime.sessions) {
-      const pid = s.child?.pid ?? s.child?.id;
+      const pid = s.client.processes?.()[0];
       if (!s.exited && s.workspace_id && pid)
         this.roots.push({
           key: s.id * 2 + 1,

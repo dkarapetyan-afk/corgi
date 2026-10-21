@@ -1,21 +1,57 @@
 import * as discovery from "../../discovery";
 import { run as subprocessRun, type Quit } from "../../subprocess";
-import { Provider, Text } from "../../providers";
-import { Claude } from "./index";
-import { str } from "../common";
-import { Info, claudeAccount, limits } from "../../usage/account";
-import { Control, cancelled } from "../../launch/control";
+import * as claude from "./index";
+import { field, str, timestampMs, Text } from "../common";
+import { Info, Window, used, windows } from "../../usage/account";
+import { Control, cancelled } from "./control";
 import { Cache, interval, cooldown } from "../../usage/account_cache";
 import * as errors from "../../errors";
+function window(value: unknown, minutes: number) {
+  const percent = used(field(value, "utilization"));
+  if (percent === null) return null;
+  let raw = str(value, "resets_at"),
+    offset = 0;
+  const m = raw.match(/([+-])(\d{2}):(\d{2})$/);
+  if (m) {
+    if (Number(m[2]) > 23 || Number(m[3]) > 59) return new Window({ minutes, used: percent });
+    offset = (Number(m[2]) * 60 + Number(m[3])) * 60 * (m[1] === "-" ? -1 : 1);
+    raw = raw.slice(0, -6) + "Z";
+  }
+  const stamp = timestampMs(raw);
+  return new Window({ minutes, used: percent, reset_at: stamp === null ? null : Math.floor(stamp / 1000) - offset });
+}
+/** The limits in a usage reply's `rate_limits`. */
+export function limits(value: unknown) {
+  return windows([window(field(value, "five_hour"), 300), window(field(value, "seven_day"), 10080)]);
+}
+/** The account `claude auth status --json` reports. */
+export function readAccount(value: any) {
+  const info = new Info(),
+    logged = field(value, "loggedIn");
+  if (typeof logged !== "boolean") return info;
+  info.signed_in = logged;
+  const method = str(value, "authMethod"),
+    api = ["api_key", "api_key_helper"].includes(method),
+    external = method === "third_party",
+    email = str(value, "email");
+  info.account = new Text(
+    !logged ? "Not signed in" : api ? "API key" : external ? "External provider" : email || "Signed in",
+  );
+  if (logged) {
+    info.plan = api ? new Text("API") : claude.plan(str(value, "subscriptionType"), "");
+    if (api || external) info.limits = "metered";
+  }
+  return info;
+}
 export function applyUsage(info: Info, value: any) {
   if (typeof value?.rate_limits_available !== "boolean") throw Error("InvalidUsage");
   if (!value.rate_limits_available) throw Error("UsageUnavailable");
-  const quota = limits(value.rate_limits, "claude");
+  const quota = limits(value.rate_limits);
   if (quota === "none") throw Error("InvalidUsage");
   info.limits = quota;
   info.usage_error = new Text();
   if (typeof value.subscription_type === "string" && value.subscription_type)
-    info.plan = Claude.plan(value.subscription_type, "");
+    info.plan = claude.plan(value.subscription_type, "");
 }
 /** The model the picker's "default" entry resolves to. */
 export function defaultModel(value: any): string {
@@ -69,7 +105,7 @@ export class Client {
         this.close();
         throw error;
       }
-      const account = claudeAccount(d);
+      const account = readAccount(d);
       if (account.signed_in === null || (exit !== 0 && !(exit === 1 && account.signed_in === false))) {
         this.close();
         throw Error("InvalidAccount");
@@ -78,7 +114,7 @@ export class Client {
         account.usage_error = new Text("usage account unavailable");
       const identity = JSON.stringify({
         executable,
-        root: Provider.info("claude").configDir(),
+        root: claude.configDir(),
         email: d.email ?? "",
         organization: d.orgId ?? "",
         method: d.authMethod ?? "",
@@ -130,7 +166,7 @@ export class Client {
   }
   /** Starts the control session; its initialize reply names the default model. */
   private async start(executable: string, stopping: any, quit: Quit | undefined, deadline: number) {
-    this.session = new Control("claude", executable);
+    this.session = new Control(executable);
     const initialized = await this.session.ready({ stopping, quit, deadline });
     const model = defaultModel(initialized);
     if (model) this.default_model = new Text(model);

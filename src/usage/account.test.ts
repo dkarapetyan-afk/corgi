@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { limits, Window, claudeAccount, codexAccount, resetCountdown } from "./account";
-import { timestampMs } from "../providers/common";
+import { Window, resetCountdown, used, windows } from "./account";
+import { readAccount as claudeAccount } from "../providers/claude/account";
+import { account as codexAccount } from "../providers/codex/account";
 test("signed out and API accounts do not borrow subscription details", () => {
   const out = claudeAccount({
     loggedIn: false,
@@ -32,36 +33,10 @@ test("reset countdown rounds up and belongs to its window", () => {
     [273700, "3d 4h"],
   ] as const)
     expect(resetCountdown(at, 100)).toBe(label);
-  const codex = limits(
-    {
-      primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: 8200 },
-      secondary: {
-        usedPercent: 63,
-        windowDurationMins: 10080,
-        resetsAt: 273700,
-      },
-    },
-    "codex",
-  );
-  expect(typeof codex).toBe("object");
-  if (typeof codex === "object") {
-    expect(codex.windows[0]?.countdown(100)).toBe("2h 15m");
-    expect(codex.windows[1]?.countdown(100)).toBe("3d 4h");
-  }
-  const claude = limits(
-    {
-      five_hour: {
-        utilization: 12,
-        resets_at: "2026-09-24T12:00:00.000000+00:00",
-      },
-      seven_day: { utilization: 48, resets_at: "2026-09-27T16:00:00Z" },
-    },
-    "claude",
-  );
-  const now = timestampMs("2026-09-24T10:00:00Z")! / 1000;
-  if (typeof claude === "object") {
-    expect(claude.windows[0]?.countdown(now)).toBe("2h");
-    expect(claude.windows[1]?.countdown(now)).toBe("3d 6h");
-  }
-  expect(new Window({ used: 48 }).countdown(now)).toBeNull();
+  expect(new Window({ used: 48 }).countdown(100)).toBeNull();
+});
+test("a window's use counts only as a percent", () => {
+  expect([used(12.4), used(0), used(100)]).toEqual([12, 0, 100]);
+  expect([used(-1), used(101), used(NaN), used("12")]).toEqual([null, null, null, null]);
+  expect(windows([null, null])).toBe("none");
 });

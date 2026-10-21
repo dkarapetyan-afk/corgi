@@ -102,7 +102,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         launch = new Launch({ provider, yolo: r.agent_yolo[provider] }),
         pane = await r.create({
           ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd ?? ""),
-          command: launch.paneCommand(ctx.executable, launch.typed()),
+          ...launch.run(ctx.executable, launch.typed()),
         });
       r.pane(pane)!.launch = launch;
       r.rememberAgent(pane, provider);
@@ -499,7 +499,7 @@ function build(r: Runtime, viewer: boolean) {
     });
   return {
     type: "session",
-    protocol: 1,
+    protocol: protocol.version,
     conversations,
     release_version: "",
     release_commit: "",
@@ -559,8 +559,9 @@ function build(r: Runtime, viewer: boolean) {
       forking: p.ghost?.fork !== null && p.ghost !== null,
       dormant: p.dormant,
     })),
-    native_sessions: r.sessions.map(s => ({
+    headless_sessions: r.sessions.map(s => ({
       agent: agentView(s.attachment.agent(), s.attachment.actor?.id ?? 0),
+      session: s.session,
       id: s.id,
       workspace: s.workspace_id,
       provider: s.provider,

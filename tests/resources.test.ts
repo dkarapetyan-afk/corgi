@@ -213,9 +213,9 @@ class Resources extends Runtime {
     await shown.close();
   }
 
-  async test_native_agent_process_is_attributed_without_a_pane() {
+  async test_headless_agent_process_is_attributed_without_a_pane() {
     const workspace = (await this.session()).workspaces[0].id;
-    await this.rpc({ op: "native.start", provider: "codex", cwd: this.temp.name });
+    await this.rpc({ op: "headless.start", protocol: 2, prompt: "test/init", provider: "codex", cwd: this.temp.name });
     let work: any;
     await this.until(async () => {
       work = (await this.session()).resources.workspaces.find((w: any) => w.id === workspace);
@@ -226,7 +226,7 @@ class Resources extends Runtime {
     this.assertTrue(agent.memory > 0);
   }
 
-  async test_native_sampling_workspace_isolation_and_hover() {
+  async test_headless_sampling_workspace_isolation_and_hover() {
     const workspace = (await this.session()).workspaces[0].id;
     const script = join(this.temp.name, "resource-fixture.ts");
     const pidFile = join(this.temp.name, "resource.pid");
@@ -296,7 +296,7 @@ class Resources extends Runtime {
     this.assertNotIn("process-name hint /", frame);
     this.assertNotIn("Running JavaScript code", frame);
     this.assertNotIn("Activity not known", frame);
-    this.assertIn("* Claude Code   † Codex", frame);
+    this.assertIn("† Codex   * Claude Code", frame);
     // Cross the padding and divider, including diagonal movement, instead of
     // teleporting from the trigger directly into the card.
     for (const [column, row] of [

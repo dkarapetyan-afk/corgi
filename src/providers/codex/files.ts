@@ -1,10 +1,7 @@
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
-import path from "node:path";
 import { BoundedText } from "../../bounded_text";
 import { nativeFiles } from "../../build_assets";
 export class Name extends BoundedText(160) {}
-import { Codex } from "./index";
-import type { Agent } from "../../agents";
 type IndexWorker = Worker & { unref(): void };
 export class Index {
   names = new Map<string, Name>();
@@ -19,9 +16,6 @@ export class Index {
     this.complete?.();
     this.complete = null;
     this.names.clear();
-  }
-  refresh() {
-    this.refreshFile(path.join(Codex.info.configDir(), "session_index.jsonl"));
   }
   refreshFile(file: string) {
     const now = Date.now();
@@ -41,7 +35,8 @@ export class Index {
       if (fd !== undefined) closeSync(fd);
     }
   }
-  async refreshAsync() {
+  /** Reads `file` off the main thread, at most once a second. */
+  async refreshAsync(file: string) {
     if (this.pending) return this.pending;
     const now = Date.now();
     if (now < this.next_read) return;
@@ -77,9 +72,7 @@ export class Index {
         };
         this.worker.unref();
       }
-      this.worker.postMessage({
-        path: path.join(Codex.info.configDir(), "session_index.jsonl"),
-      });
+      this.worker.postMessage({ path: file });
       await pending;
     } finally {
       this.pending = null;
@@ -105,7 +98,4 @@ export class Index {
   name(session: string) {
     return this.names.get(session) ?? new Name();
   }
-}
-export function available(agent: Agent, now: number) {
-  return agent.provider === "codex" && (!agent.metadata_at || now - agent.metadata_at > 5000000);
 }

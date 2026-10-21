@@ -3,11 +3,12 @@ import { n } from "../native_bridge";
 import { test, expect } from "bun:test";
 import { resolve } from "node:path";
 import { Pool } from "./harness";
+import * as appServer from "../providers/codex/app_server";
 const fixture = resolve(import.meta.dir, "../../tests/inference_harness.ts");
 function pool(provider: "codex" | "claude", timeout_ms = 3000) {
   return new Pool({ config: { provider, executable: fixture, timeout_ms } });
 }
-test("native inference reuses each harness conversation and keeps targets separate", async () => {
+test("inference reuses each harness conversation and keeps targets separate", async () => {
   for (const provider of ["codex", "claude"] as const) {
     using p = pool(provider);
     const r = {
@@ -34,7 +35,7 @@ test("native inference reuses each harness conversation and keeps targets separa
     });
   }
 });
-test("native inference rotates retained histories and uses fresh recovery input", async () => {
+test("inference rotates retained histories and uses fresh recovery input", async () => {
   using p = pool("codex");
   const r = {
     instructions: "Return JSON",
@@ -45,7 +46,7 @@ test("native inference rotates retained histories and uses fresh recovery input"
   for (let i = 0; i < 32; i++) expect((await p.infer(r)).fresh).toBe(i === 0);
   expect((await p.infer(r)).fresh).toBe(true);
 });
-test("native inference rejects oversize output and recovers after failure", async () => {
+test("inference rejects oversize output and recovers after failure", async () => {
   for (const provider of ["codex", "claude"] as const) {
     using p = pool(provider);
     await expect(p.infer({ instructions: "x", content: "oversize", conversation: "a" })).rejects.toThrow(
@@ -54,46 +55,53 @@ test("native inference rejects oversize output and recovers after failure", asyn
     expect((await p.infer({ instructions: "x", content: "ok", conversation: "a" })).fresh).toBe(true);
   }
 });
-test("native inference timeout destroys the failed conversation", async () => {
+test("inference timeout destroys the failed conversation", async () => {
   using p = pool("codex", 150);
   await expect(p.infer({ instructions: "x", content: "hang" })).rejects.toThrow("Timeout");
   expect(p.slots.every(s => !s)).toBe(true);
 });
-test("configured metadata creates no model turn", async () => {
-  using p = pool("codex");
-  expect((await p.configuredModel("/tmp")).text()).toBe("fixture-codex");
-  const info = await p.configuredAccount();
-  expect(info.account.text()).toBe("codex@example.com");
-  expect(info.plan.text()).toBe("Pro 200");
-  expect(await p.listThreads(null)).toMatchObject({ result: { data: [] } });
-  expect(p.started).toBe(false);
+test("Codex metadata reads its own app server, not a summary", async () => {
+  const server = new appServer.AppServer(3000, fixture);
+  try {
+    expect((await appServer.model(server, "/tmp")).text()).toBe("fixture-codex");
+    const info = await appServer.account(server);
+    expect(info.account.text()).toBe("codex@example.com");
+    expect(info.plan.text()).toBe("Pro 200");
+    expect(await appServer.threads(server, null)).toMatchObject({ result: { data: [] } });
+  } finally {
+    server.close();
+  }
 });
 
-test("closing a pool cancels a provider that is still initializing", async () => {
-  using p = pool("codex");
-  const pending = p.metadata();
-  p.close();
-  await expect(pending).rejects.toThrow("Cancelled");
-  expect(p.slots.every(s => s === null)).toBe(true);
-  // Closing resets a pool; changing providers may open it again.
-  expect((await p.configuredModel("/tmp")).text()).toBe("fixture-codex");
+test("closing an app server cancels a request still waiting for it to start", async () => {
+  const server = new appServer.AppServer(3000, fixture);
+  try {
+    const pending = appServer.model(server, "/tmp");
+    server.close();
+    await expect(pending).rejects.toThrow("Cancelled");
+    // Closing resets it; the next request opens it again.
+    expect((await appServer.model(server, "/tmp")).text()).toBe("fixture-codex");
+  } finally {
+    server.close();
+  }
 });
 
-test("concurrent metadata readers share one starting provider", async () => {
-  using p = pool("codex");
-  const [first, second] = await Promise.all([p.metadata(), p.metadata()]);
-  expect(first).toBe(second);
-  expect(p.slots.filter(Boolean)).toHaveLength(1);
+test("concurrent metadata readers share one starting app server", async () => {
+  const server = new appServer.AppServer(3000, fixture);
+  try {
+    const [first, second] = await Promise.all([appServer.model(server, "/tmp"), appServer.model(server, "/tmp")]);
+    expect([first.text(), second.text()]).toEqual(["fixture-codex", "fixture-codex"]);
+  } finally {
+    server.close();
+  }
 });
 
-test("cancelled metadata cannot restart a closed pool", async () => {
-  using p = pool("codex");
+test("a cancelled metadata request opens nothing", async () => {
+  const server = new appServer.AppServer(3000, fixture);
   const abort = new AbortController();
-  await p.configuredModel("/tmp", abort.signal);
   abort.abort();
-  p.close();
-  await expect(p.configuredAccount(abort.signal)).rejects.toThrow("Cancelled");
-  expect(p.slots.every(s => s === null)).toBe(true);
+  await expect(appServer.account(server, abort.signal)).rejects.toThrow("Cancelled");
+  server.close();
 });
 
 test("fresh content replaces content only when the conversation starts", async () => {
@@ -144,7 +152,7 @@ test("structured inference uses provider output and rejects invalid schemas befo
   ).rejects.toThrow("InvalidSchema");
 });
 
-test("native inference failures kill the affected conversation and recover", async () => {
+test("inference failures kill the affected conversation and recover", async () => {
   for (const provider of ["codex", "claude"] as const) {
     using p = pool(provider);
     for (const content of ["crash", "fail", "oversize"]) {
@@ -194,12 +202,10 @@ test("live inference checkpoint continues the same process and conversation", as
       };
       const first = JSON.parse((await p.infer(request)).text());
       const saved = clone(p.capture());
-      for (const connection of saved.slots) {
-        if (!connection) continue;
-        connection.stdin = n.probe_dup_above(connection.stdin, 3);
-        connection.stdout = n.probe_dup_above(connection.stdout, 3);
-        expect(connection.stdin).toBeGreaterThanOrEqual(3);
-        expect(connection.stdout).toBeGreaterThanOrEqual(3);
+      for (const slot of saved.slots) {
+        if (!slot) continue;
+        slot.client.handles = slot.client.handles.map((fd: number) => n.probe_dup_above(fd, 3));
+        for (const fd of slot.client.handles) expect(fd).toBeGreaterThanOrEqual(3);
       }
       imported.restore(saved);
       const second = JSON.parse((await imported.infer(request)).text());
@@ -232,34 +238,31 @@ test("harnesses from every pool share one cap", async () => {
   }
 });
 
-test.skipIf(!process.env.CORGI_TEST_LIVE_INFERENCE)(
-  "opt-in live native inference preserves a conversation",
-  async () => {
-    const provider = process.env.CORGI_TEST_LIVE_INFERENCE;
-    if (provider !== "codex" && provider !== "claude") throw Error("InvalidProvider");
-    const p = new Pool({
-      config: {
-        provider,
-        model: process.env.CORGI_INFERENCE_MODEL,
-        timeout_ms: 60000,
-      },
+test.skipIf(!process.env.CORGI_TEST_LIVE_INFERENCE)("opt-in live inference preserves a conversation", async () => {
+  const provider = process.env.CORGI_TEST_LIVE_INFERENCE;
+  if (provider !== "codex" && provider !== "claude") throw Error("InvalidProvider");
+  const p = new Pool({
+    config: {
+      provider,
+      model: process.env.CORGI_INFERENCE_MODEL,
+      timeout_ms: 60000,
+    },
+  });
+  try {
+    const instructions = "Reply only with the requested single word. Do not use tools.";
+    const first = await p.infer({
+      instructions,
+      content: "Remember the word Marigold. Reply with that word.",
+      conversation: "live-test",
     });
-    try {
-      const instructions = "Reply only with the requested single word. Do not use tools.";
-      const first = await p.infer({
-        instructions,
-        content: "Remember the word Marigold. Reply with that word.",
-        conversation: "live-test",
-      });
-      expect(first.text().trim().replace(/\.$/, "")).toBe("Marigold");
-      const second = await p.infer({
-        instructions,
-        content: "What word did I ask you to remember? Reply with it.",
-        conversation: "live-test",
-      });
-      expect(second.text().trim().replace(/\.$/, "")).toBe("Marigold");
-    } finally {
-      p.close();
-    }
-  },
-);
+    expect(first.text().trim().replace(/\.$/, "")).toBe("Marigold");
+    const second = await p.infer({
+      instructions,
+      content: "What word did I ask you to remember? Reply with it.",
+      conversation: "live-test",
+    });
+    expect(second.text().trim().replace(/\.$/, "")).toBe("Marigold");
+  } finally {
+    p.close();
+  }
+});

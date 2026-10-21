@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Deterministic native inference fixture. It never contacts a model. */
+/** Deterministic inference fixture. It never contacts a model. */
 import { appendFileSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 

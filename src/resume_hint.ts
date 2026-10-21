@@ -1,11 +1,16 @@
-import { Text, Provider } from "./providers";
-import * as claudeDaemon from "./providers/claude/daemon";
+import { Text, Provider, validRef, adapter } from "./providers";
+import { shellWords } from "./os";
 import type { Agent } from "./agents";
+import type { Permissions } from "./providers/adapter";
 export class ResumeHint {
   name = new Text();
   touched_at = 0;
   provider: Provider | null = null;
   session = new Text();
+  /** The permission checks and model the agent last reported, which it
+   * comes back with. */
+  permissions: Permissions | null = null;
+  model = new Text();
   observe(agent: Agent) {
     const provider = agent.provider;
     if (!provider) return;
@@ -13,31 +18,33 @@ export class ResumeHint {
       if (this.provider !== provider || this.session.text() !== agent.sessionId()) {
         this.name = new Text();
         this.touched_at = 0;
+        this.permissions = null;
+        this.model = new Text();
       }
       if (agent.name.len) this.name = new Text(agent.name.text());
+      if (agent.permissions) this.permissions = agent.permissions;
+      if (agent.model.len) this.model = new Text(agent.model.text());
       this.touched_at = Math.max(this.touched_at, agent.updated_at, Math.trunc(agent.changed_at / 1e6));
       this.provider = provider;
       this.session = new Text(agent.sessionId());
     } else if (!this.provider) this.provider = provider;
   }
+  /** The arguments that resume its session, after the ones it started with. */
   args(): string[] | null {
-    if (!this.provider) return null;
-    try {
-      return Provider.info(this.provider).resumeArgs({
-        id: this.session.text(),
-      });
-    } catch {
-      return null;
-    }
+    const session = this.session.text();
+    if (!this.provider || !validRef({ id: session })) return null;
+    return adapter(this.provider).launch.resume(session);
   }
-  backgroundJob(): Text | null {
-    return this.provider === "claude" && this.args() !== null ? claudeDaemon.job(this.session.text()) : null;
+  /** The command that attaches to its session where that already runs. */
+  attach(): string | null {
+    if (!this.provider || this.args() === null) return null;
+    const { command, launch } = adapter(this.provider),
+      args = launch.attach?.(this.session.text());
+    return args ? shellWords([command, ...args]) : null;
   }
   command(): string {
-    const job = this.backgroundJob();
-    if (job) return claudeDaemon.attachCommand(job);
     const args = this.args();
-    return args ? `${args[0]} ${args[1]} '${args[2].replaceAll("'", "'\\''")}'` : "";
+    return this.attach() ?? (args && this.provider ? shellWords([this.provider, ...args]) : "");
   }
   banner(now: number): string {
     let out = "\x1b[0m\r\n\r\n";

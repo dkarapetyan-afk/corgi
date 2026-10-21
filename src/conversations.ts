@@ -1,14 +1,14 @@
-import path from "node:path";
 import * as background_tasks from "./activity/background_tasks";
 import { Conversation, hash } from "./activity/summary";
 import { Timeline } from "./activity/timeline";
-import { View, Codex as NativeMeter } from "./usage/live";
+import { View, Tokens, Counter } from "./usage/live";
 import { Reading, Points } from "./usage/context_window";
-import { Claude } from "./providers/claude";
 import { Agent, Provider, Text, type Presence } from "./agents";
 import type { Outcome } from "./observation";
 import { Model } from "./providers/model";
-import { PromptWatch, claudeRunning } from "./detection";
+import { PromptWatch } from "./detection";
+import type { Snapshot } from "./providers/snapshot";
+import { adapter } from "./providers";
 import * as worktrees from "./worktrees";
 export const max_actors = 1024;
 export type ActorId = number & { readonly __actorId: unique symbol };
@@ -21,7 +21,7 @@ export class Actor {
   id: ActorId;
   state: Agent;
   parent: ActorId | null = null;
-  pending_native_requests = 0;
+  pending_headless_requests = 0;
   screen_compacting = false;
   pid = 0;
   paused_at = 0n;
@@ -36,17 +36,27 @@ export class Actor {
   role = new Text();
   model = new Model();
   model_from_hook = false;
-  native_usage = false;
+  headless_usage = false;
   status_inference = new Conversation();
   activity_timeline = new Timeline();
   background_tasks = new background_tasks.Inventory();
-  /** Claude: the background shells its last Stop listed, each of which can wake it. */
+  /** The background shells its last Stop listed, each of which can wake it. */
   shells = new background_tasks.Shells();
   live_usage = new View();
   context = new Reading();
-  native_meter = new NativeMeter();
+  headless_meter = new Counter();
   usageView(now: number) {
-    return this.native_usage ? this.native_meter.meter.view(now) : this.live_usage;
+    return this.headless_usage ? this.headless_meter.meter.view(now) : this.live_usage;
+  }
+  /** Counts usage from its headless session's protocol from now on, starting from what
+   * its transcript counted. `active` when a turn of it already runs. */
+  beginHeadlessUsage(active: boolean) {
+    if (this.headless_usage) return;
+    this.headless_usage = true;
+    this.headless_meter.meter.value = new View({ ...this.live_usage, tokens: new Tokens(this.live_usage.tokens) });
+    this.headless_meter.meter.value.recent_tokens = 0n;
+    this.headless_meter.baseline_next = this.live_usage.known || active;
+    if (this.headless_meter.baseline_next) this.headless_meter.meter.value.partial = true;
   }
   compactionChanged(was: boolean, now: number) {
     if (this.state.compacting === was) return;
@@ -64,32 +74,26 @@ export class Actor {
     this.state.paused = false;
     return true;
   }
-  pauseAtStop(crons: any, seq: bigint) {
-    const wakeup = background_tasks.claudeWakeup(crons);
-    if (this.pid <= 0 || (!this.shells.len && !wakeup)) return;
-    this.state.paused = true;
-    this.paused_at = seq;
-    this.paused_for_wakeup = wakeup;
-  }
   refreshTranscriptTool() {
     this.state.tool_active =
       ["working", "blocked"].includes(this.state.state) &&
       (this.transcript_tool_active || this.background_tasks.len > 0);
   }
   observeTools(progress: any) {
-    if (this.provider() !== "codex" || this.state.turnId() !== progress.turn.text()) return;
+    if (!adapter(this.provider()).caps.transcript_tools || this.state.turnId() !== progress.turn.text()) return;
     this.transcript_tool_active = !progress.ended && progress.running > 0;
     this.refreshTranscriptTool();
   }
-  observeSnapshot(snapshot: any, watched: boolean, now: number) {
+  observeSnapshot(snapshot: Snapshot, watched: boolean, now: number) {
     const a = this.state;
     if (snapshot.observed_at <= a.last_seq) return false;
     this.child_refresh = false;
     const binding = a.last_seq === 0n;
     if (a.session.len && a.sessionId() !== snapshot.session) return false;
     if (binding) {
+      const provider = a.provider;
       a.reset();
-      a.provider = "codex";
+      a.provider = provider;
       a.session = new Text(snapshot.session);
     }
     if (snapshot.transcript.len) a.transcript = snapshot.transcript;
@@ -152,21 +156,12 @@ export class Actor {
       this.model_from_hook = true;
     }
     this.compactionChanged(was, now);
-    if (this.provider() === "claude") {
-      this.state.subagents.waiting = false;
-      const tasks = background_tasks.Inventory.claude(event.background_tasks, now);
-      if (tasks) this.background_tasks = tasks;
-      if (event.kind === "session_end") this.background_tasks = new background_tasks.Inventory();
-      // A Stop lists only the tasks of the process that runs the session
-      // now, so a shell of an earlier one drops out.
-      if (event.kind === "stop") this.shells = background_tasks.Shells.claude(event.background_tasks);
-      if (event.kind === "session_end") this.shells = new background_tasks.Shells();
-    }
+    adapter(this.provider()).conversation?.hooked?.(this, event, now);
     this.observed_at = Math.max(this.observed_at, now);
     return ding;
   }
-  checkPause(buffer?: Uint8Array) {
-    if (!this.state.paused || claudeRunning(this.pid, buffer)) return false;
+  checkPause() {
+    if (!this.state.paused || (adapter(this.provider()).conversation?.holds?.(this.pid) ?? false)) return false;
     this.state.paused = false;
     return true;
   }
@@ -182,12 +177,7 @@ export class Actor {
   }
   observeCompactionScreen(compacting: boolean | null, now: number) {
     const was = this.state.compacting;
-    if (
-      !Provider.info(this.provider()).screen.compaction_status ||
-      this.state.state !== "working" ||
-      compacting === null
-    )
-      return;
+    if (this.state.state !== "working" || compacting === null) return;
     if (compacting && !this.state.compacting) {
       this.state.compacting = true;
       this.screen_compacting = true;
@@ -228,7 +218,7 @@ export class Attachment {
   provisional = new Agent();
   generation = 1n;
   selection_hash = 0n;
-  /** Codex: the title shows a side conversation (`/btw`) of `actor`. */
+  /** The title shows a side conversation of `actor`, such as Codex's `/btw`. */
   side = false;
   hook_seq = 0n;
   known: ActorId[] = [];
@@ -334,89 +324,16 @@ export class Registry {
   }
   observeHook(actor: Actor, event: any, seq: bigint, watched: boolean, now: number, presence: Presence = "detached") {
     if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
-      this.observeSubagentHook(actor, event, now);
+      adapter(actor.provider()).conversation?.child?.(this, actor, event, now);
       return false;
     }
     const accepted = actor.state.last_seq;
     const ding = actor.observeHook(event, seq, watched, now, presence);
-    if (actor.state.last_seq === accepted || actor.provider() !== "claude") return ding;
-    if (event.subagent) this.observeLaunch(actor, event, now);
-    const listed = background_tasks.Children.claude(event.background_tasks);
-    if (listed === null && event.kind !== "session_end") return ding;
-    const children = listed ?? new background_tasks.Children();
-    this.observeSubagents(actor, children, now);
-    if (event.kind === "stop") {
-      if (children.running > 0) actor.state.awaitSubagents(now);
-      else actor.pauseAtStop(event.session_crons, seq);
-    }
+    if (actor.state.last_seq !== accepted)
+      adapter(actor.provider()).conversation?.applied?.(this, actor, event, seq, now);
     return ding;
   }
-  adoptSubagent(parent: Actor, meta: any, now: number) {
-    let child: Actor;
-    try {
-      child = this.get("claude", meta.id.text());
-    } catch {
-      return false;
-    }
-    if (!this.linkChild(parent, child)) return false;
-    if (!child.state.transcript.len && path.isAbsolute(parent.state.transcriptPath()))
-      child.state.transcript = new Text(
-        Claude.subagentTranscript(parent.state.transcriptPath(), parent.state.sessionId(), meta.id.text()),
-      );
-    child.role = meta.agent_type;
-    child.state.setName(meta.agent_type.text());
-    child.state.setActivity(meta.description.text());
-    child.state.state = "working";
-    child.observed_at = now;
-    return true;
-  }
-  observeLaunch(parent: Actor, event: any, now: number) {
-    if (Buffer.byteLength(event.subagent) > 96 || this.find("claude", event.subagent)?.state.state === "working")
-      return;
-    if (
-      !this.adoptSubagent(
-        parent,
-        {
-          id: new Text(event.subagent),
-          description: new Text(event.description),
-          agent_type: new Text(event.subagent_type),
-        },
-        now,
-      )
-    )
-      return;
-    parent.state.subagents.running = Math.min(0xffffffff, parent.state.subagents.running + 1);
-    parent.children_observed_at = now;
-  }
-  /** A subagent's start or stop, which leaves its parent's own state alone. */
-  observeSubagentHook(parent: Actor, event: any, now: number) {
-    if (parent.provider() !== "claude") return;
-    if (event.kind === "subagent_stop") {
-      // The list still has the stopping subagent running.
-      const listed = background_tasks.Children.claude(event.background_tasks);
-      if (listed) this.observeSubagents(parent, listed.without(event.subagent), now);
-      return;
-    }
-    // A launch adopts a new subagent; a start only revives one a message resumed.
-    const child = this.find("claude", event.subagent);
-    if (!child || child.parent !== parent.id || child.state.state === "working") return;
-    child.state.state = "working";
-    child.observed_at = now;
-    parent.state.subagents.running = Math.min(0xffffffff, parent.state.subagents.running + 1);
-    parent.children_observed_at = now;
-  }
-  observeSubagents(parent: Actor, children: background_tasks.Children, now: number) {
-    parent.state.subagents.running = children.running;
-    parent.children_observed_at = now;
-    for (const meta of children.slice()) this.adoptSubagent(parent, meta, now);
-    if (!children.complete()) return;
-    for (const child of this.items)
-      if (child.parent === parent.id && child.state.state !== "idle" && !children.listed(child.state.sessionId())) {
-        child.state.state = "idle";
-        child.observed_at = now;
-      }
-  }
-  observeChildren(parent: Actor, snapshot: any, now: number) {
+  observeChildren(parent: Actor, snapshot: Snapshot, now: number) {
     if (snapshot.observed_at <= parent.children_observed_at) return;
     if (!snapshot.children_complete) {
       parent.children_observed_at = 0;
@@ -426,7 +343,7 @@ export class Registry {
     for (const meta of snapshot.children) {
       let child: Actor;
       try {
-        child = this.get("codex", meta.session);
+        child = this.get(parent.provider(), meta.session);
       } catch {
         continue;
       }
@@ -445,9 +362,12 @@ export class Registry {
       child.observed_at = Math.max(child.observed_at, snapshot.observed_at);
     }
   }
-  routeHook(binding: Attachment, provider: Provider, event: any) {
+  /** The conversation a hook is about, in the pane `binding` its watcher
+   * routed it to. A hook that doesn't `bind` goes only where its session
+   * already shows. */
+  routeHook(binding: Attachment, provider: Provider, event: any, binds: boolean) {
     if (!event.session) return null;
-    if (provider === "codex") {
+    if (!binds) {
       const actor = this.find(provider, event.session);
       return actor && binding.knows(actor.id) ? actor : null;
     }

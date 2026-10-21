@@ -18,10 +18,10 @@ test("a viewer's protocol version is checked before its request is decoded", asy
     messages: any[] = [];
   try {
     const cl = { protocol_version: null, queue: (value: any) => messages.push(value) } as any;
-    await server.request(cl, { op: "viewer.sync", protocol: 1, viewer_protocol: 4, interests: "x" });
+    await server.request(cl, { op: "viewer.sync", protocol: 2, viewer_protocol: 4, interests: "x" });
     expect(messages).toEqual([{ err: "UnsupportedViewerProtocol", viewer_protocol: 3 }]);
     await expect(
-      server.request(cl, { op: "viewer.sync", protocol: 1, viewer_protocol: 3, interests: "x" }),
+      server.request(cl, { op: "viewer.sync", protocol: 2, viewer_protocol: 3, interests: "x" }),
     ).rejects.toThrow("UnexpectedToken");
   } finally {
     dispose();

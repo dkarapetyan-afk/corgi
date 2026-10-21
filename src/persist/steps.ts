@@ -216,6 +216,50 @@ function checkpoint4To5(value: any) {
   byProvider(value, "agent_yolo", "boolean");
   byProvider(value, "agent_hidden", "boolean");
 }
+/** Base64 bytes followed by more base64 bytes. */
+function joined(first: any = "", second: any = "") {
+  if (typeof first !== "string" || typeof second !== "string") throw Error("InvalidCheckpoint");
+  return Buffer.concat([Buffer.from(first, "base64"), Buffer.from(second, "base64")]).toString("base64");
+}
+/** A process's pipes and buffers become a client's saved state. */
+function client(fields: any, state: Record<string, unknown>) {
+  fields.client = {
+    state: {
+      pid: fields.pid ?? -1,
+      input: fields.input ?? "",
+      output: joined(fields.output, fields.deferred),
+      exited: fields.exited === true,
+      ready: fields.ready === true,
+      ...state,
+    },
+    handles: [fields.stdin ?? -1, fields.stdout ?? -1].every(fd => fd >= 0) ? [fields.stdin, fields.stdout] : [],
+  };
+  for (const key of ["pid", "stdin", "stdout", "input", "output", "deferred"]) delete fields[key];
+}
+function checkpoint5To6(value: any) {
+  for (const workspace of items(value, "workspaces"))
+    for (const target of items(workspace, "agent_order")) {
+      const fields = object(target);
+      if (!("native" in fields)) continue;
+      fields.headless = fields.native;
+      delete fields.native;
+    }
+  // Headless sessions keep their process; their client reads the requests
+  // still waiting from the lines that asked them. The journal of raw lines
+  // has no decoded form, so it starts over.
+  for (const session of items(value, "sessions")) {
+    const fields = object(session);
+    client(fields, {
+      cwd: fields.cwd ?? "",
+      lines: items(fields, "approvals"),
+      active: items(fields, "turns").map(turn => [object(turn).thread, object(turn).turn]),
+    });
+    fields.approvals = [];
+    delete fields.approval_actors;
+    fields.events = [];
+    fields.journal_bytes = 0;
+  }
+}
 function handoff1To2(value: any) {
   const summaries = object(value).summaries;
   if (summaries === undefined || summaries === null) return;
@@ -285,5 +329,39 @@ function handoff3To4(value: any) {
     byProvider(fields.preview, "installed", "boolean");
   }
 }
-export const checkpoint: Step[] = [table, checkpoint2To3, checkpoint3To4, checkpoint4To5];
-export const handoff: Step[] = [handoff1To2, handoff2To3, handoff3To4];
+function handoff4To5(value: any) {
+  const summaries = object(value).summaries;
+  if (summaries === undefined || summaries === null || !("pool" in object(summaries))) return;
+  const pool = object(summaries.pool),
+    config = object(pool.config ?? {});
+  for (const slot of items(pool, "slots")) {
+    if (slot === null) continue;
+    const fields = object(slot),
+      schema = fields.schema ?? null;
+    client(fields, {
+      ready: true,
+      cwd: "/tmp",
+      next_id: fields.next_id ?? 1,
+      thread: fields.thread ?? "",
+      created: fields.conversations_created ?? 0,
+      summary:
+        config.provider === "claude"
+          ? { schema: schema !== null }
+          : { instructions: fields.instructions ?? "", model: config.model ?? null, schema },
+    });
+    for (const key of [
+      "exited",
+      "ready",
+      "events",
+      "next_seq",
+      "cursor",
+      "next_id",
+      "thread",
+      "conversations_created",
+      "usage_cursor",
+    ])
+      delete fields[key];
+  }
+}
+export const checkpoint: Step[] = [table, checkpoint2To3, checkpoint3To4, checkpoint4To5, checkpoint5To6];
+export const handoff: Step[] = [handoff1To2, handoff2To3, handoff3To4, handoff4To5];

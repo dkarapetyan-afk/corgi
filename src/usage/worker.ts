@@ -2,14 +2,14 @@ import type { Runtime } from "../runtime";
 import { open, lstat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { Agent, Provider, Text } from "../agents";
-import { field, str, timestampMs } from "../providers/common";
-import { Claude } from "../providers/claude";
+import { adapter } from "../providers";
+import type { TranscriptReader } from "../providers/adapter";
+import { str, timestampMs } from "../providers/common";
 import { Model } from "../providers/model";
 import { parse } from "../json";
-import { verifySession } from "../transcript";
-import { Index, available } from "../providers/codex/files";
+import { head } from "../transcript";
 import { Counts, Tracker } from "./tokens";
-import { Codex, View, Tokens } from "./live";
+import { Counter, View } from "./live";
 import { Reading } from "./context_window";
 import { Tracker as Tools, View as Progress } from "../activity/tools";
 import { Ended } from "../activity/background_tasks";
@@ -38,38 +38,7 @@ export class Result {
   spoke_at = 0;
   ended = new Ended();
   fallback(agent: Agent, now: number) {
-    if (agent.provider === "claude") {
-      if (this.name.len) agent.setName(this.name.text());
-      if (
-        agent.state === "working" &&
-        !agent.activity_inferred &&
-        this.update.len &&
-        this.update_at > agent.activity_at
-      ) {
-        agent.setActivity(this.update.text());
-        agent.activity_at = this.update_at;
-      }
-      const p = this.progress;
-      if (
-        !p ||
-        agent.state !== "working" ||
-        p.ended ||
-        !p.turn.len ||
-        agent.turnId() !== p.turn.text() ||
-        (!p.commentary.len && !p.evidence.len)
-      )
-        return false;
-      agent.activity_generation = Bun.hash.wyhash(agent.turnId(), 0n);
-      return true;
-    }
-    if (agent.provider !== "codex" || !available(agent, now)) return false;
-    if (this.name.len) agent.setName(this.name.text());
-    const p = this.progress;
-    if (!p || agent.state !== "working" || p.ended || !p.turn.len) return false;
-    if (!agent.turn.len && agent.last_seq === this.seq) agent.setTurn(p.turn.text());
-    if (agent.turnId() !== p.turn.text()) return false;
-    agent.activity_generation = Bun.hash.wyhash(p.commentary.text(), 0n);
-    return true;
+    return agent.provider ? (adapter(agent.provider).transcript?.fallback(this, agent, now) ?? false) : false;
   }
 }
 export class Tail {
@@ -83,7 +52,7 @@ export class Tail {
   partial = Buffer.alloc(0);
   discard = false;
   model = new Model();
-  live = new Codex();
+  live = new Counter();
   context = new Reading();
   opened = false;
   catch_up = false;
@@ -104,85 +73,12 @@ export class Tail {
   close() {
     Object.assign(this, new Tail());
   }
-  claudeRecord(session: string, value: any) {
-    const line = Claude.Line.decode(value);
-    if (!line || line.sessionId !== session || !line.type) return;
-    const chosen =
-        line.type === "agent-name"
-          ? str(value, "agentName")
-          : line.type === "custom-title"
-            ? str(value, "customTitle")
-            : "",
-      generated = line.type === "ai-title" ? str(value, "aiTitle") : "";
-    if (chosen && !chosen.includes("\ufffd")) {
-      this.name = new Text(chosen.slice(0, 160));
-      this.name_chosen = true;
-    } else if (generated && !this.name_chosen && !generated.includes("\ufffd"))
-      this.name = new Text(generated.slice(0, 160));
-    if (line.type === "assistant") this.claudeText(line);
-    if (line.type === "continued-in") this.continued = new Text(str(value, "continuedInSessionId"));
-    else if (line.type === "user" || line.type === "assistant") {
-      this.continued = new Text();
-      const stamp = timestampMs(line.timestamp);
-      if (stamp !== null) this.spoke_at = Math.max(this.spoke_at, stamp);
-    } else if (line.type === "queue-operation" && str(value, "operation") === "enqueue") {
-      const notice = Claude.TaskNotice.decode(str(value, "content"));
-      if (notice?.status) this.ended.add(notice.id);
-    }
-  }
-  claudeText(line: any) {
-    const stamp = timestampMs(line.timestamp),
-      content = field(line.message, "content");
-    if (stamp === null || !Array.isArray(content)) return;
-    let latest = "";
-    for (const part of content) {
-      if (str(part, "type") !== "text") continue;
-      for (const row of str(part, "text").split("\n")) {
-        const text = row.replace(/^[ \t\r#*\->`_]+|[ \t\r#*\->`_]+$/g, "");
-        if (!text) continue;
-        latest = text;
-        break;
-      }
-    }
-    if (!latest) return;
-    this.update = new Text(latest.slice(0, 160));
-    this.update_at = stamp * 1000;
-  }
   observeModel(message: any) {
     const id = str(message, "model");
     if (id && id !== "<synthetic>") this.model = Model.resolve(id);
   }
-  record(req: Request, value: any, appended: boolean, stamp: number | null) {
-    const session = req.agent.sessionId();
-    if (req.agent.provider === "claude") {
-      this.claudeRecord(session, value);
-      if (str(value, "sessionId") === session) {
-        this.progress.ingestClaude(value, appended);
-        this.context.claude(value);
-      }
-      this.observeModel(field(value, "message"));
-      const delta = this.tracker.transcript("claude", session, value),
-        owned = this.catch_up && stamp !== null && stamp >= req.tracked_since;
-      if ((appended || owned) && delta.tokens_known)
-        this.live.meter.add(
-          new Tokens({
-            input: delta.input,
-            cached_input: delta.cached_input,
-            output: delta.output,
-          }),
-          stamp ?? Date.now(),
-        );
-      return delta;
-    }
-    this.progress.ingest(value, appended);
-    this.observeModel(field(value, "payload"));
-    const delta = this.tracker.transcript("codex", session, value);
-    this.live.ingest(value, appended, Date.now());
-    this.context.codex(value);
-    return delta;
-  }
-  ingest(req: Request, bytes: Buffer | string, start_offset: number) {
-    if (Provider.info(req.agent.provider!).prompt_turns) this.progress.bind(req.agent.turnId());
+  ingest(req: Request, reader: TranscriptReader, bytes: Buffer | string, start_offset: number) {
+    if (adapter(req.agent.provider!).caps.prompt_turns) this.progress.bind(req.agent.turnId());
     const input = typeof bytes === "string" ? Buffer.from(bytes) : bytes,
       found = new Counts();
     let start = 0;
@@ -204,7 +100,7 @@ export class Tail {
           const value = parse(this.partial.toString()),
             appended = start_offset + start > this.initial_until,
             stamp = timestampMs(str(value, "timestamp")),
-            delta = this.record(req, value, appended, stamp);
+            delta = reader.record(this, req, value, appended, stamp);
           if (appended && stamp !== null && stamp > req.since) found.add(delta);
         } catch {
           this.live.meter.lose();
@@ -214,7 +110,7 @@ export class Tail {
     }
     return found;
   }
-  async poll(req: Request) {
+  async poll(req: Request, reader: TranscriptReader) {
     const file = await open(
       req.agent.transcriptPath(),
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -226,13 +122,14 @@ export class Tail {
       const resumed =
         this.inode !== 0 && stat.ino === this.inode && stat.dev === this.device && stat.size >= this.offset;
       if (!resumed) {
-        await verifySession(file, req.agent.provider!, req.agent.sessionId());
+        const first = await head(file);
+        adapter(req.agent.provider!).transcript?.verify?.(first, req.agent.sessionId());
         this.initial_until = stat.size;
         this.offset = Math.max(0, stat.size - 256 * 1024);
         const catch_up = req.child && !this.opened && stat.size <= 2 * 1024 * 1024;
         if (catch_up) this.offset = 0;
         const retained = this.live.meter;
-        this.live = new Codex();
+        this.live = new Counter();
         this.live.meter = retained;
         if (this.opened) this.live.meter.lose();
         this.opened = true;
@@ -240,22 +137,7 @@ export class Tail {
         this.tracker = new Tracker();
         this.progress = new Tools();
         this.context = new Reading();
-        if (req.agent.provider === "claude") {
-          if (!this.live.meter.value.known) {
-            this.live.meter.value.known = true;
-            this.live.meter.value.since = Date.now();
-          }
-          this.catch_up = catch_up;
-        } else {
-          const header = Buffer.alloc(65536),
-            n = await file.read(header, 0, header.length, 0),
-            end = header.subarray(0, n.bytesRead).indexOf(10);
-          if (end >= 0)
-            this.live.header(parse(header.subarray(0, end).toString()), req.child, req.tracked_since, catch_up);
-          else if (req.child) this.live.meter.lose();
-          this.progress.bind(req.agent.turnId());
-          if (!this.offset) this.tracker.beginCodex("codex");
-        }
+        reader.open(this, req, first, catch_up);
         this.discard = this.offset > 0;
       }
       this.inode = stat.ino;
@@ -267,7 +149,7 @@ export class Tail {
         start = this.offset,
         { bytesRead } = await file.read(bytes, 0, bytes.length, this.offset);
       this.offset += bytesRead;
-      return this.ingest(req, bytes.subarray(0, bytesRead), start);
+      return this.ingest(req, reader, bytes.subarray(0, bytesRead), start);
     } finally {
       await file.close();
     }
@@ -279,7 +161,8 @@ export class Worker {
   cursor = 0;
   results: Result[] = [];
   watchers = new Map<number, Tail>();
-  index = new Index();
+  /** Each provider's transcript reader, opened on first use. */
+  readers = new Map<Provider, TranscriptReader | null>();
   timer: ReturnType<typeof setInterval> | null = null;
   running = false;
   static start() {
@@ -291,14 +174,19 @@ export class Worker {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.watchers.clear();
-    this.index.close();
+    for (const reader of this.readers.values()) reader?.close?.();
+  }
+  reader(p: Provider) {
+    if (!this.readers.has(p)) this.readers.set(p, adapter(p).transcript?.reader() ?? null);
+    return this.readers.get(p)!;
   }
   reconcile(runtime: Runtime) {
     this.requests = [];
     for (const id of this.watchers.keys()) if (!runtime.conversations.byId(id)) this.watchers.delete(id);
     for (const actor of runtime.conversations.items) {
-      const agent = actor.state;
-      if (!agent.session.len || (!agent.transcript.len && actor.provider() !== "codex") || !runtime.followed(actor))
+      const agent = actor.state,
+        reader = agent.provider ? this.reader(agent.provider) : null;
+      if (!reader || !agent.session.len || (!agent.transcript.len && !reader.name) || !runtime.followed(actor))
         continue;
       const ws = runtime.workspaces.get(actor.workspace);
       if (!ws) continue;
@@ -321,13 +209,14 @@ export class Worker {
     if (this.running || this.stopping) return;
     this.running = true;
     try {
-      await this.index.refreshAsync();
+      for (const reader of this.readers.values()) await reader?.refresh?.();
       const count = Math.min(64, this.requests.length);
       const batch = Array.from({ length: count }, (_, i) => this.requests[(this.cursor + i) % this.requests.length]);
       if (this.requests.length) this.cursor = (this.cursor + count) % this.requests.length;
       for (const req of batch) {
-        const existing = this.results.find(r => r.actor === req.actor);
-        if (!existing && this.results.length >= 64) continue;
+        const reader = this.reader(req.agent.provider!),
+          existing = this.results.find(r => r.actor === req.actor);
+        if (!reader || (!existing && this.results.length >= 64)) continue;
         let t = this.watchers.get(req.actor);
         if (!t) {
           t = new Tail();
@@ -337,7 +226,7 @@ export class Worker {
         let delta = new Counts();
         if (req.agent.transcript.len)
           try {
-            delta = await t.poll(req);
+            delta = await t.poll(req, reader);
           } catch {
             if (t.live.meter.value.known) t.live.meter.lose();
             t.closeFile();
@@ -347,7 +236,7 @@ export class Worker {
           !delta.any() &&
           !delta.tokens_known &&
           !t.progress.dirty &&
-          req.agent.provider !== "codex" &&
+          !reader.name &&
           !t.model.id.len &&
           !t.name.len &&
           !t.continued.len &&
@@ -370,15 +259,12 @@ export class Worker {
         r.live = t.live.meter.view(Date.now());
         r.context = Object.assign(new Reading(), t.context);
         r.progress = t.progress.view();
-        if (req.agent.provider === "codex") r.name = this.index.name(req.agent.sessionId());
-        else {
-          r.name = t.name;
-          r.continued = t.continued;
-          r.update = t.update;
-          r.update_at = t.update_at;
-          r.spoke_at = t.spoke_at;
-          r.ended = Object.assign(new Ended(), { items: [...t.ended.items] });
-        }
+        r.name = reader.name?.(req.agent.sessionId()) ?? t.name;
+        r.continued = t.continued;
+        r.update = t.update;
+        r.update_at = t.update_at;
+        r.spoke_at = t.spoke_at;
+        r.ended = Object.assign(new Ended(), { items: [...t.ended.items] });
         if (existing) this.results[this.results.indexOf(existing)] = r;
         else this.results.push(r);
         if (t.progress.turn.text() === req.agent.turnId()) t.progress.dirty = false;

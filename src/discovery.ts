@@ -1,7 +1,7 @@
 import * as build_id from "./build_id";
-import { accessSync, constants, realpathSync, statSync, readdirSync } from "node:fs";
-import { resolve as absolute, join } from "node:path";
-import { Provider } from "./providers";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { resolve as absolute } from "node:path";
+import { Provider, adapter } from "./providers";
 import { PathSearch } from "./os";
 import { testBuild } from "./build_assets";
 import * as subprocess from "./subprocess";
@@ -21,30 +21,15 @@ function executable(path: string): boolean {
     return false;
   }
 }
-export function isVersion(output: string, prefix: string): boolean {
-  const line = output.trim();
-  return line.startsWith(prefix) && /^\d/.test(line.slice(prefix.length));
+/** The executable `CORGI_<PROVIDER>_BIN` names in its place, if set. */
+export function override(provider: Provider): string | undefined {
+  return process.env[`CORGI_${provider.toUpperCase()}_BIN`];
 }
-function candidates(provider: Provider, cwd = process.cwd()): string[] {
-  const info = Provider.info(provider),
-    command = info.executables[0],
-    paths = (process.env.PATH ?? "").split(":").map(dir => absolute(cwd, dir, command));
-  const home = process.env.HOME;
-  if (home) for (const p of info.home_paths) paths.push(join(home, p));
-  const root = testBuild ? (process.env.CORGI_TEST_SYSTEM_ROOT ?? "") : "";
-  for (const p of info.system_paths) paths.push(root + p);
-  if (process.platform === "darwin")
-    for (const apps of [home ? join(home, "Applications") : null, root + "/Applications"]) {
-      if (!apps) continue;
-      let names: string[] = [];
-      try {
-        names = readdirSync(apps)
-          .filter(x => x.endsWith(".app"))
-          .sort();
-      } catch {}
-      for (const name of [...info.app_bundles, ...names]) paths.push(join(apps, name, "Contents/Resources", command));
-    }
-  return [...new Set(paths)];
+function installs(provider: Provider) {
+  return adapter(provider).installs({
+    home: process.env.HOME || null,
+    root: testBuild ? (process.env.CORGI_TEST_SYSTEM_ROOT ?? "") : "",
+  });
 }
 /** The promise's value if it settles within `ms`, else null. */
 async function within<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -57,34 +42,34 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   }
 }
 export async function resolve(provider: Provider, cwd: string | null = null): Promise<string> {
-  const info = Provider.info(provider),
-    override = process.env[info.binary_env],
-    prefix = info.version_prefix;
-  if (override !== undefined && (override.length || prefix === null)) return override;
-  if (!prefix) return info.executables[0];
+  const { command, version } = adapter(provider),
+    set = override(provider);
+  if (set !== undefined && (set.length || !version)) return set;
+  if (!version) return command;
   const deadline = performance.now() + 2000,
+    path = (process.env.PATH ?? "").split(":").map(dir => absolute(cwd ?? process.cwd(), dir, command)),
     quit = subprocess.Quit.init(),
     probes: Promise<string | null>[] = [];
   let report!: (path: string) => void;
   const found = new Promise<string>(resolve => (report = resolve));
-  const probe = async (path: string, timeout_ms: number) => {
+  const probe = async (candidate: string, timeout_ms: number) => {
     try {
-      const output = await subprocess.run([path, "--version"], { timeout_ms, max_output: 4096, quit });
-      if (output.ok() && isVersion(output.stdout.toString(), prefix)) {
-        report(path);
-        return path;
+      const output = await subprocess.run([candidate, "--version"], { timeout_ms, max_output: 4096, quit });
+      if (output.ok() && version(output.stdout.toString())) {
+        report(candidate);
+        return candidate;
       }
     } catch {}
     return null;
   };
   try {
-    for (const path of candidates(provider, absolute(cwd ?? process.cwd()))) {
-      if (!executable(path)) continue;
+    for (const candidate of new Set([...path, ...installs(provider)])) {
+      if (!executable(candidate)) continue;
       const left = deadline - performance.now();
       if (left <= 0) break;
       // A probe may use the whole budget, but after 750 ms the next
       // candidate starts beside it: a hung one shouldn't hide the rest.
-      const running = probe(path, left);
+      const running = probe(candidate, left);
       probes.push(running);
       const winner = await within(Promise.race([found, running]), Math.min(750, left));
       if (winner) return winner;
@@ -105,20 +90,7 @@ export function onPath(name: string, path_list = process.env.PATH ?? ""): string
   return null;
 }
 export function installed(provider: Provider): boolean {
-  const info = Provider.info(provider),
-    override = process.env[info.binary_env];
-  if (override) return override.includes("/") ? executable(override) : onPath(override) !== null;
-  if (onPath(info.executables[0]) !== null) return true;
-  const home = process.env.HOME,
-    root = testBuild ? (process.env.CORGI_TEST_SYSTEM_ROOT ?? "") : "",
-    paths: string[] = [];
-  if (home) {
-    for (const p of info.home_paths) paths.push(join(home, p));
-    for (const name of info.app_bundles)
-      paths.push(join(home, "Applications", name, "Contents/Resources", info.executables[0]));
-  }
-  for (const p of info.system_paths) paths.push(root + p);
-  for (const name of info.app_bundles)
-    paths.push(join(root, "/Applications", name, "Contents/Resources", info.executables[0]));
-  return paths.some(executable);
+  const set = override(provider);
+  if (set) return set.includes("/") ? executable(set) : onPath(set) !== null;
+  return onPath(adapter(provider).command) !== null || installs(provider).some(executable);
 }

@@ -239,7 +239,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 1,
+          protocol: 2,
           workspace: ws,
           cwd: this.launchDir,
         })
@@ -495,7 +495,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     try {
       client.send({
         op: "agent.subscribe",
-        protocol: 1,
+        protocol: 2,
         workspace: this.ws,
         cwd: this.launchDir,
       });
@@ -519,7 +519,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       mkdirSync(other);
       client.send({
         op: "agent.subscribe",
-        protocol: 1,
+        protocol: 2,
         workspace: this.ws,
         cwd: other,
       });
@@ -798,7 +798,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const directory = join(this.temp.name, name);
     mkdirSync(directory, { recursive: true });
     const preview = async () =>
-      (await this.rpc({ op: "agent.preview", protocol: 1, workspace: this.ws, cwd: directory })).preview;
+      (await this.rpc({ op: "agent.preview", protocol: 2, workspace: this.ws, cwd: directory })).preview;
     await this.until(async () => !(await preview()).pending, 12);
     return (await preview()).options.claude;
   }
@@ -1125,7 +1125,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 1,
+          protocol: 2,
           workspace: this.ws,
           cwd: project,
         })

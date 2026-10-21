@@ -1,7 +1,8 @@
-import { basename, resolve as pathResolve, join } from "node:path";
-import { readFileSync, realpathSync, statSync } from "node:fs";
-import { Provider } from "../providers";
+import { basename } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { Provider, adapter } from "../providers";
 import { Model } from "../providers/model";
+import type { CommandLine, Inspection } from "../providers/adapter";
 import * as os from "../os";
 import * as settings from "../settings";
 import * as subprocess from "../subprocess";
@@ -65,11 +66,8 @@ export function identify(source: string): Provider | null {
     w = t.next();
   }
   if (w === null) return null;
-  for (const p of Provider.all) {
-    const pkg = Provider.info(p).package;
-    if (w === pkg || w.startsWith(pkg + "@")) return p;
-  }
-  return Provider.named(basename(w));
+  // A package bunx runs may name its version: @openai/codex@1.2.
+  return Provider.owning(w.replace(/(.)@[^/]*$/, "$1"));
 }
 export class Semantics {
   provider: Provider | null = null;
@@ -110,7 +108,7 @@ export class Entry {
   }
   label() {
     const p = identify(this.command);
-    return this.name || (p ? `${Provider.info(p).name} command` : "Shell command");
+    return this.name || (p ? `${adapter(p).name} command` : "Shell command");
   }
 }
 /** Where the shell new panes run comes from. */
@@ -273,110 +271,53 @@ export async function resolve(source: string, cwd: string | null = null, quit?: 
   }
   throw Error("RecursiveShorthand");
 }
+/** `source` split into the variables it sets and its words from the program on. */
+export function commandLine(source: string, cwd: string): CommandLine {
+  const t = new Tokens(source),
+    line: CommandLine = { env: [], args: [], flagged: false, cwd };
+  let w: string | null;
+  while ((w = t.next()) !== null) {
+    if (line.args.length) line.args.push(w);
+    else if (assignment(w)) line.env.push([w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]);
+    else if (w !== "command" && w !== "env") {
+      line.flagged = w.startsWith("-");
+      line.args.push(w);
+    }
+  }
+  return line;
+}
 export function analyze(source: string, cwd: string) {
   const s = new Semantics();
   s.provider = identify(source);
-  s.default_account = s.provider !== null;
-  const facts = s.provider ? Provider.info(s.provider) : null,
-    t = new Tokens(source);
-  let before = true,
-    nextModel = false,
-    nextProfile = false,
-    credential = false,
-    settings = false,
-    config = "",
-    home = "";
-  let w: string | null;
-  while ((w = t.next()) !== null) {
-    if (nextModel) {
-      s.model = w;
-      nextModel = false;
-      continue;
-    }
-    if (nextProfile) {
-      s.account = "Profile selected; identity unknown";
-      nextProfile = false;
-      continue;
-    }
-    if (before && assignment(w)) {
-      const i = w.indexOf("="),
-        key = w.slice(0, i),
-        value = w.slice(i + 1);
-      if (key === "HOME") {
-        home = value;
-        s.default_account = false;
-      } else if (facts) {
-        if (key === facts.config_env) {
-          config = value;
-          s.default_account = false;
-        } else {
-          const override = facts.envOverride(key, value);
-          if (override) {
-            s.default_account = false;
-            if (override === "credential") {
-              credential = true;
-              s.account = "API key - identity unavailable";
-            } else if (override === "oauth") {
-              credential = true;
-              s.account = "Explicit OAuth token - identity unknown";
-            } else {
-              settings = true;
-              s.account = "External endpoint/provider - identity unknown";
-            }
-          } else if (key === facts.model_env) s.model = value;
-        }
-      }
-      continue;
-    }
-    if (before && (w === "command" || w === "env")) continue;
-    if (before && w.startsWith("-")) {
-      settings = true;
-      s.default_account = false;
-    }
-    before = false;
-    if (w === "--model" || w === "-m") nextModel = true;
-    if (w.startsWith("--model=")) s.model = w.slice(8);
-    for (const p of Provider.all)
-      if ((s.provider === null || s.provider === p) && w === Provider.info(p).yolo_flag) s.yolo = true;
-    if (!facts) continue;
-    const word = w;
-    const profile = facts.profile_flags.some((f: string) => word === f || word.startsWith(f + "=")),
-      setting = facts.settings_flags.some((f: string) => word === f || word.startsWith(f + "="));
-    if (profile || setting) {
-      settings = true;
-      s.default_account = false;
-    }
-    if (facts.profile_flags.includes(w)) nextProfile = true;
-    if ((profile && w.includes("=")) || setting) s.account = "Custom settings - identity unknown";
-  }
-  if (facts && !s.default_account && !credential && !settings) {
-    s.account = "Custom profile - identity unknown";
-    const root =
-      config && !/[$~`]/.test(config)
-        ? pathResolve(cwd, config)
-        : home && !/[$~`]/.test(home)
-          ? pathResolve(cwd, home, facts.account_home)
-          : null;
-    if (root)
-      try {
-        const file = join(root, facts.account_file);
-        if (statSync(file).size <= 65536) {
-          const d = JSON.parse(readFileSync(file, "utf8"));
-          let email = "";
-          if (s.provider === "claude") email = d.oauthAccount?.emailAddress ?? "";
-          else if (d.OPENAI_API_KEY) s.account = "Profile API key - identity unavailable";
-          else
-            email =
-              JSON.parse(Buffer.from(d.tokens?.id_token?.split(".")[1] ?? "", "base64url").toString()).email ?? "";
-          if (email) s.account = `${email} (cached)`;
-        }
-      } catch {}
-  }
+  const line = commandLine(source, cwd),
+    seen = s.provider ? adapter(s.provider).inspect(line) : guess(line);
+  s.model = seen.model;
+  s.account = seen.account;
+  s.default_account = seen.default_account;
+  s.yolo = seen.permissions === "bypass";
   if (!s.default_account && !s.account) s.account = "Account cannot be determined";
   s.mode = s.yolo ? "Skips permission checks" : "Provider permission settings";
   s.nameModel();
-  s.suggested_name = (facts?.label ?? "Custom agent") + (s.model ? " - " + s.modelLabel() : "");
+  s.suggested_name =
+    (s.provider ? adapter(s.provider).label : "Custom agent") + (s.model ? " - " + s.modelLabel() : "");
   return s;
+}
+/** What a command Corgi can't place says: its model, and whether any
+ * provider would read it as skipping permission checks. */
+function guess(line: CommandLine): Inspection {
+  let model = "",
+    next = false;
+  for (const w of line.args) {
+    if (next) {
+      model = w;
+      next = false;
+      continue;
+    }
+    if (w === "--model" || w === "-m") next = true;
+    if (w.startsWith("--model=")) model = w.slice(8);
+  }
+  const bypass = Provider.all.some(p => adapter(p).inspect({ ...line, env: [] }).permissions === "bypass");
+  return { permissions: bypass ? "bypass" : "default", model, account: "", default_account: false };
 }
 export class Resolution {
   semantics = new Semantics();

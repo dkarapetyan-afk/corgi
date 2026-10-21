@@ -38,6 +38,10 @@ Set `CORGI_OLD_EXE` to a test-enabled binary from the previous release when
 running `updates`; its first fixture version then uses that binary to exercise
 the real cross-version handoff.
 
+`CORGI_OLD_EXE=/path/to/protocol-1/corgi-test bun integration.ts reload_compatibility`
+checks automatic developer switchover and explicit reload from a protocol-1
+daemon. Both keep a live shell and verify it still accepts input after handoff.
+
 `--check` parses and bundles the suites without executing them; it is not a
 replacement for running the tests. The former smoke suite is split into
 `smoke`, `smoke_input`, and `smoke_terminal`. Scenarios retain their original

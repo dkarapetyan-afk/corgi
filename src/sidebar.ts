@@ -1,6 +1,6 @@
 //! The sidebar: workspaces above, agents below. Mirrors sidebar.zig.
 import * as palette from "./palette";
-import type { Provider } from "./providers";
+import { Provider, adapter } from "./providers";
 import { Style, colors, fg, bg, fgRgb, bgRgb, mix, underline } from "./palette";
 import * as corgiAnimation from "./corgi_animation";
 import * as corgiBadge from "./corgi_badge";
@@ -97,12 +97,12 @@ export type Target =
   /** A conversation a browsed worktree's ghost shows, which entering it
    * brings back as a hibernated agent. */
   | { asleep: string; provider: Provider };
-export const isAgent = (t: Target): t is OrderTarget => "pane" in t || "native" in t;
+export const isAgent = (t: Target): t is OrderTarget => "pane" in t || "headless" in t;
 export const isHeading = (t: Target): boolean => "group" in t || "worktree" in t;
 export function sameTarget(a: Target | null | undefined, b: Target | null | undefined): boolean {
   if (!a || !b) return !a && !b;
   if ("pane" in a) return "pane" in b && a.pane === b.pane;
-  if ("native" in a) return "native" in b && a.native === b.native;
+  if ("headless" in a) return "headless" in b && a.headless === b.headless;
   return (
     Object.keys(a).length === Object.keys(b).length &&
     Object.entries(a).every(([key, value]) => value === (b as Record<string, unknown>)[key])
@@ -214,14 +214,14 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
 }
 export function orderTarget(e: Entry): OrderTarget | null {
   if ("pane" in e.target) return { pane: e.target.pane };
-  if ("native" in e.target) return { native: e.target.native };
+  if ("headless" in e.target) return { headless: e.target.headless };
   return null;
 }
 export function lessThan(order: OrderTarget[], left: Entry, right: Entry): boolean {
   return rank(order, orderTarget(left)!) < rank(order, orderTarget(right)!);
 }
 // The style guide's status glyphs; finished attention is the unseen-idle
-// state, and its name turns bold. Corgi also retains ended native
+// state, and its name turns bold. Corgi also retains ended headless
 // sessions. A `selected` row takes muted where the guide says faint.
 export function indicator(e: Entry, selected: boolean): { icon: string; color: string; unread: boolean } {
   const quiet = selected ? fg("muted") : fg("faint");
@@ -923,7 +923,7 @@ export class View {
       v.line(w, v.middle() + 2, v.search !== null ? "No matching agents" : "No agents yet", panel);
       if (v.search === null) {
         v.line(w, v.middle() + 4, "Launch inside a pane:", panel);
-        v.line(w, v.middle() + 5, "codex  or  claude", panel);
+        commands(v.width - 3).forEach((text, i) => v.line(w, v.middle() + 5 + i, text, panel));
       }
     }
     const grouped = entries.some(e => isGroup(e.target));
@@ -1292,6 +1292,17 @@ export class View {
   }
 }
 const mod = (a: number, b: number) => ((a % b) + b) % b;
+/** Each provider's command, joined by "or" in lines up to `width` wide. */
+function commands(width: number): string[] {
+  const lines: string[] = [];
+  for (const p of Provider.all) {
+    const name = adapter(p).command,
+      last = lines.length - 1;
+    if (last >= 0 && displayWidth(`${lines[last]}  or  ${name}`) <= width) lines[last] += `  or  ${name}`;
+    else lines.push(last >= 0 ? `or  ${name}` : name);
+  }
+  return lines;
+}
 
 /** Context colors for the row figure and the card's meter: muted, warm from
  * 70% of the way to compaction, hot from 85%, faded into the background while
@@ -1319,7 +1330,7 @@ function contextFigure(
 }
 export function animationKey(e: Entry): bigint {
   if ("pane" in e.target) return BigInt(e.target.pane) * 17n;
-  if ("native" in e.target) return (BigInt(e.target.native) + 0x100000000n) * 17n;
+  if ("headless" in e.target) return (BigInt(e.target.headless) + 0x100000000n) * 17n;
   if ("asleep" in e.target) return BigInt(Bun.hash.wyhash(e.target.asleep, 0n)) + (1n << 64n);
   throw Error("unreachable");
 }

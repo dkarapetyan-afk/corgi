@@ -99,7 +99,7 @@ class Simulator extends TestCase {
     }
     this.assertEqual(sim.errors, []);
   }
-  async test_native_program_preserves_both_provider_protocols() {
+  async test_headless_program_preserves_both_provider_protocols() {
     const temp = tempDir("corgi-sim-");
     try {
       const program = write_executable(join(temp.name, "provider"), NATIVE_PROVIDER);
@@ -107,11 +107,15 @@ class Simulator extends TestCase {
         ["codex", []],
         ["claude", ["--print"]],
       ] as const) {
+        const prompt = (text: string) =>
+          provider === "codex"
+            ? { id: 2, method: "turn/start", params: { threadId: "t", input: [{ type: "text", text }] } }
+            : { type: "user", message: { role: "user", content: text } };
         const messages = [
           { id: 1, method: "initialize" },
-          { method: "test/approval" },
-          provider === "codex" ? { id: 900 } : { type: "control_response" },
-          { method: "test/exit" },
+          prompt("test/approval"),
+          provider === "codex" ? { id: 900, result: { decision: "accept" } } : { type: "control_response" },
+          prompt("test/exit"),
         ];
         const result = await run([program, ...args], {
           input: messages.map(v => JSON.stringify(v) + "\n").join(""),
@@ -125,7 +129,8 @@ class Simulator extends TestCase {
         if (provider === "codex") {
           this.assertEqual(events[1].method, "turn/started");
           this.assertEqual(events[2].method, "item/commandExecution/requestApproval");
-          this.assertEqual(events[3].method, "turn/completed");
+          this.assertEqual(events[3], { id: 2, result: { turn: { id: "turn" } } });
+          this.assertEqual(events[4].method, "turn/completed");
         } else {
           this.assertEqual(events[1].type, "control_request");
           this.assertEqual(events[2].type, "result");

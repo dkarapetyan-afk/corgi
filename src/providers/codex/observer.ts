@@ -1,14 +1,13 @@
 import path from "node:path";
-import { BoundedText, Path } from "../../bounded_text";
-class Name extends BoundedText(160) {}
-class Role extends BoundedText(80) {}
-class Turn extends BoundedText(128) {}
+import { Path } from "../../bounded_text";
 import { Text, field, str } from "../common";
-import { Codex } from "./index";
+import { Child, Name, Role, Snapshot, Turn, type Request } from "../snapshot";
+import type { Observer } from "../adapter";
+import { commandDirectory, configDir, titleSession, writes } from "./index";
 import { Client } from "./socket";
 import * as errors from "../../errors";
 import { Inventory, capacity } from "../../activity/background_tasks";
-import { codex, Text as SummaryText } from "../../activity/summary";
+import { Text as SummaryText } from "../../activity/summary";
 import type { State } from "../../agents";
 import type { Runtime } from "../../runtime";
 import type { Location } from "../../worktrees";
@@ -19,46 +18,21 @@ function transcriptPath(value: string) {
     return new Path();
   }
 }
-export type Request = {
-  pane: number;
-  pid: number;
-  prefix: Text;
-  actor: number;
-  generation: bigint;
-  title_revision: bigint;
-};
-export class Child {
-  session = "";
-  name = new Name();
-  role = new Role();
-  transcript = new Path();
-  state: State = "unknown";
-  updated_at = 0;
-}
-export class Snapshot {
-  background_tasks = new Inventory();
-  children: Child[] = [];
-  children_complete = false;
-  subagents = { running: 0, blocked: 0, waiting: false };
-  evidence = new SummaryText();
-  name = new Name();
-  request: Request;
-  session: string;
-  state: State;
-  transcript = new Path();
-  turn = new Turn();
-  cwd = new Path();
-  location: Location | null = null;
-  outcome: "completed" | "interrupted" | "failed" | null = null;
-  /** A thread Codex keeps no history of, such as a `/btw` side conversation. */
-  ephemeral = false;
-  observed_at = Date.now() * 1000;
-  updated_at = 0;
-  constructor(request: Request, session: string, state: State) {
-    this.request = request;
-    this.session = session;
-    this.state = state;
+/** What a turn shows the summarizer: the latest agent message and the user's request. */
+export function evidence(turn: any) {
+  const items = field(turn, "items");
+  if (!Array.isArray(items)) return new SummaryText();
+  let latest = "",
+    out = "";
+  for (const item of items) if (str(item, "type") === "agentMessage") latest = str(item, "text");
+  if (latest) out = `Latest agent update: ${latest.slice(0, 1400)}\n`;
+  for (const item of items) {
+    if (str(item, "type") !== "userMessage" || !Array.isArray(field(item, "content"))) continue;
+    out += "User request: ";
+    for (const part of field(item, "content")) if (str(part, "type") === "text") out += str(part, "text");
+    break;
   }
+  return new SummaryText(out.slice(0, 2048));
 }
 export function unique(ids: string[], prefix: Text) {
   const matching = ids.filter(id => typeof id === "string" && id.length === 36 && id.startsWith(prefix.text()));
@@ -124,7 +98,7 @@ export function isActiveWait(entry: any, turn: string, session: string) {
  * newest directory a command chose, else the thread's own folder. */
 export async function location(client: Pick<Client, "call">, session: string, cwd: string): Promise<Location | null> {
   let turn = "",
-    writes: string[] = [],
+    edited: string[] = [],
     named = "";
   const ran = new Set<string>(),
     own = (directory: string) => !!cwd && path.resolve(directory) === path.resolve(cwd);
@@ -137,12 +111,12 @@ export async function location(client: Pick<Client, "call">, session: string, cw
         item = field(entry, "item");
       if (!id) return;
       if (turn && id !== turn) return true;
-      const written = Codex.writes([item], cwd);
+      const written = writes([item], cwd);
       if (written.length) {
-        [turn, writes] = [id, written];
+        [turn, edited] = [id, written];
         return true;
       }
-      const directory = Codex.commandDirectory(item);
+      const directory = commandDirectory(item);
       if (!directory) return;
       turn = id;
       ran.add(directory);
@@ -150,7 +124,7 @@ export async function location(client: Pick<Client, "call">, session: string, cw
     },
     "TooManyItems",
   );
-  return turn ? { cwd: named || cwd, writes, ran: [...ran], basis: named ? "named" : "default" } : null;
+  return turn ? { cwd: named || cwd, writes: edited, ran: [...ran], basis: named ? "named" : "default" } : null;
 }
 export async function snapshot(client: Client, req: Request, session: string) {
   const meta = await client.call("thread/read", {
@@ -178,7 +152,7 @@ export async function snapshot(client: Client, req: Request, session: string) {
     }),
     data = field(field(turns, "result"), "data");
   if (Array.isArray(data) && data.length) {
-    out.evidence = codex(data[0]);
+    out.evidence = evidence(data[0]);
     const id = str(data[0], "id");
     if (id && Buffer.byteLength(id) <= 128) {
       out.turn = new Turn(id);
@@ -235,7 +209,7 @@ export async function snapshot(client: Client, req: Request, session: string) {
           if (needsInput(field(thread, "status"))) out.subagents.blocked++;
           else out.subagents.running++;
         }
-        const prefix = Codex.titleSession(id);
+        const prefix = titleSession(id);
         if (prefix?.len !== 36 || id === session) return;
         if (out.children.length >= 1024) throw Error("TooManyThreads");
         const child = new Child();
@@ -272,7 +246,7 @@ export async function snapshot(client: Client, req: Request, session: string) {
     } catch {}
   return out;
 }
-export class Worker {
+export class Worker implements Observer {
   stopping = false;
   requests: Request[] = [];
   cursor = 0;
@@ -283,7 +257,7 @@ export class Worker {
   timer: ReturnType<typeof setInterval> | null = null;
   running = false;
   constructor() {
-    this.socket = path.join(Codex.info.configDir(), "app-server-control/app-server-control.sock");
+    this.socket = path.join(configDir(), "app-server-control/app-server-control.sock");
   }
   static start() {
     const w = new Worker();
@@ -322,7 +296,7 @@ export class Worker {
         p.terminal.title_pid !== p.detection.pid
       )
         continue;
-      const prefix = Codex.titleSession(p.terminal.title),
+      const prefix = titleSession(p.terminal.title),
         actor = p.attachment.actor;
       if (!prefix) continue;
       // Behind a side conversation, follow the conversation it forked.

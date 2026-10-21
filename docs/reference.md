@@ -180,7 +180,7 @@ it either way, as does `CORGI_AGENT_MODE=1` or `0`.
 
 Use `corgi --help` and each command's `--help` for syntax, or `corgi --skill`
 for the [bundled scripting guide](../assets/corgi-skill.md).
-[Agent internals](agents.md) covers hooks and native provider sessions.
+[Agent internals](agents.md) covers hooks and headless provider sessions.
 
 ## Settings and troubleshooting
 

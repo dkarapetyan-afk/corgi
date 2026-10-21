@@ -285,6 +285,10 @@ export function shellQuote(text: string): string {
   return "'" + text.replaceAll("'", "'\\''") + "'";
 }
 export const quote = shellQuote;
+/** `args` as a shell reads them, quoting only the words that need it. */
+export function shellWords(args: string[]): string {
+  return args.map(arg => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : shellQuote(arg))).join(" ");
+}
 export function shellEscape(args: Array<string | Uint8Array>): string | null {
   const decoder = new TextDecoder("utf-8", { fatal: true }),
     out: string[] = [];

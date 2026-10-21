@@ -1,7 +1,7 @@
 //! Viewer-local resource card: three framed graphs and a stable mini top.
 //! Mirrors resource_tooltip.zig.
 import { Style, derived } from "./palette";
-import type { Provider } from "./providers";
+import { Provider, adapter } from "./providers";
 import { Rect } from "./layout";
 import { cpuText, ioText } from "./trackers/resources";
 import { Writer, displayWidth, writeClipped, directoryLabel, sat, zigRound } from "./text";
@@ -261,14 +261,18 @@ export function draw(w: Writer, rect: Rect, name: string, snapshot: any, state: 
     );
     right(w, rect.x + 2, y, faint, `${key.pid}`, 7);
     if (p) {
-      at(w, rect.x + 10, y, text, `${p.provider ? (p.provider === "claude" ? "* " : "† ") : ""}${p.name}`, rect.w - 43);
+      at(w, rect.x + 10, y, text, `${p.provider ? adapter(p.provider).glyph + " " : ""}${p.name}`, rect.w - 43);
       right(w, rect.x + rect.w - 32, y, cpu, p.cpu != null ? fixed(p.cpu, 1) : "", 7);
       right(w, rect.x + rect.w - 24, y, memory, fixed(Number(p.memory ?? 0) / (1024 * 1024 * 1024), 2), 6);
       right(w, rect.x + rect.w - 17, y, io, p.read != null ? fixed(Number(p.read) / 1000000, 1) : "", 7);
       right(w, rect.x + rect.w - 9, y, io, p.written != null ? fixed(Number(p.written) / 1000000, 1) : "", 7);
     } else at(w, rect.x + 10, y, faint, "Sample not available", rect.w - 43);
   });
-  at(w, rect.x + 2, rect.y + rect.h - 3, faint, "* Claude Code   † Codex", rect.w - 4);
+  const legend = Provider.all
+    .map(adapter)
+    .map(a => `${a.glyph} ${a.label}`)
+    .join("   ");
+  at(w, rect.x + 2, rect.y + rect.h - 3, faint, legend, rect.w - 4);
   at(
     w,
     rect.x + 2,

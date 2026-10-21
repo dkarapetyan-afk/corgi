@@ -32,7 +32,7 @@ test("handoff and runtime versions migrate independently without losing launch c
   });
   expect(result.migrated).toBe(true);
 });
-test("legacy panes and native sessions share one migrated conversation", () => {
+test("legacy panes and headless sessions share one migrated conversation", () => {
   const result = decode(
     "checkpoint",
     JSON.stringify({
@@ -68,8 +68,8 @@ test("lossless counters survive current decoding", () => {
   );
 });
 test("provider migrations are scoped and accept both V2 representations", () => {
-  const result = decode(
-    "checkpoint",
+  // Only the step from version 2: a later one starts the headless journal over.
+  const result = json.parse(
     JSON.stringify({
       version: 2,
       panes: [
@@ -91,7 +91,8 @@ test("provider migrations are scoped and accept both V2 representations", () => 
       agent_commands: [{ semantics: { provider: "other" } }],
       payload: { provider: "other" },
     }),
-  ).value;
+  );
+  steps.checkpoint[1](result);
   expect(result.panes[0].binding.provisional.provider).toBe("codex");
   expect(result.panes[0].resume_hint.provider).toBe(null);
   expect(result.sessions[0].resume_hint.provider).toBe(null);

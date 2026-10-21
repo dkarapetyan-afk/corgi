@@ -45,7 +45,7 @@ Disk rates cover attributed disk traffic, not network traffic. Missing metrics
 are omitted rather than shown as zero. **CPU busy** is a host/workspace
 utilization heuristic, not proof that a particular process is stalled.
 
-Attribution follows pane/native-session processes and descendants. Brief,
+Attribution follows pane/headless-session processes and descendants. Brief,
 detached, remote or container processes may escape it. Partial readings are
 estimates; resource collection does not call a model.
 

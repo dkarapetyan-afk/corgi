@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { applyUsage, defaultModel } from "./account";
+import { applyUsage, defaultModel, limits } from "./account";
+import { timestampMs } from "../common";
 import { Info } from "../../usage/account";
 import { Text } from "../../providers";
 test("Claude control usage preserves login on unsupported or malformed quota data", () => {
@@ -26,6 +27,22 @@ test("Claude control usage preserves login on unsupported or malformed quota dat
   }
 });
 
+test("Claude limits read fixed windows and ISO resets with offsets", () => {
+  const c = limits({
+    five_hour: { utilization: 12.4, resets_at: "2026-09-24T12:00:00.000000+00:00" },
+    seven_day: { utilization: 48, resets_at: "2026-09-27T18:00:00+02:00" },
+  });
+  if (typeof c !== "object") throw Error("no windows");
+  const now = timestampMs("2026-09-24T10:00:00Z")! / 1000;
+  expect(c.windows.map(w => [w?.label(), w?.used, w?.countdown(now)])).toEqual([
+    ["5h", 12, "2h"],
+    ["7d", 48, "3d 6h"],
+  ]);
+  const bad = limits({ five_hour: { utilization: 5, resets_at: "2026-09-24T12:00:00+24:00" } });
+  if (typeof bad !== "object") throw Error("no windows");
+  expect([bad.windows[0]?.used, bad.windows[0]?.reset_at, bad.windows[1]]).toEqual([5, null, null]);
+  expect(limits(null)).toBe("none");
+});
 test("Claude initialize names the default model", () => {
   expect(
     defaultModel({

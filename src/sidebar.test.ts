@@ -6,6 +6,7 @@ import * as corgiAnimation from "./corgi_animation";
 import * as corgiFrames from "./corgi_frames";
 import { Terminal } from "./pane/terminal";
 import { View as ContextView } from "./usage/context_window";
+import * as sim from "./providers/sim";
 import { Writer, displayWidth, writeClipped, directoryLabel } from "./text";
 import {
   View,
@@ -308,6 +309,17 @@ test("subagent badge shares the second row without reserving empty space", () =>
   const out = draw(View.init(100, 30, true, 0, 1), [e], []);
   expect(has(out, "↳")).toBe(false);
   expect(has(out, e.activity)).toBe(true);
+});
+
+test("an empty agent list names every provider's command", () => {
+  const remove = sim.register();
+  try {
+    const out = draw(View.init(100, 30, true, 0, 1), [], []);
+    expect(has(out, "codex  or  claude\x1b")).toBe(true);
+    expect(has(out, "or  sim\x1b")).toBe(true);
+  } finally {
+    remove();
+  }
 });
 
 test("an unread agent takes the bold dot and a bold name, and working takes the arrow", () => {

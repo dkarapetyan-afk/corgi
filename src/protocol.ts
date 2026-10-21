@@ -30,7 +30,8 @@ export interface View<Session = unknown, Resources = unknown> {
   viewer: number;
   detach: boolean;
 }
-export const version = 1;
+export const version = 2;
+export const management_version = 1;
 export const viewer_version = 3;
 export type Op = (typeof operations)[number];
 type PaneDestination = { new_tab: string } | { beside: Normalized<typeof structures.beside> };
@@ -87,11 +88,11 @@ export const operations = [
   "action",
   "focus",
   "workspace.switch",
-  "native.start",
-  "native.list",
-  "native.stop",
-  "native.send",
-  "native.events",
+  "headless.start",
+  "headless.list",
+  "headless.stop",
+  "headless.send",
+  "headless.events",
   "theme",
   "hook",
   "ping",
@@ -104,11 +105,6 @@ const local = new Set([
   "action",
   "focus",
   "workspace.switch",
-  "native.start",
-  "native.list",
-  "native.stop",
-  "native.send",
-  "native.events",
   "theme",
   "hook",
   "ping",
@@ -116,17 +112,18 @@ const local = new Set([
   "test.settle",
   "test.advance",
 ]);
-export function check(op: string): "none" | "negotiate" | "runtime" | "viewer" {
-  if (op === "hello") return "negotiate";
+export function check(op: string): "none" | "management" | "runtime" | "viewer" {
+  if (op === "hello" || op === "server.reload") return "management";
   if (op === "viewer.open" || op === "viewer.sync") return "viewer";
   return local.has(op) ? "none" : "runtime";
 }
-export const capabilities = operations.filter(op => check(op) === "runtime" || check(op) === "viewer");
+export const capabilities = operations.filter(op => op !== "hello" && check(op) !== "none");
 export function envelope(op: string, payload: Record<string, unknown> = {}): object {
   const fields = op === "viewer.open" ? { cwd: "", onboarding: false, theme: null, ...payload } : payload;
   return {
     op,
-    ...(check(op) !== "none" ? { protocol: version } : {}),
+    ...(check(op) !== "none" ? { protocol: check(op) === "management" ? management_version : version } : {}),
+    ...(op === "hello" ? { runtime_protocol: version } : {}),
     ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
     ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => value !== null || key === "theme")),
   };
@@ -136,9 +133,11 @@ export function parse(value: unknown): Op | null {
   const op = (value as Record<string, unknown>).op;
   return typeof op === "string" && (operations as readonly string[]).includes(op) ? (op as Op) : null;
 }
-export function require(value: any, negotiated: number | null): void {
+export function require(value: any, negotiated: number | null, kind: "runtime" | "management" = "runtime"): void {
   if (!Object.hasOwn(value, "protocol") && negotiated === null) throw Error("ProtocolRequired");
-  if ((Object.hasOwn(value, "protocol") ? value.protocol : negotiated) !== version) throw Error("UnsupportedProtocol");
+  const expected = kind === "management" ? management_version : version;
+  if ((Object.hasOwn(value, "protocol") ? value.protocol : negotiated) !== expected)
+    throw Error(kind === "management" ? "UnsupportedManagementProtocol" : "UnsupportedProtocol");
 }
 export function id(value: any, field: string): number {
   if (!Object.hasOwn(value, field)) throw Error("MissingField");
@@ -308,7 +307,7 @@ function target(value: unknown) {
   const t = json.object(value),
     keys = Object.keys(t);
   if (keys.length !== 1) throw Error("UnexpectedToken");
-  if (!["pane", "native"].includes(keys[0])) throw Error("UnknownField");
+  if (!["pane", "headless"].includes(keys[0])) throw Error("UnknownField");
   return { [keys[0]]: validate(t[keys[0]], "u32") };
 }
 function destination(value: unknown, pane: boolean) {
@@ -521,10 +520,10 @@ const requests = {
   action: { name: ["string", ""], value: ["string", ""], viewer: ["?u32", null], pane: ["?u32", null] },
   focus: { pane: "u32", viewer: ["?u32", null] },
   "workspace.switch": { workspace: "u32", viewer: ["?u32", null] },
-  "native.start": { provider: "provider", cwd: ["string", ""], workspace: ["?u32", null] },
-  "native.stop": { session: "u32" },
-  "native.send": { session: "u32", message: "json" },
-  "native.events": { session: "u32", after: ["u64", 0] },
+  "headless.start": { provider: "provider", prompt: "string", cwd: ["string", ""], workspace: ["?u32", null] },
+  "headless.stop": { provider: "provider", session: "string" },
+  "headless.send": { provider: "provider", session: "string", input: "json" },
+  "headless.events": { provider: "provider", session: "string", after: ["u64", 0] },
   theme: { theme: ["theme", null] },
   hook: {
     provider: "provider",
@@ -603,9 +602,9 @@ export interface ReplyPayloads {
   action: Ok & { viewer: number; queued: true };
   focus: Ok & { viewer: number; queued: true };
   "workspace.switch": Ok & { viewer: number; queued: true };
-  "native.start": Ok & { session: number; provider: Provider };
-  "native.list": Ok & { sessions: unknown[] };
-  "native.events": Ok & {
+  "headless.start": Ok & { session: string; provider: Provider };
+  "headless.list": Ok & { sessions: unknown[] };
+  "headless.events": Ok & {
     events: unknown[];
     pending_requests: unknown;
     next_seq: bigint;

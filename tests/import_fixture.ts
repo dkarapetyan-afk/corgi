@@ -71,7 +71,7 @@ export class ImportFixture {
 
   async rpc(message: Record<string, unknown>, allowError = false) {
     const response = await this.exchange(this.path, {
-      protocol: 1,
+      protocol: 2,
       ...message,
     });
     if (!allowError && "err" in response) throw new Error(`RPC error: ${JSON.stringify(response)}`);

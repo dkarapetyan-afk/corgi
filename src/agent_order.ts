@@ -1,6 +1,6 @@
-export type Target = { pane: number } | { native: number };
+export type Target = { pane: number } | { headless: number };
 const equal = (a: Target, b: Target) =>
-  "pane" in a && "pane" in b ? a.pane === b.pane : "native" in a && "native" in b && a.native === b.native;
+  "pane" in a && "pane" in b ? a.pane === b.pane : "headless" in a && "headless" in b && a.headless === b.headless;
 export function index(targets: Target[], target: Target) {
   const i = targets.findIndex(t => equal(t, target));
   return i < 0 ? null : i;
@@ -17,7 +17,7 @@ export class Order {
     return this.items.slice();
   }
   static restore(t: Target[]) {
-    if (t.some((x, i) => !("pane" in x ? x.pane : x.native) || index(t.slice(0, i), x) !== null))
+    if (t.some((x, i) => !("pane" in x ? x.pane : x.headless) || index(t.slice(0, i), x) !== null))
       throw Error("InvalidAgentOrder");
     const o = new Order();
     o.items = structuredClone(t);

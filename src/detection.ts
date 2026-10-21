@@ -1,21 +1,20 @@
 import path from "node:path";
 import { readdirSync } from "node:fs";
 import { Agent, Provider, Text, type State } from "./agents";
+import type { PaneMemory, PromptMemory } from "./providers/adapter";
 import { n, ptr, processArgs } from "./native_bridge";
-import { processJob, processTree, processArgs as readProcessArgs } from "./os";
+import { processJob, processTree } from "./os";
 export type Job = { pid: number; provider: Provider };
 export const process_buffer = 1024 * 1024;
-function name(p: string): Provider | null {
-  return (
-    Provider.named(path.basename(p)) ??
-    Provider.all.find(k => Provider.info(k).install_markers.some((m: string) => p.includes(m))) ??
-    null
-  );
-}
 export function identify(argv: string[]): Provider | null {
+  return locate(argv)?.provider ?? null;
+}
+/** The provider `argv` runs, and where its program or script sits in it,
+ * past any interpreter. */
+export function locate(argv: string[]): { provider: Provider; at: number } | null {
   if (!argv.length) return null;
-  const direct = name(argv[0]);
-  if (direct) return direct;
+  const direct = Provider.owning(argv[0]);
+  if (direct) return { provider: direct, at: 0 };
   const exe = path.basename(argv[0]);
   if ((!["node", "bun", "sh", "bash", "zsh"].includes(exe) && !/^python/i.test(exe)) || argv.length < 2) return null;
   let i = 1;
@@ -27,146 +26,25 @@ export function identify(argv: string[]): Provider | null {
   }
   if (exe === "bun" && argv[i] === "run") i++;
   if (i >= argv.length) return null;
-  return (
-    name(argv[i]) ?? Provider.all.find(k => Provider.info(k).scripts.some((s: string) => argv[i].endsWith(s))) ?? null
-  );
-}
-export function claudeProcess(info: { exe: string; argv: string[] }) {
-  return (
-    name(info.exe) === "claude" ||
-    identify(info.argv) === "claude" ||
-    (!!info.argv.length && name(info.argv[0].split(" ")[0]) === "claude")
-  );
+  const provider = Provider.owning(argv[i]);
+  return provider ? { provider, at: i } : null;
 }
 export function backgroundJob(pid: number) {
   const info = processJob(pid);
   return !!info && (info.tpgid <= 0 || info.pgid !== info.tpgid);
 }
-function readClaudeProcess(pid: number) {
-  const info = readProcessArgs(pid, process_buffer, { env: true });
-  return !!info?.complete && claudeProcess({ exe: info.exe, argv: info.argv });
-}
-export function claudeRunning(pid: number, _buffer?: Uint8Array) {
-  return pid > 1 && readClaudeProcess(pid);
-}
-function backgroundSession(pid: number) {
-  return (
-    readProcessArgs(pid, process_buffer, { env: true })?.environ().includes("CLAUDE_CODE_SESSION_KIND=bg") ?? false
-  );
-}
-export function hookOrigin() {
-  let pid = process.ppid;
-  for (let i = 0; i < 8 && pid > 1; i++) {
-    const job = processJob(pid);
-    if (readClaudeProcess(pid)) {
-      return {
-        pid,
-        background: backgroundSession(pid) || (!!job && (job.tpgid <= 0 || job.pgid !== job.tpgid)),
-      };
-    }
-    if (!job) break;
-    pid = job.ppid;
-  }
-  return { pid: 0, background: false };
-}
-function tail(screen: string) {
-  return screen.trimEnd().split("\n").slice(-8).join("\n").slice(0, 8192).toLowerCase();
-}
-export function screenState(provider: Provider, title: string, screen: string): State | null {
-  const s = Provider.info(provider).screen,
-    text = tail(screen);
-  if (s.blocked_title && title.includes(s.blocked_title)) return "blocked";
-  if (
-    (text.includes("enter to confirm") && text.includes("esc to cancel")) ||
-    text.includes("enter to submit answer") ||
-    text.includes("enter to submit all")
-  )
-    return "blocked";
-  if (text.includes("esc to interrupt")) return "working";
-  if (s.idle_title && title.startsWith(s.idle_title)) return "idle";
-  if (s.idle_prompt && text.split("\n").some(r => r.trimStart().startsWith(s.idle_prompt))) return "idle";
-  return null;
-}
-export function screenCompacting(screen: string): boolean | null {
-  for (const row of screen.trimEnd().split("\n").slice(-8).reverse()) {
-    const hint = row.indexOf("esc to interrupt");
-    if (hint < 0) continue;
-    return /^(?:[•◦·] )?Compacting (?:context|conversation) /.test(row.slice(0, hint).trimStart());
-  }
-  return null;
-}
-export function screenToolActive(provider: Provider, screen: string) {
-  if (!Provider.info(provider).screen.background_status) return false;
-  for (const row of screen.trimEnd().split("\n").slice(-8).reverse()) {
-    const hint = row.indexOf("esc to interrupt)");
-    if (hint < 0) continue;
-    if (row.slice(0, hint).includes("Waiting for background terminal")) return true;
-    const m = row
-      .slice(hint + 17)
-      .trim()
-      .match(/^· (\d+) (.+)$/);
-    if (!m || Number(m[1]) === 0) continue;
-    if (
-      m[2].startsWith("background terminal") ||
-      (m[2].endsWith("…") && m[2].length >= 13 && "background terminals running".startsWith(m[2].slice(0, -1)))
-    )
-      return true;
-  }
-  return false;
-}
-export function claudeComposer(screen: string) {
-  let after = false,
-    input = false,
-    found = false;
-  for (const row of screen.split("\n")) {
-    if (/^─{10,}$/.test(row.trim())) {
-      if (input) found = true;
-      input = false;
-      after = true;
-      continue;
-    }
-    if (after) input = row.trimStart().startsWith("❯");
-    after = false;
-  }
-  if (!found) return "covered";
-  if (/esc to cancel|enter to select|enter to confirm|enter to submit/.test(tail(screen))) return "unknown";
-  return "open";
-}
-export class PromptWatch {
-  seen = false;
-  covered = 0;
-  open = 0;
-  answered(blocked: boolean, screen: string): State | null {
-    if (!blocked) {
-      Object.assign(this, new PromptWatch());
-      return null;
-    }
-    switch (claudeComposer(screen)) {
-      case "covered":
-        this.covered = Math.min(255, this.covered + 1);
-        this.open = 0;
-        if (this.covered >= 2) this.seen = true;
-        return null;
-      case "unknown":
-        this.covered = 0;
-        this.open = 0;
-        return null;
-      case "open":
-        this.covered = 0;
-        if (!this.seen) return null;
-        this.open = Math.min(255, this.open + 1);
-        if (this.open < 2) return null;
-        Object.assign(this, new PromptWatch());
-        return screenState("claude", "", screen) === "working" ? "working" : "idle";
-    }
-    return null;
-  }
-}
 export function interruptKey(bytes: string | Uint8Array) {
   const s = typeof bytes === "string" ? bytes : Buffer.from(bytes).toString();
   return s === "\x1b" || s.includes("\x03") || /\x1b\[(?:27|99;5)(?:[;:][\d;:]*|)u/.test(s);
 }
-export class Tracker {
+/** What a provider's watcher keeps about a conversation's prompts. */
+export class PromptWatch implements PromptMemory {
+  seen = false;
+  covered = 0;
+  open = 0;
+}
+/** Which provider a pane runs, and what its watcher keeps about the pane. */
+export class Tracker implements PaneMemory {
   pid = 0;
   missing = 0;
   candidate: State | null = null;
@@ -177,21 +55,9 @@ export class Tracker {
   observeInput(bytes: string | Uint8Array, now: number) {
     if (interruptKey(bytes)) this.interrupt_key_at = now;
   }
-  interrupted(title: string, screen: string, now: number) {
-    if (screenState("claude", title, screen) !== "idle") {
-      this.idle_since = 0;
-      return false;
-    }
-    if (!this.idle_since) this.idle_since = now;
-    if (
-      this.interrupt_key_at &&
-      now - this.interrupt_key_at <= 5000000 &&
-      now - Math.max(this.idle_since, this.interrupt_key_at) >= 250000
-    )
-      return true;
-    return now - this.idle_since >= 1500000;
-  }
-  update(agent: Agent, job: Job | null, title: string, screen: string, watched: boolean) {
+  /** Follows the pane's foreground process; true while the screen may speak
+   * for its agent, which nothing else reports yet. */
+  update(agent: Agent, job: Job | null) {
     if (!job) {
       if (this.pid && ++this.missing >= 2) {
         agent.reset();
@@ -209,20 +75,12 @@ export class Tracker {
       agent.provider = job.provider;
       if (!agent.last_seq) agent.state = "initializing";
     }
-    if (agent.last_seq) return false;
-    const next = screenState(job.provider, title, screen);
-    if (!next || (next === "working" && !this.ready)) {
-      this.candidate = null;
-      this.confirmations = 0;
-      return false;
-    }
-    if (this.candidate !== next) {
-      this.candidate = next;
-      this.confirmations = 0;
-    }
-    this.confirmations = Math.min(255, this.confirmations + 1);
-    if (this.confirmations < (next === "idle" ? 3 : 2)) return false;
-    agent.tool_active = next === "working" && screenToolActive(job.provider, screen);
+    return !agent.last_seq;
+  }
+  /** Shows what the watcher confirmed the screen says; true when it should ring. */
+  show(agent: Agent, shown: { state: State; tool: boolean }, watched: boolean) {
+    const next = shown.state;
+    agent.tool_active = shown.tool;
     if (agent.state === next) return false;
     if (next === "idle") this.ready = true;
     agent.state = next;

@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { Agent, Text, toolActivity, type Presence } from "./agents";
 import { State } from "./observation";
 import { Hooks } from "./providers/common";
+import * as codex from "./providers/codex";
 import { Tail, completion } from "./transcript";
 import * as worktrees from "./worktrees";
 test("late receipts cannot read newer completions", () => {
@@ -38,7 +39,7 @@ test("starting work preserves unread receipt and stale stop cannot finish newer 
 });
 test("Codex automatic review only blocks after visible permission confirmation", () => {
   const a = new Agent();
-  const hook = new Hooks().decode({
+  const hook = codex.adapter.hook({
     hook_event_name: "PermissionRequest",
     session_id: "s",
     tool_name: "Bash",
@@ -109,6 +110,7 @@ function observe(
       model: "",
       asking: false,
       permission_notification: false,
+      confirm: "now",
       ...hook,
     },
     seq,
@@ -307,7 +309,9 @@ test("a reopened agent sleeps, and its old process's late ending is dropped", ()
 
 test("Codex permission review only rings for a confirmed human prompt", () => {
   const agent = new Agent();
-  expect(observe(agent, "codex", { kind: "permission", session: "a", tool: "Bash" }, 1n, false, 1)).toBe(false);
+  expect(
+    observe(agent, "codex", { kind: "permission", session: "a", tool: "Bash", confirm: "screen" }, 1n, false, 1),
+  ).toBe(false);
   expect(agent.state).toBe("working");
   expect(agent.attention).toBe("none");
   expect(agent.tool_active).toBe(true);

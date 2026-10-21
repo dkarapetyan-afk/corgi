@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { n, ptr, call, symbols, ReadyLoop, READ, nativeRoot } from "../native_bridge";
 import * as launch_command from "../launch/command";
+import { Provider, adapter } from "../providers";
 import * as surface from "./surface";
 import type { Link } from "./hyperlinks";
 import type { Pointer } from "bun:ffi";
@@ -103,6 +104,7 @@ export class Terminal extends EventEmitter {
     executable: string,
     command: string | null = null,
     interactive_command = false,
+    extra: [string, string][] = [],
   ): Promise<void> {
     const fds = new Int32Array(2);
     if (n.probe_pty(ptr(fds))) throw Error("OpenPtyFailed");
@@ -118,7 +120,8 @@ export class Terminal extends EventEmitter {
       CORGI_PANE: String(id),
       PATH: `${dirname(executable)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
     };
-    delete env.CODEX_THREAD_ID;
+    for (const p of Provider.all) adapter(p).unnest?.(env);
+    for (const [key, value] of extra) env[key] = value;
     n.probe_resize(master, this.cols, this.rows);
     try {
       this.child = Bun.spawn(

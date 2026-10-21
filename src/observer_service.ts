@@ -1,9 +1,7 @@
-import path from "node:path";
 import { Worker as TranscriptWorker } from "./transcript";
-import { Worker as CodexWorker } from "./providers/codex/observer";
 import { Worker as UsageWorker } from "./usage/worker";
 import { Worker as SummaryWorker } from "./activity/worker";
-import { Backend } from "./providers";
+import { Provider, adapter } from "./providers";
 import { Path, type Presence } from "./agents";
 import { Counts } from "./usage/tokens";
 import * as setup from "./inference/setup";
@@ -11,15 +9,18 @@ import * as detection from "./detection";
 import * as clock from "./clock";
 import { stringify } from "./json";
 import type { Server } from "./server";
-import type { Runtime, Pane } from "./runtime";
-import type { Provider, Text } from "./providers";
-import type { Snapshot, Request as CodexRequest } from "./providers/codex/observer";
+import { Launch, type Runtime, type Pane } from "./runtime";
+import type { Text } from "./providers";
+import type { Known, Observer, Watcher } from "./providers/adapter";
+import type { Snapshot, Request as ObserverRequest } from "./providers/snapshot";
 import type { Request } from "./protocol";
 import { Model } from "./providers/model";
 
 type Workers = {
   transcripts: TranscriptWorker;
-  codex: CodexWorker;
+  observers: Map<Provider, Observer>;
+  /** Each provider's watcher, by provider and account. */
+  watchers: Map<string, Watcher>;
   usage: UsageWorker;
   summaries: SummaryWorker;
   detected: number;
@@ -30,7 +31,13 @@ export function start(server: Server) {
   if (services.has(server)) return services.get(server)!;
   const workers = {
     transcripts: TranscriptWorker.start(),
-    codex: CodexWorker.start(),
+    observers: new Map(
+      Provider.all.flatMap(p => {
+        const observer = adapter(p).observer?.();
+        return observer ? [[p, observer] as const] : [];
+      }),
+    ),
+    watchers: new Map<string, Watcher>(),
     usage: UsageWorker.start(),
     summaries:
       server.summaries ??
@@ -45,6 +52,13 @@ export function start(server: Server) {
   services.set(server, workers);
   publishInference(server, workers);
   return workers;
+}
+/** The watcher for `provider`'s `account`, "" for the default one. */
+function watcher(workers: Workers, provider: Provider, account = "") {
+  const key = `${provider}\0${account}`;
+  let found = workers.watchers.get(key);
+  if (!found) workers.watchers.set(key, (found = adapter(provider).watch(account)));
+  return found;
 }
 function publishInference(server: Server, workers: Workers) {
   const status = workers.summaries.status();
@@ -87,10 +101,10 @@ function attention(server: Server, ding: boolean, state: string) {
   server.attention(ding, state);
 }
 
-/** The pane, when it still shows the title thread `request` asked about. */
-function titled(runtime: Runtime, request: CodexRequest) {
+/** The pane, when it still shows the title session `request` asked about. */
+function titled(runtime: Runtime, provider: Provider, request: ObserverRequest) {
   const pane = runtime.pane(request.pane);
-  const prefix = pane ? Backend.init("codex").titleSession(pane.terminal.title) : null;
+  const prefix = pane ? (adapter(provider).titleSession?.(pane.terminal.title) ?? null) : null;
   if (
     !pane ||
     !prefix ||
@@ -105,17 +119,18 @@ function titled(runtime: Runtime, request: CodexRequest) {
     return null;
   return pane;
 }
-export function codexActor(server: Server, snapshot: Snapshot) {
+/** The conversation an observer's snapshot is of, shown in the pane whose title named it. */
+export function snapshotActor(server: Server, provider: Provider, snapshot: Snapshot) {
   const runtime = server.runtime;
   if (snapshot.request.actor) return runtime.conversations.byId(snapshot.request.actor);
-  const pane = titled(runtime, snapshot.request);
+  const pane = titled(runtime, provider, snapshot.request);
   if (!pane) return null;
-  // A side conversation (`/btw`) leaves the pane on the conversation it forked.
+  // A side conversation leaves the pane on the conversation it forked.
   if (snapshot.ephemeral) {
     if (pane.attachment.actor) pane.attachment.side = true;
     return null;
   }
-  const actor = runtime.conversations.get("codex", snapshot.session);
+  const actor = runtime.conversations.get(provider, snapshot.session);
   pane.attachment.select(actor);
   if (!actor.workspace || !runtime.workspaces.get(actor.workspace))
     actor.workspace = runtime.workspaces.owner(pane.id)?.id ?? actor.workspace;
@@ -123,8 +138,8 @@ export function codexActor(server: Server, snapshot: Snapshot) {
 }
 /** The observer can't see the thread the title moved to, so the pane no
  * longer shows a conversation it knows. */
-export function codexMissed(server: Server, request: CodexRequest) {
-  const pane = titled(server.runtime, request),
+export function missed(server: Server, provider: Provider, request: ObserverRequest) {
+  const pane = titled(server.runtime, provider, request),
     actor = pane?.attachment.actor;
   if (!pane || !actor || pane.attachment.side || actor.state.sessionId().startsWith(request.prefix.text())) return;
   pane.attachment.deselect();
@@ -133,24 +148,21 @@ export function codexMissed(server: Server, request: CodexRequest) {
 /** The one known conversation whose session the title names. */
 function titleActor(runtime: Runtime, provider: Provider, prefix: Text) {
   const matches = runtime.conversations.items.filter(
-    actor =>
-      actor.provider() === provider &&
-      actor.state.session.len === 36 &&
-      actor.state.sessionId().startsWith(prefix.text()),
+    actor => actor.provider() === provider && actor.state.sessionId().startsWith(prefix.text()),
   );
   return matches.length === 1 ? matches[0] : null;
 }
-/** Codex's title named the thread `prefix`. Another thread than the one
+/** The title named the session `prefix`. Another session than the one
  * shown may be a side conversation of it, which the observer tells, so the
  * pane keeps its conversation unless the title names a known one. */
-export function retitled(runtime: Runtime, pane: Pane, prefix: Text | null) {
+export function retitled(runtime: Runtime, pane: Pane, provider: Provider, prefix: Text | null) {
   const hash = prefix ? Bun.hash.wyhash(prefix.text(), 0n) : 0n,
     binding = pane.attachment,
     actor = binding.actor;
   if (hash === binding.selection_hash) return;
   if (
     actor &&
-    (!prefix || (!actor.state.sessionId().startsWith(prefix.text()) && titleActor(runtime, "codex", prefix)))
+    (!prefix || (!actor.state.sessionId().startsWith(prefix.text()) && titleActor(runtime, provider, prefix)))
   )
     binding.deselect();
   binding.side = false;
@@ -159,7 +171,7 @@ export function retitled(runtime: Runtime, pane: Pane, prefix: Text | null) {
 }
 export function reattachFromTitle(server: Server, pane: Pane, provider: Provider, pid: number) {
   if (pane.attachment.actor || pane.terminal.exited || pid <= 0 || pane.terminal.title_pid !== pid) return;
-  const prefix = Backend.init(provider).titleSession(pane.terminal.title);
+  const prefix = adapter(provider).titleSession?.(pane.terminal.title);
   const actor = prefix && titleActor(server.runtime, provider, prefix);
   if (!actor) return;
   pane.attachment.select(actor);
@@ -168,7 +180,8 @@ export function reattachFromTitle(server: Server, pane: Pane, provider: Provider
 }
 export function detectPane(server: Server, pane: Pane, observedJob?: detection.Job | null) {
   const runtime = server.runtime,
-    worker = start(server).summaries;
+    workers = start(server),
+    worker = workers.summaries;
   const before = stringify(pane.agent());
   const job = observedJob === undefined ? detection.foreground(pane.terminal.fd) : observedJob;
   const previous = pane.detection.pid;
@@ -177,75 +190,64 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
   if (job) {
     if ((previous && previous !== job.pid) || (pane.attachment.actor && pane.agent().provider !== job.provider))
       pane.attachment.detach();
-    if (job.provider === "codex") {
-      retitled(runtime, pane, Backend.init(job.provider).titleSession(pane.terminal.title));
+    // An agent someone typed into the pane's shell comes back as they typed it.
+    if (job.pid !== previous && (!pane.launch || pane.launch.agent?.observed))
+      pane.launch = Launch.observed(job.provider, job.pid);
+    const shown = adapter(job.provider);
+    if (shown.titleSession) {
+      retitled(runtime, pane, job.provider, shown.titleSession(pane.terminal.title));
       reattachFromTitle(server, pane, job.provider, job.pid);
     }
   }
   const now = clock.microTimestamp(),
-    actor = pane.attachment.actor;
+    actor = pane.attachment.actor,
+    watched = paneWatched(server, pane.id);
   const authoritative = actor?.authoritative(now) ?? false;
   pane.attachment.provisional.last_seq = authoritative ? 1n : 0n;
-  const needsScreen =
-    !authoritative ||
-    !!actor?.state.permission_review ||
-    (actor?.provider() === "claude" && ["working", "blocked"].includes(actor.state.state)) ||
-    actor?.state.state === "working";
-  const text = job && needsScreen ? pane.terminal.liveText() : "";
-  let ding = pane.detection.update(
-    pane.attachment.provisional,
-    job,
-    pane.terminal.title,
-    text,
-    paneWatched(server, pane.id),
-  );
+  const speaks = pane.detection.update(pane.attachment.provisional, job);
   if (job && job.pid !== previous) worker.observeLaunch(job.provider);
   if (previous && !pane.detection.pid) pane.attachment.detach();
-  if (actor) {
-    actor.screen(pane.attachment.provisional, ding, now);
-    if (actor.state.state === "working") actor.observeCompactionScreen(detection.screenCompacting(text), now);
-    const settling =
-      authoritative &&
-      actor.provider() === "claude" &&
-      actor.state.state === "working" &&
-      !actor.state.observation.pending_stop;
-    if (!settling) pane.detection.idle_since = 0;
-    else if (pane.detection.interrupted(pane.terminal.title, text, now)) {
-      actor.state.abandonTurn(now);
-      pane.detection.idle_since = 0;
-      pane.detection.interrupt_key_at = 0;
+  // The provider judges its own screen; without one running, the pane shows nothing.
+  const judge = job?.provider ?? actor?.provider();
+  let ding = false;
+  if (judge) {
+    let text: string | null = null;
+    const view = {
+        id: pane.id,
+        title: job ? pane.terminal.title : "",
+        text: () => (text ??= job ? pane.terminal.liveText() : ""),
+      },
+      known: Known | null = actor && {
+        state: actor.state.state,
+        authoritative,
+        pending_stop: actor.state.observation.pending_stop,
+        permission_review: !!actor.state.permission_review,
+        prompt: actor.prompt_watch,
+      },
+      seen = watcher(workers, judge).read(view, pane.detection, known, now);
+    if (seen.shown && speaks && job) ding = pane.detection.show(pane.attachment.provisional, seen.shown, watched);
+    if (actor) {
+      actor.screen(pane.attachment.provisional, ding, now);
+      if (actor.state.state === "working") actor.observeCompactionScreen(seen.compacting, now);
+      if (seen.interrupted) actor.state.abandonTurn(now);
+      if (seen.answered) actor.state.observeAnswer(seen.answered, now);
+      if (actor.state.permission_review)
+        ding = actor.state.observePermissionPrompt(seen.prompt === true, watched, now) || ding;
     }
-    const next = actor.prompt_watch.answered(
-      authoritative && actor.provider() === "claude" && actor.state.state === "blocked",
-      text,
-    );
-    if (next) actor.state.observeAnswer(next, now);
-    if (actor.state.permission_review)
-      ding =
-        actor.state.observePermissionPrompt(
-          detection.screenState("codex", pane.terminal.title, text) === "blocked",
-          paneWatched(server, pane.id),
-          now,
-        ) || ding;
   }
   pane.resume_hint.observe(pane.agent());
   if (generation !== pane.attachment.generation || before !== stringify(pane.agent())) changed(server);
   attention(server, ding, pane.agent().state);
 }
-// Codex runs every thread in one app-server daemon, so its hooks carry the
-// CORGI_PANE of whichever pane started that daemon. The pane showing the
-// session wins; the sender's pane may be switching to it.
-function hookPane(runtime: Runtime, query: Request<"hook">, session: string) {
-  const actor = query.provider === "codex" ? runtime.conversations.find("codex", session) : null;
-  return (
-    (actor && runtime.panes.find(pane => !pane.terminal.exited && pane.attachment.actor === actor)) ||
-    runtime.pane(query.pane)
-  );
+/** The live pane that shows `provider`'s `session`, if one does. */
+function showing(runtime: Runtime, provider: Provider, session: string) {
+  const actor = runtime.conversations.find(provider, session);
+  return (actor && runtime.panes.find(pane => !pane.terminal.exited && pane.attachment.actor === actor)?.id) ?? null;
 }
 export function hook(server: Server, query: Request<"hook">) {
   const workers = start(server),
     runtime = server.runtime;
-  const event = Backend.init(query.provider).hook(query.event);
+  const event = adapter(query.provider).hook(query.event);
   if (!event) return;
   const now = clock.microTimestamp(),
     seq = query.seq ?? BigInt(now);
@@ -255,11 +257,14 @@ export function hook(server: Server, query: Request<"hook">) {
   let actor;
   if (query.background) actor = known;
   else {
-    const pane = hookPane(runtime, query, event.session);
+    const route = watcher(workers, query.provider).route(event, query.pane, session =>
+        showing(runtime, query.provider, session),
+      ),
+      pane = route && runtime.pane(route.pane);
     if (!pane) throw Error("NoPane");
     detectPane(server, pane);
     if (seq <= pane.attachment.hook_seq) return;
-    actor = runtime.conversations.routeHook(pane.attachment, query.provider, event);
+    actor = runtime.conversations.routeHook(pane.attachment, query.provider, event, route.binds);
     if (!actor) return;
     pane.attachment.hook_seq = seq;
     if (event.kind === "session_start") runtime.rememberAgent(pane.id, query.provider);
@@ -289,19 +294,21 @@ export async function tick(server: Server) {
       pane.detected = { output: pane.terminal.surface_revision, at: now };
     }
     for (const actor of runtime.conversations.items) actor.checkPause();
-    workers.codex.reconcile(runtime);
-    for (const request of workers.codex.takeMissed()) codexMissed(server, request);
-    for (const snapshot of workers.codex.take()) {
-      const actor = codexActor(server, snapshot);
-      if (!actor) continue;
-      attention(
-        server,
-        actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp()),
-        actor.state.state,
-      );
-      runtime.conversations.observeChildren(actor, snapshot, clock.microTimestamp());
-      workers.summaries.submit(actor, snapshot.evidence, null, runtime.panes);
-      changed(server);
+    for (const [provider, observer] of workers.observers) {
+      observer.reconcile(runtime);
+      for (const request of observer.takeMissed()) missed(server, provider, request);
+      for (const snapshot of observer.take()) {
+        const actor = snapshotActor(server, provider, snapshot);
+        if (!actor) continue;
+        attention(
+          server,
+          actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp()),
+          actor.state.state,
+        );
+        runtime.conversations.observeChildren(actor, snapshot, clock.microTimestamp());
+        workers.summaries.submit(actor, snapshot.evidence, null, runtime.panes);
+        changed(server);
+      }
     }
     const at = clock.microTimestamp();
     for (const actor of runtime.conversations.items) if (actor.state.trackWorking(at)) changed(server);
@@ -331,21 +338,18 @@ export async function tick(server: Server) {
       const actor = runtime.conversations.byId(result.actor);
       if (!actor) continue;
       if (!actor.model_from_hook && result.model.id.len) actor.model = result.model;
-      if (!actor.native_usage) actor.live_usage = result.live;
+      if (!actor.headless_usage) actor.live_usage = result.live;
       actor.context = result.context;
       runtime.conversations.compaction_points.learn(result.context.model.id.text(), result.context.auto_compaction);
-      if (
-        result.continued.len &&
-        actor.provider() === "claude" &&
-        result.continued.text() !== actor.state.sessionId()
-      ) {
-        const next = runtime.conversations.get("claude", result.continued.text());
+      const continuation = adapter(actor.provider()).transcript?.continuation;
+      if (result.continued.len && continuation && result.continued.text() !== actor.state.sessionId()) {
+        const next = runtime.conversations.get(actor.provider(), result.continued.text());
         next.workspace ||= actor.workspace;
         if (!next.state.last_seq) {
           next.state.state = actor.state.state === "done" ? "idle" : actor.state.state;
           next.state.cwd = actor.state.cwd;
           next.state.transcript = Path.initTruncated(
-            path.join(path.dirname(actor.state.transcriptPath()), result.continued.text() + ".jsonl"),
+            continuation(actor.state.transcriptPath(), result.continued.text()),
           );
         }
         let followed = false;
@@ -366,7 +370,7 @@ export async function tick(server: Server) {
       if (result.fallback(actor.state, clock.microTimestamp()))
         workers.summaries.submit(actor, result.progress!.commentary, result.progress, runtime.panes);
       else if (result.progress) workers.summaries.tools(actor.id, actor.state, result.progress);
-      if (!actor.native_usage && !workspaceWatched(server, result.workspace))
+      if (!actor.headless_usage && !workspaceWatched(server, result.workspace))
         runtime.workspaces.get(result.workspace)?.away.record(result.since, result.delta);
       changed(server);
     }
@@ -399,7 +403,7 @@ export async function settle(server: Server) {
   try {
     await tick(server);
     await Promise.all(
-      [workers.transcripts, workers.usage, workers.codex].map(async worker => {
+      [workers.transcripts, workers.usage, ...workers.observers.values()].map(async worker => {
         while (worker.running && !worker.stopping) await Bun.sleep(1);
         await worker.run();
       }),
@@ -415,7 +419,7 @@ export function stop(server: Server) {
   const workers = services.get(server);
   if (!workers) return;
   workers.transcripts.stop();
-  workers.codex.stop();
+  for (const observer of workers.observers.values()) observer.stop();
   workers.usage.stop();
   workers.summaries.stop();
   services.delete(server);

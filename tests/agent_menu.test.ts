@@ -79,7 +79,7 @@ class AgentMenu extends Viewers {
   async attempt(operation: string, payload: any) {
     return this.raw_rpc({
       op: "session.command",
-      protocol: 1,
+      protocol: 2,
       command: { [operation]: payload },
     });
   }
@@ -114,7 +114,7 @@ class AgentMenu extends Viewers {
     // the command it runs.
     const forked = snapshot.panes.find((p: any) => p.id === pane);
     this.assertTrue(forked.forking);
-    this.assertIn(`--resume '${CLAUDE_ID}' --fork-session`, forked.restoring);
+    this.assertIn(`--resume ${CLAUDE_ID} --fork-session`, forked.restoring);
     const args = await this.until(async () => {
       const found = (await this.screen(pane))
         .split("\n")

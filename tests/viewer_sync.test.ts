@@ -68,7 +68,7 @@ class WireViewer {
     this.client.close();
   }
   async call(request: Record<string, any>) {
-    this.client.socket.write(wireRequest({ protocol: 1, viewer_protocol: 3, ...request }) + "\n");
+    this.client.socket.write(wireRequest({ protocol: 2, viewer_protocol: 3, ...request }) + "\n");
     const line = await this.client.lines.next(5000);
     this.response_bytes = Buffer.byteLength(line) + 1;
     const reply = parseWire(line);
@@ -255,7 +255,7 @@ await Bun.sleep(60000);
     const id = (await viewer.sync()).viewer;
     const watch = await JsonSocket.connect(this.path);
     this.addCleanup(() => watch.close());
-    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 1, viewer: id }) + "\n");
+    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 2, viewer: id }) + "\n");
     this.assertEqual(JSON.parse(await watch.lines.next()), { ok: true });
     // While the pane sleeps, nothing a viewer shows changes.
     await this.settle();
@@ -283,7 +283,7 @@ await Bun.sleep(60000);
     await this.new("while :; do echo hidden; sleep 0.05; done");
     const watch = await JsonSocket.connect(this.path);
     this.addCleanup(() => watch.close());
-    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 1, viewer: id }) + "\n");
+    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 2, viewer: id }) + "\n");
     this.assertEqual(JSON.parse(await watch.lines.next()), { ok: true });
     await this.settle();
     watch.lines.discard();
@@ -302,7 +302,7 @@ await Bun.sleep(60000);
     const id = (await viewer.sync()).viewer;
     const watch = await JsonSocket.connect(this.path);
     this.addCleanup(() => watch.close());
-    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 1, viewer: id }) + "\n");
+    watch.socket.write(JSON.stringify({ op: "viewer.watch", protocol: 2, viewer: id }) + "\n");
     this.assertEqual(JSON.parse(await watch.lines.next()), { ok: true });
     const reload = await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
     this.assertTrue(reload.ok, JSON.stringify(reload));

@@ -19,6 +19,7 @@ export class Client {
   watch_viewer = 0;
   woken = 0n;
   launch_preview: Subscription | null = null;
+  headless_start: { id: number; deadline: number } | null = null;
   snapshot_revision: bigint | null = null;
   watched = true;
   session_hash = 0n;
@@ -167,7 +168,7 @@ export class Client {
     if (!this.dead) this.registration?.arm(READ | (this.output.length > this.sent ? WRITE : 0));
   }
   private dispatch(): void {
-    if (this.paused || this.dead || this.busy || !this.pending.length) return;
+    if (this.paused || this.dead || this.busy || this.headless_start || !this.pending.length) return;
     this.busy = true;
     this.receive(this, this.pending[0]);
   }

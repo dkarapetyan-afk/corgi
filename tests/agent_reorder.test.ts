@@ -161,20 +161,30 @@ class AgentReorder extends Viewers {
     this.assertEqual(viewer.state.pane, ids[0]);
   }
 
-  async test_native_agents_share_order_and_cold_recovery_preserves_it() {
+  async test_headless_agents_share_order_and_cold_recovery_preserves_it() {
     const [a, b] = await this.agents(2);
     const workspace = (await this.session()).workspaces[0].id;
-    const native = (await this.rpc({ op: "native.start", provider: "codex", cwd: this.temp.name, workspace })).session;
+    const headless = (
+      await this.rpc({
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
+        provider: "codex",
+        cwd: this.temp.name,
+        workspace,
+      })
+    ).session;
     const viewer = await this.newViewer();
     await viewer.input(mouse(0, 6, 20) + mouse(32, 6, 16) + mouse(0, 6, 16, true));
-    const order = [{ native }, { pane: a }, { pane: b }];
+    const handle = (await this.session()).headless_sessions.find((s: any) => s.session === headless).id;
+    const order = [{ headless: handle }, { pane: a }, { pane: b }];
     this.assertEqual(await this.order(), order);
     this.assertIn("codex", screen_text(viewer.state.data, 100, 30)[16]);
     const added = await this.new();
     await this.mark_agent(added, "Agent-3");
     await viewer.poll();
     this.assertEqual(this.labels(viewer), ["Agent-0", "Agent-1", "Agent-3"]);
-    await this.rpc({ op: "recovery.save", protocol: 1 });
+    await this.rpc({ op: "recovery.save", protocol: 2 });
     await viewer.close();
     await this.restart_runtime();
     this.assertEqual(await this.order(), order);
@@ -201,7 +211,7 @@ class AgentReorder extends Viewers {
     this.assertEqual(await this.order(), [{ pane: b }, { pane: a }]);
     const response = await this.raw_rpc({
       op: "session.command",
-      protocol: 1,
+      protocol: 2,
       command: { "agent.move": { workspace: home, target: { pane: a }, before: { pane: outsider } } },
     });
     this.assertEqual(response.err, "InvalidDestination");

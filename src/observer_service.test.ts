@@ -3,10 +3,11 @@ import { afterEach, expect, test } from "bun:test";
 import { Server } from "./server";
 import { Pane } from "./runtime";
 import { Terminal } from "./pane/terminal";
-import { Snapshot, Worker } from "./providers/codex/observer";
+import { Worker } from "./providers/codex/observer";
+import { Snapshot } from "./providers/snapshot";
 import { Text } from "./providers/common";
-import { Codex } from "./providers/codex";
-import { codexActor, codexMissed, reattachFromTitle, retitled } from "./observer_service";
+import * as codex from "./providers/codex";
+import { snapshotActor, missed, reattachFromTitle, retitled } from "./observer_service";
 
 const id = "11111111-1111-4111-8111-111111111111";
 class ObserverTerminal extends Terminal {
@@ -59,23 +60,23 @@ test("Codex selection rejects delayed ABA observations while detached actors rem
     id,
     "working",
   );
-  const actor = codexActor(server, snapshot)!;
+  const actor = snapshotActor(server, "codex", snapshot)!;
   snapshot.request.generation = pane.attachment.generation;
   terminal.title = `codex | ${id} | Working`;
-  expect(codexActor(server, snapshot)).toBe(actor);
+  expect(snapshotActor(server, "codex", snapshot)).toBe(actor);
   pane.attachment.select(registry.get("codex", "22222222-2222-4222-8222-222222222222"));
   pane.attachment.select(actor);
-  expect(codexActor(server, snapshot)).toBeNull();
+  expect(snapshotActor(server, "codex", snapshot)).toBeNull();
   snapshot.request.generation = pane.attachment.generation;
   terminal.title = id;
   terminal.title_revision = terminal.title_revision + 2n;
-  expect(codexActor(server, snapshot)).toBeNull();
+  expect(snapshotActor(server, "codex", snapshot)).toBeNull();
   snapshot.request.title_revision = terminal.title_revision;
-  expect(codexActor(server, snapshot)).toBe(actor);
+  expect(snapshotActor(server, "codex", snapshot)).toBe(actor);
   snapshot.request.actor = actor.id;
   pane.attachment.detach();
   terminal.exited = true;
-  expect(codexActor(server, snapshot)).toBe(actor);
+  expect(snapshotActor(server, "codex", snapshot)).toBe(actor);
 });
 
 test("local Codex reattachment requires current unambiguous identity and preserves observations", () => {
@@ -122,20 +123,20 @@ test("a Codex side conversation in the title leaves the pane on the conversation
   const show = (session: string) => {
     terminal.title = `codex | ${session} | project`;
     terminal.title_revision++;
-    retitled(server.runtime, pane, Codex.titleSession(terminal.title));
+    retitled(server.runtime, pane, "codex", codex.titleSession(terminal.title));
   };
   const request = () => ({
     pane: 1,
     pid: 42,
     actor: 0,
-    prefix: Codex.titleSession(terminal.title)!,
+    prefix: codex.titleSession(terminal.title)!,
     generation: pane.attachment.generation,
     title_revision: terminal.title_revision,
   });
   const observe = (session: string, ephemeral: boolean) => {
     const snapshot = new Snapshot(request(), session, "idle");
     snapshot.ephemeral = ephemeral;
-    return codexActor(server, snapshot);
+    return snapshotActor(server, "codex", snapshot);
   };
   pane.attachment.select(main);
   show(id);
@@ -147,7 +148,7 @@ test("a Codex side conversation in the title leaves the pane on the conversation
   const worker = new Worker();
   worker.reconcile(server.runtime);
   expect(worker.requests.map(r => [r.pane, r.actor, r.prefix.text()])).toEqual([[0, main.id, id]]);
-  codexMissed(server, request());
+  missed(server, "codex", request());
   expect(pane.attachment.actor).toBe(main);
 
   show(id);
@@ -165,6 +166,6 @@ test("a Codex side conversation in the title leaves the pane on the conversation
   // So does no conversation, when the daemon doesn't have the thread.
   show(gone);
   expect(pane.attachment.actor).toBe(main);
-  codexMissed(server, request());
+  missed(server, "codex", request());
   expect(pane.attachment.actor).toBeNull();
 });

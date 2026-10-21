@@ -62,12 +62,12 @@ async function exchange(text: string, respond: (cl: Client, value: any) => void)
   }
 }
 test("an HTTP POST is one request: its body is the envelope and the reply is the response", async () => {
-  const body = JSON.stringify({ op: "hook", protocol: 1, provider: "claude", pane: 3 });
+  const body = JSON.stringify({ op: "hook", protocol: 2, provider: "claude", pane: 3 });
   const { received, reply, closed } = await exchange(
     `POST /rpc HTTP/1.1\r\nHost: corgi\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
     cl => cl.queue({ ok: true }),
   );
-  expect(received).toEqual([{ op: "hook", protocol: 1, provider: "claude", pane: 3 }]);
+  expect(received).toEqual([{ op: "hook", protocol: 2, provider: "claude", pane: 3 }]);
   expect(reply).toBe(
     'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{"ok":true}\n',
   );

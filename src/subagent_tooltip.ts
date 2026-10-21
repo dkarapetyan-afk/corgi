@@ -1,7 +1,7 @@
 //! The agent card a sidebar row opens on hover, and the usage overview the
 //! status bar opens. Mirrors subagent_tooltip.zig.
 import { microTimestamp, milliTimestamp } from "./clock";
-import { Provider, byProvider } from "./providers";
+import { Provider, byProvider, adapter } from "./providers";
 import { View as UsageView, Tokens } from "./usage/live";
 import { View as ContextView } from "./usage/context_window";
 import * as prices from "./usage/prices";
@@ -237,7 +237,7 @@ export function childrenAvailable(all: readonly Conversation[], parent: number, 
   const root = find(all, parent);
   if (!root) return false;
   // A list that holds until the next one does not age.
-  const lasting = root.agent.provider !== null ? Provider.info(root.agent.provider).children_at_stop : false;
+  const lasting = root.agent.provider !== null ? adapter(root.agent.provider).caps.children_at_stop : false;
   const age = now - root.children_observed_at;
   if (root.children_observed_at <= 0 || (!lasting && (age < 0 || age > fresh_window))) return false;
   // Omit the whole section when child status cannot be presented reliably.
@@ -1000,8 +1000,8 @@ function accountRule(card: Card, row: number, section: Section, accounts: Accoun
   const name =
     section.provider !== null
       ? value !== null && value.account.length > 0
-        ? `${Provider.info(section.provider).name} ${value.account}`
-        : Provider.info(section.provider).name
+        ? `${adapter(section.provider).name} ${value.account}`
+        : adapter(section.provider).name
       : "Other agents";
   w.write(`\x1b[${row + 1};${card.x + 3}H${base}${Tone.ansi("border")} `);
   w.write(`${base}${Tone.ansi("title")}`);

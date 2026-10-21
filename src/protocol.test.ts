@@ -12,23 +12,33 @@ test("every op decodes a sample request", () => {
 });
 test("a client's envelope writes what the hand-written requests did", () => {
   for (const [op, payload, expected] of [
-    ["hello", {}, { op: "hello", protocol: 1 }],
+    ["hello", {}, { op: "hello", protocol: 1, runtime_protocol: 2 }],
     ["shutdown", {}, { op: "shutdown" }],
     ["server.reload", { executable: "/bin/corgi" }, { op: "server.reload", protocol: 1, executable: "/bin/corgi" }],
     [
       "session.command",
       { command: { "pane.close": { target: 3 } } },
-      { op: "session.command", protocol: 1, command: { "pane.close": { target: 3 } } },
+      { op: "session.command", protocol: 2, command: { "pane.close": { target: 3 } } },
     ],
     [
       "viewer.open",
       { cwd: "/tmp", onboarding: true },
-      { op: "viewer.open", protocol: 1, viewer_protocol: 3, cwd: "/tmp", theme: null, onboarding: true },
+      { op: "viewer.open", protocol: 2, viewer_protocol: 3, cwd: "/tmp", theme: null, onboarding: true },
     ],
     ["focus", { pane: 3, viewer: 2 }, { op: "focus", pane: 3, viewer: 2 }],
     ["workspace.switch", { workspace: 1, viewer: null }, { op: "workspace.switch", workspace: 1 }],
   ] as const)
     expect(protocol.envelope(op, payload)).toEqual(expected);
+});
+test("management and runtime versions are checked independently", () => {
+  expect(() => protocol.require({ protocol: 1 }, null, "management")).not.toThrow();
+  expect(() => protocol.require({ protocol: 2 }, null)).not.toThrow();
+  expect(() => protocol.require({}, 2)).not.toThrow();
+  expect(() => protocol.require({ protocol: 1 }, 2)).toThrow("UnsupportedProtocol");
+  for (const version of [0, 2, 999, -1, "1", null])
+    expect(() => protocol.require({ protocol: version }, null, "management")).toThrow("UnsupportedManagementProtocol");
+  expect(() => protocol.require({}, null, "management")).toThrow("ProtocolRequired");
+  expect(protocol.capabilities).toContain("server.reload");
 });
 test("a malformed theme reads as none instead of failing the request", () => {
   for (const value of [{ theme: { foreground: 7 } }, { theme: "dark" }, {}])
@@ -225,8 +235,8 @@ test("command defaults normalize nested semantics and tagged destinations", () =
   expect(protocol.decodeCommand({ "agent.visibility": { hidden: { codex: true } } })).toEqual({
     "agent.visibility": { hidden: { codex: true, claude: false } },
   });
-  expect(protocol.decodeCommand({ "agent.move": { workspace: 1n, target: { native: 2n } } })).toEqual({
-    "agent.move": { workspace: 1, target: { native: 2 }, before: null },
+  expect(protocol.decodeCommand({ "agent.move": { workspace: 1n, target: { headless: 2n } } })).toEqual({
+    "agent.move": { workspace: 1, target: { headless: 2 }, before: null },
   });
   const move = { "pane.move": { target: 1n, destination: { beside: { other: 2n } } } };
   expect(protocol.decodeCommand(move)).toEqual({
@@ -259,5 +269,16 @@ test("command schemas reject unknown nested fields while requests stay lenient",
     rows: 24,
     offset: null,
     known: null,
+  });
+});
+
+test("headless commands require provider session IDs and a first prompt", () => {
+  expect(() => protocol.decode("headless.start", { provider: "codex" })).toThrow("MissingField");
+  expect(() => protocol.decode("headless.stop", { provider: "codex", session: 1 })).toThrow("UnexpectedToken");
+  expect(() => protocol.decode("headless.stop", { session: "t" })).toThrow("MissingField");
+  expect(protocol.check("headless.start")).toBe("runtime");
+  expect(protocol.decode("headless.stop", { provider: "codex", session: "t" })).toEqual({
+    provider: "codex",
+    session: "t",
   });
 });

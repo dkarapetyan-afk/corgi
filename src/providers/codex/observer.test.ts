@@ -1,17 +1,17 @@
 import { test, expect } from "bun:test";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { Codex } from "./index";
+import * as codex from "./index";
 import { Text } from "../common";
-import { childName, unique, threadState, location, snapshot, Worker } from "./observer";
+import { childName, evidence, unique, threadState, location, snapshot, Worker } from "./observer";
 
 test("title UUID parsing handles truncation and refuses ambiguity", () => {
   const id = "01901234-1234-1234-1234-123456789abc";
-  expect(Codex.titleSession("codex | " + id + " | Ready")?.text()).toBe(id);
-  expect(Codex.titleSession("codex | 01901234-1234-1234-1234-12345...")?.text()).toBe(id.slice(0, 29));
-  expect(Codex.titleSession("project 01901234")).toBeNull();
-  expect(Codex.titleSession(id + " " + id)).toBeNull();
-  const prefix = Codex.titleSession("01901234-1234-1234-1234-12345...")!;
+  expect(codex.titleSession("codex | " + id + " | Ready")?.text()).toBe(id);
+  expect(codex.titleSession("codex | 01901234-1234-1234-1234-12345...")?.text()).toBe(id.slice(0, 29));
+  expect(codex.titleSession("project 01901234")).toBeNull();
+  expect(codex.titleSession(id + " " + id)).toBeNull();
+  const prefix = codex.titleSession("01901234-1234-1234-1234-12345...")!;
   expect(unique([id, "01901234-1234-1234-1234-123456789def"], prefix)).toBeNull();
 });
 
@@ -172,4 +172,14 @@ test("with no Codex daemon to ask, pane requests are missed and conversation req
   await worker.run();
   expect(worker.takeMissed()).toEqual([pane]);
   expect(worker.take()).toEqual([]);
+});
+test("a turn's evidence leads with the latest agent message", () => {
+  const text = evidence({
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: "Fix tabs" }] },
+      { type: "agentMessage", text: "Tracing focus changes" },
+    ],
+  }).text();
+  expect(text.startsWith("Latest agent update: Tracing focus changes")).toBe(true);
+  expect(text).toContain("User request: Fix tabs");
 });

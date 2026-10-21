@@ -1,7 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { Quit } from "../subprocess";
-import type { Provider } from "../providers";
-import type { Stopping } from "../inference";
+import type { Quit } from "../../subprocess";
+import type { Stopping } from "../../inference";
 export type ControlStopping = Stopping | { stopping: boolean };
 export type Options = {
   stopping?: ControlStopping;
@@ -16,7 +15,7 @@ export function cancelled(stopping?: ControlStopping): boolean {
   return stopping.load?.() ?? stopping.value ?? false;
 }
 const message_limit = 4 * 1024 * 1024;
-/** Provider-owned read-only control channel; never sends prompts. */
+/** Claude Code's read-only control channel, for its account and usage; never sends prompts. */
 export class Control {
   child: ChildProcessWithoutNullStreams | null = null;
   next = 0;
@@ -30,34 +29,28 @@ export class Control {
     }
   >();
   initialized: Promise<any> | null = null;
-  constructor(
-    public provider: Provider,
-    public executable: string = provider,
-  ) {}
+  constructor(public executable = "claude") {}
   start() {
     if (this.child) return;
     this.buffer = "";
-    const args =
-      this.provider === "codex"
-        ? ["app-server"]
-        : [
-            "--print",
-            "--verbose",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--no-session-persistence",
-            "--setting-sources",
-            "",
-            "--settings",
-            '{"disableAllHooks":true,"remoteControlAtStartup":false}',
-            "--strict-mcp-config",
-            "--mcp-config",
-            '{"mcpServers":{}}',
-            "--tools",
-            "",
-          ];
+    const args = [
+      "--print",
+      "--verbose",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--no-session-persistence",
+      "--setting-sources",
+      "",
+      "--settings",
+      '{"disableAllHooks":true,"remoteControlAtStartup":false}',
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      "--tools",
+      "",
+    ];
     this.child = spawn(this.executable, args, {
       cwd: "/tmp",
       env: {
@@ -71,7 +64,7 @@ export class Control {
     this.child.stdout.on("data", b => {
       this.buffer += b.toString();
       if (Buffer.byteLength(this.buffer) > message_limit && !this.buffer.includes("\n")) {
-        this.close(Error("NativeMessageTooLarge"));
+        this.close(Error("HeadlessMessageTooLarge"));
         return;
       }
       let i;
@@ -79,26 +72,25 @@ export class Control {
         const line = this.buffer.slice(0, i);
         this.buffer = this.buffer.slice(i + 1);
         if (Buffer.byteLength(line) > message_limit) {
-          this.close(Error("NativeMessageTooLarge"));
+          this.close(Error("HeadlessMessageTooLarge"));
           return;
         }
         try {
           const v = JSON.parse(line);
-          if (this.provider === "claude" && v.type === "control_request" && v.request_id !== undefined) {
+          if (v.type === "control_request" && v.request_id !== undefined) {
             this.close(Error("UnexpectedRequest"));
             return;
           }
-          const id = this.provider === "codex" ? String(v.id) : v.response?.request_id,
+          const id = v.response?.request_id,
             p = this.pending.get(id);
           if (!p) continue;
           p.cleanup();
           this.pending.delete(id);
-          if (v.error || (this.provider === "claude" && v.response?.subtype !== "success"))
-            p.reject(Error("UnsupportedUsage"));
-          else p.resolve(this.provider === "codex" ? v.result : v.response?.response);
+          if (v.error || v.response?.subtype !== "success") p.reject(Error("UnsupportedUsage"));
+          else p.resolve(v.response?.response);
         } catch {}
       }
-      if (Buffer.byteLength(this.buffer) > message_limit) this.close(Error("NativeMessageTooLarge"));
+      if (Buffer.byteLength(this.buffer) > message_limit) this.close(Error("HeadlessMessageTooLarge"));
     });
     this.child.stderr.resume();
     const child = this.child;
@@ -111,20 +103,7 @@ export class Control {
   }
   async ready(options: Options = {}) {
     this.start();
-    if (!this.initialized)
-      this.initialized = this.requestRaw(
-        "initialize",
-        this.provider === "codex"
-          ? {
-              clientInfo: { name: "corgi", version: "bun" },
-              capabilities: { experimentalApi: true },
-            }
-          : { skip_behaviors: true },
-        options,
-      ).then(v => {
-        if (this.provider === "codex") this.child?.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
-        return v;
-      });
+    if (!this.initialized) this.initialized = this.requestRaw("initialize", { skip_behaviors: true }, options);
     return this.initialized;
   }
   async request(method: string, params: any = {}, options: Options = {}) {
@@ -171,14 +150,11 @@ export class Control {
         poll = setInterval(() => {
           if (cancelled(options.stopping)) abort();
         }, 20);
-      const value =
-        this.provider === "codex"
-          ? { id: Number(id), method, params }
-          : {
-              type: "control_request",
-              request_id: id,
-              request: { subtype: method, skip_behaviors: true, ...params },
-            };
+      const value = {
+        type: "control_request",
+        request_id: id,
+        request: { subtype: method, skip_behaviors: true, ...params },
+      };
       this.child!.stdin.write(JSON.stringify(value) + "\n", error => {
         if (error) this.close(Error("HarnessExited"));
       });

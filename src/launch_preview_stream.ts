@@ -4,6 +4,7 @@ import { milliTimestamp } from "./clock";
 import type { History, Entry } from "./launch/history";
 import { type Preview, preview as previewValue } from "./agent_launcher";
 import { Provider } from "./providers";
+import * as protocol from "./protocol";
 export class Stream {
   socket = "";
   fd: Socket | null = null;
@@ -48,8 +49,8 @@ export class Stream {
       const connection = createConnection(this.socket);
       this.fd = connection;
       connection.once("connect", () => {
-        connection.write(stringify({ op: "agent.subscribe", protocol: 1, workspace, cwd }) + "\n");
-        connection.write(stringify({ op: "agent.history", protocol: 1, follow: true }) + "\n");
+        connection.write(stringify(protocol.envelope("agent.subscribe", { workspace, cwd })) + "\n");
+        connection.write(stringify(protocol.envelope("agent.history", { follow: true })) + "\n");
       });
       connection.on("data", chunk => {
         try {

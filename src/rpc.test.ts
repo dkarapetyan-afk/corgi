@@ -109,13 +109,13 @@ test("RPC retains raw integer tokens until the receiving model normalizes them",
     expect((await conn.call("viewer.search", { pane: 1, needle: "x", skip: 0xffffffffffffffffn })).offset).toBe(
       0xffffffffffffffffn,
     );
-    const events = await conn.call("native.events", { session: 1, after: 0n });
+    const events = await conn.call("headless.events", { provider: "codex", session: "t", after: 0n });
     expect(events.next_seq).toBe(2);
     expect(events.first_seq).toBe(0xffffffffffffffffn);
     expect(packets).toEqual([
-      '{"op":"viewer.search","protocol":1,"pane":1,"needle":"x","skip":2}',
-      '{"op":"viewer.search","protocol":1,"pane":1,"needle":"x","skip":18446744073709551615}',
-      '{"op":"native.events","session":1,"after":0}',
+      '{"op":"viewer.search","protocol":2,"pane":1,"needle":"x","skip":2}',
+      '{"op":"viewer.search","protocol":2,"pane":1,"needle":"x","skip":18446744073709551615}',
+      '{"op":"headless.events","protocol":2,"provider":"codex","session":"t","after":0}',
     ]);
   } finally {
     conn.close();

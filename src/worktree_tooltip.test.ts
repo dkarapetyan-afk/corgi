@@ -166,7 +166,7 @@ test("headings sort the rows, the sorted one marked and turned around by a secon
 });
 test("the overview counts each worktree's agents, and those working, as the sidebar does", () => {
   const data = snapshot(2);
-  data.agents = [{ target: { native: 7 }, path: data.entries[2].path, source: "write", stale: false }];
+  data.agents = [{ target: { headless: 7 }, path: data.entries[2].path, source: "write", stale: false }];
   const row = (state: string) => {
     const view = new Controller({ request: (async () => ({})) as any });
     view.width = 140;
@@ -182,7 +182,7 @@ test("the overview counts each worktree's agents, and those working, as the side
         },
       ],
       panes: [{ id: 1, workspace: 1, tab: 1, cols: 80, rows: 24, cwd: "/repo" }],
-      native_sessions: [
+      headless_sessions: [
         {
           id: 7,
           workspace: 1,
@@ -265,7 +265,7 @@ test("r asks the daemon to brief the overview's worktrees again", async () => {
       { id: 1, name: "repo", cwd: "/repo", worktrees: snapshot(2), model: { nodes: [], tabs: [], revision: 0 } },
     ],
     panes: [],
-    native_sessions: [],
+    headless_sessions: [],
   });
   view.input_state.attached = true;
   view.worktree_card.workspace = 1;
@@ -496,13 +496,13 @@ test("after a removal the cursor stays on its line while the row below moves up 
 function browsing() {
   const requests: any[] = [];
   const data = snapshot(2);
-  data.agents = [{ target: { native: 7 }, path: data.entries[2].path, source: "write", stale: false }];
+  data.agents = [{ target: { headless: 7 }, path: data.entries[2].path, source: "write", stale: false }];
   // A shell in the only tab, and a daemon that opens resumed agents asleep in new tabs.
   const model = { nodes: [{ pane: 1 }] as any[], tabs: [{ id: 1, root: 0 }], revision: 0 },
     state = {
       workspaces: [{ id: 1, name: "repo", cwd: "/repo", worktrees: data, model }],
       panes: [{ id: 1, workspace: 1, tab: 1, cols: 80, rows: 24, cwd: "/repo" }] as any[],
-      native_sessions: [
+      headless_sessions: [
         {
           id: 7,
           workspace: 1,
@@ -674,7 +674,7 @@ test("clicking a ghost's agent brings its group back and wakes it; entering a li
   expect(view.focused()?.id).toBe(3);
   const { view: live } = browsing();
   await live.input(Buffer.from("\x1b[B\r"));
-  expect(live.native_notice).toBe(7);
+  expect(live.headless_notice).toBe(7);
   expect(live.worktreeDetail()).toBeNull();
   expect(live.agentEntries().filter(e => e.name === "Search agent")).toHaveLength(1);
 });
@@ -692,7 +692,7 @@ test("browsing an offscreen group scrolls the existing sidebar without a duplica
     original = view.runtime.snapshot;
   view.receiveSnapshot({
     ...original,
-    native_sessions: [
+    headless_sessions: [
       ...Array.from({ length: 15 }, (_, i) => ({
         id: i + 20,
         workspace: 1,
@@ -701,7 +701,7 @@ test("browsing an offscreen group scrolls the existing sidebar without a duplica
         state: "idle",
         agent: { provider: "claude", name: `Root ${i}`, session: `root-${i}` },
       })),
-      ...original.native_sessions,
+      ...original.headless_sessions,
     ],
   });
   await view.input(Buffer.from("\x1b[B"));
@@ -759,7 +759,7 @@ function paneWorktrees() {
     ],
     panes: [pane(1, "one"), pane(2, "two"), pane(3, "main")],
     conversations: [],
-    native_sessions: [],
+    headless_sessions: [],
   };
   const closed: number[] = [],
     view = new Controller({

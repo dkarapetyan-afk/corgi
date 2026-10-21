@@ -1,15 +1,9 @@
-import { field, str } from "../providers/common";
-import { Claude } from "../providers/claude";
-import { Codex } from "../providers/codex";
+import { field, number } from "../providers/common";
 export { field };
 export const max = (1n << 64n) - 1n;
 export const add = (a: bigint, b: bigint) => (a + b > max ? max : a + b);
 export const sub = (a: bigint, b: bigint) => (a > b ? a - b : 0n);
-export function number(v: any, key: string): bigint | null {
-  const n = field(v, key);
-  if (typeof n === "bigint") return n >= 0n && n <= max ? n : null;
-  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? BigInt(n) : null;
-}
+export { number };
 export class Counts {
   tools = 0n;
   input = 0n;
@@ -123,63 +117,5 @@ export class Tracker {
   }
   hasSample(id: string) {
     return this.samples.some(sample => sample.id === Tracker.key(id));
-  }
-  codexNotification(id: string, value: any, active: boolean) {
-    const known = this.hasSample(id),
-      delta = this.codexTokens(id, field(value, "total"), true);
-    if (!known && active && delta.tokens_known) {
-      const last = field(value, "last");
-      delta.input = number(last, "inputTokens") ?? 0n;
-      delta.output = number(last, "outputTokens") ?? 0n;
-    }
-    return delta;
-  }
-  beginCodex(id: string) {
-    this.tokens(id, 0n, 0n, true);
-  }
-  codexTokens(id: string, total: any, camel: boolean) {
-    const input = number(total, camel ? "inputTokens" : "input_tokens"),
-      output = number(total, camel ? "outputTokens" : "output_tokens");
-    return input === null || output === null ? new Counts() : this.tokens(id, input, output, true);
-  }
-  claudeMessage(message: any) {
-    let delta = new Counts();
-    const id = str(message, "id"),
-      usage = field(message, "usage"),
-      input = number(usage, "input_tokens"),
-      output = number(usage, "output_tokens");
-    if (id && input !== null && output !== null) {
-      const cached = number(usage, "cache_read_input_tokens") ?? 0n;
-      delta = this.tokensCached(
-        id,
-        add(add(input, cached), number(usage, "cache_creation_input_tokens") ?? 0n),
-        cached,
-        output,
-        false,
-      );
-    }
-    const content = field(message, "content");
-    if (Array.isArray(content))
-      for (const block of content)
-        if (str(block, "type") === "tool_use") delta.tools = add(delta.tools, this.tool(str(block, "id")));
-    return delta;
-  }
-  transcript(provider: string, session: string, value: any) {
-    if (provider === "claude") {
-      const line = Claude.Line.of(value, session);
-      return line?.type === "assistant" ? this.claudeMessage(line.message) : new Counts();
-    }
-    const r = Codex.Rollout.decode(value),
-      kind = r.payloadType();
-    if (r.type === "event_msg" && kind === "token_count")
-      return this.codexTokens("codex", field(field(r.payload, "info"), "total_token_usage"), false);
-    if (
-      r.type === "response_item" &&
-      ["function_call", "custom_tool_call", "web_search_call", "local_shell_call"].includes(kind ?? "")
-    )
-      return new Counts({
-        tools: this.tool(str(r.payload, "call_id") || str(r.payload, "id")),
-      });
-    return new Counts();
   }
 }

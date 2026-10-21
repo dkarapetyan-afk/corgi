@@ -13,7 +13,7 @@ import * as worktrees from "./worktrees";
 import { stringify } from "./json";
 import { Pool, type Request as InferenceRequest } from "./inference/harness";
 import { changedPaths, parseNumstat } from "./trackers/worktrees";
-import type { Provider } from "./providers";
+import { Provider } from "./providers";
 import type { Runtime } from "./runtime";
 
 type Query = (cwd: string, args: string[]) => Promise<string | null>;
@@ -469,7 +469,7 @@ export class Briefs {
         new Pool({
           size: pool_size,
           config: {
-            provider: config.provider ?? "codex",
+            provider: config.provider ?? Provider.first,
             model: config.model || null,
             executable: process.env.CORGI_INFERENCE_BIN ?? null,
             disabled: config.provider === null,

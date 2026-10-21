@@ -15,9 +15,23 @@ function ensureTurn() {
     if (!claude) emit({method:'turn/started',params:{threadId:'t',turn:{id:activeTurn}}}); }
   return activeTurn;
 }
-function finishTurn(result) {
-  emit(claude ? {type:'result',result} : {method:'turn/completed',params:{threadId:'t',turn:{id:activeTurn || lastTurn,status:'completed'}}});
+function finishTurn(result, status = 'completed') {
+  emit(claude ? {type:'result',result,...(status === 'completed' ? {} : {subtype:'error_during_execution',is_error:true})} : {method:'turn/completed',params:{threadId:'t',turn:{id:activeTurn || lastTurn,status}}});
   activeTurn = null;
+}
+// Test commands arrive as prompts: a Codex turn's text or a Claude user message.
+function command(text) {
+  if (text === 'test/init') { if (claude) emit({type:'system',subtype:'init',session_id:'t'}); return; }
+  const space = text.indexOf(' '), name = space < 0 ? text : text.slice(0, space), arg = space < 0 ? '' : text.slice(space + 1);
+  if (name === 'test/approval') { ensureTurn(); emit(claude ? {type:'control_request',request_id:'permission-1',request:{subtype:'can_use_tool',tool_name:'Bash',input:{command:'ls'}}} : {id:900,method:'item/commandExecution/requestApproval',params:{threadId:'t',command:'ls'}}); }
+  else if (name === 'test/flood') for(let i=0;i<150;i++) emit(claude ? {type:'assistant',message:{content:[{type:'text',text:'flood '+i}]}} : {method:'item/completed',params:{threadId:'t',turnId:activeTurn,item:{id:'flood-'+i,type:'agentMessage',text:'flood '+i}}});
+  else if (name === 'test/tool-start') { ensureTurn(); emit(claude ? {type:'assistant',message:{content:[{type:'tool_use',id:arg,name:'Bash',input:{}}]}} : {method:'item/started',params:{threadId:'t',turnId:activeTurn,item:{id:arg,type:'commandExecution'}}}); }
+  else if (name === 'test/tool-stop') emit(claude ? {type:'user',message:{content:[{type:'tool_result',tool_use_id:arg,content:'done'}]}} : {method:'item/completed',params:{threadId:'t',turnId:activeTurn,item:{id:arg,type:'commandExecution'}}});
+  else if (name === 'test/turn-end') finishTurn('done');
+  else if (name === 'test/event') emit(JSON.parse(arg));
+  else if (name === 'test/exit') process.exit(0);
+  // Anything else, such as a summary, fails at once like a model that can't answer.
+  else { ensureTurn(); finishTurn('unknown', 'failed'); }
 }
 for await (const line of (await import('node:readline')).createInterface({input:process.stdin})) {
   if (!line.trim()) continue;
@@ -25,14 +39,12 @@ for await (const line of (await import('node:readline')).createInterface({input:
   if (v.method === 'initialize') emit({id:v.id,result:{version:'fixture'}});
   else if (v.method === 'initialized') emit({method:'ready'});
   else if (v.method === 'config/read') emit({id:v.id,result:{config:{},layers:[{name:{type:'user',file:process.env.CODEX_HOME+'/config.toml',profile:null},version:'fixture',config:{tui:{terminal_title:['thread-id']}}}]}});
-  else if (v.method === 'test/approval') { ensureTurn(); emit(claude ? {type:'control_request',request_id:'permission-1',request:{subtype:'can_use_tool',tool_name:'Bash'}} : {id:900,method:'item/commandExecution/requestApproval',params:{threadId:'t'}}); }
-  else if (v.method === 'test/flood') for(let i=0;i<150;i++) emit({type:'fixture',n:i});
-  else if (v.method === 'test/tool-start') { ensureTurn(); const id=v.params.id; emit(claude ? {type:'assistant',message:{content:[{type:'tool_use',id,name:'Bash',input:{}}]}} : {method:'item/started',params:{threadId:'t',turnId:activeTurn,item:{id,type:'commandExecution'}}}); }
-  else if (v.method === 'test/tool-stop') { const id=v.params.id; emit(claude ? {type:'user',message:{content:[{type:'tool_result',tool_use_id:id,content:'done'}]}} : {method:'item/completed',params:{threadId:'t',turnId:activeTurn,item:{id,type:'commandExecution'}}}); }
-  else if (v.method === 'test/turn-end') finishTurn('done');
+  else if (v.method === 'thread/start') emit({id:v.id,result:{thread:{id:'t'}}});
+  else if (v.method === 'turn/start') { command(v.params.input[0].text); emit({id:v.id,result:{turn:{id:activeTurn || lastTurn || 'turn'}}}); }
+  else if (v.method === 'turn/interrupt') { finishTurn('interrupted', 'interrupted'); emit({id:v.id,result:{}}); }
+  else if (v.type === 'user') command(typeof v.message.content === 'string' ? v.message.content : '');
   else if (v.id === 900 || v.type === 'control_response') finishTurn('complete');
-  else if (v.method === 'test/event') emit(v.params);
-  else if (v.method === 'test/exit') process.exit(0);
+  else if (v.type === 'control_request') emit({type:'control_response',response:{subtype:'success',request_id:v.request_id}});
   else if ('id' in v) emit({id:v.id,result:{echo:v}});
 }
 `;

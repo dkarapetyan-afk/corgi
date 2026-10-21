@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import * as clock from "../clock";
 import * as subprocess from "../subprocess";
 import * as worktrees from "../worktrees";
-import { Provider } from "../providers";
+import { adapter } from "../providers";
 import type { Agent } from "../agents";
 import type { Runtime } from "../runtime";
 import type { Workspace } from "../workspace";
@@ -185,7 +185,7 @@ function evidence(target: Target, agent: Agent, folder: string): Input {
     cwd,
     writes: seen?.writes ?? [],
     ran: seen?.cwd ? seen.ran : [cwd],
-    basis: seen?.cwd ? seen.basis : agent.provider && Provider.info(agent.provider).follows_cd ? "named" : "default",
+    basis: seen?.cwd ? seen.basis : agent.provider && adapter(agent.provider).caps.follows_cd ? "named" : "default",
     settled: agent.state !== "working" && agent.state !== "blocked",
   };
 }
@@ -374,7 +374,7 @@ export class Tracker {
           .map(p => evidence({ pane: p.id }, p.agent(), p.cwd)),
         ...runtime.sessions
           .filter(s => s.workspace_id === workspace.id)
-          .map(s => evidence({ native: s.id }, s.attachment.agent(), s.cwd)),
+          .map(s => evidence({ headless: s.id }, s.attachment.agent(), s.cwd)),
       ],
     }));
     this.done = false;

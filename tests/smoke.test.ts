@@ -34,7 +34,7 @@ class Smoke extends Runtime {
     this.assertIn("pane.surface", hello.capabilities);
     this.assertNotIn("handoff", hello.capabilities);
     const ws = (await this.workspaces())[0].id;
-    for (const protocol of [0, 2, -1, "1"])
+    for (const protocol of [0, 1, 3, 4, -1, "2"])
       this.assertEqual(
         (
           await this.raw_rpc({
@@ -49,8 +49,12 @@ class Smoke extends Runtime {
     this.assertEqual((await this.session()).panes, []);
     const socket = await JsonSocket.connect(this.path);
     try {
-      this.assertEqual((await socket.request({ op: "hello", protocol: 1 })).protocol, 1);
+      this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol: 2 })).protocol, 2);
       this.assertEqual((await socket.request({ op: "session.snapshot" })).type, "session");
+      for (const runtime_protocol of [1, 999, undefined]) {
+        this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol })).protocol, 2);
+        this.assertEqual((await socket.request({ op: "session.snapshot" })).err, "ProtocolRequired");
+      }
     } finally {
       socket.close();
     }
@@ -124,7 +128,7 @@ class Smoke extends Runtime {
       { "pane.input": { data: 42, target: pane } },
       { "tab.rename": { name: "missing target" } },
     ])
-      this.assertIn("err", await this.raw_rpc({ op: "session.command", protocol: 1, command }));
+      this.assertIn("err", await this.raw_rpc({ op: "session.command", protocol: 2, command }));
     const after = await this.session();
     this.assertEqual(after.workspaces, before.workspaces);
     this.assertEqual(
@@ -152,7 +156,7 @@ class Smoke extends Runtime {
     );
     const response = await this.rpc({
         op: "pane.surface",
-        protocol: 1,
+        protocol: 2,
         pane: first,
       }),
       surface = response.surface;
@@ -170,7 +174,7 @@ class Smoke extends Runtime {
     try {
       const initial = await socket.request({
         op: "session.subscribe",
-        protocol: 1,
+        protocol: 2,
       });
       this.assertEqual(initial.type, "session");
       await sleep(5.2);
@@ -412,11 +416,13 @@ class Smoke extends Runtime {
     this.assertEqual((await this.workspaces()).find((w: any) => w.active).name, "Group-1");
     await this.frame_with("No agents yet");
   }
-  async test_native_sessions_belong_to_their_workspace() {
+  async test_headless_sessions_belong_to_their_workspace() {
     await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
     const original = (await this.workspaces())[0].id;
     await this.rpc({
-      op: "native.start",
+      op: "headless.start",
+      protocol: 2,
+      prompt: "test/init",
       provider: "codex",
       cwd: this.temp.name,
     });
@@ -1286,13 +1292,13 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     // A conversation Corgi closed comes back as undo brings it back.
     const reopened = await resume("closed");
     this.assertEqual(reopened.name, "Stored name");
-    this.assertEqual(reopened.restoring, "claude --resume 'closed'");
+    this.assertEqual(reopened.restoring, "claude --resume closed");
     this.assertEqual((await this.session()).workspaces[0].closed_agents, 0);
     await this.rpc({ op: "focus", pane: reopened.id });
     this.assertTrue(await this.restoring_over_faded("OLD_SCREEN"), "the old screen is not faded");
     // Any other comes back under the same band, over a blank screen.
     const fresh = await resume("elsewhere");
-    this.assertEqual(fresh.restoring, "claude --resume 'elsewhere'");
+    this.assertEqual(fresh.restoring, "claude --resume elsewhere");
     this.assertEqual([fresh.provider, fresh.state], ["claude", "idle"]);
     await this.rpc({ op: "focus", pane: fresh.id });
     await this.frame_with("Restoring…");

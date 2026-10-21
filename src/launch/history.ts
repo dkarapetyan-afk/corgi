@@ -1,9 +1,9 @@
-import { readdir, stat, open } from "node:fs/promises";
+import { stat, open } from "node:fs/promises";
 import { watch, FSWatcher } from "node:fs";
-import { join, basename, isAbsolute } from "node:path";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { Provider, timestampMs } from "../providers";
-import { Pool } from "../inference";
+import { Provider, adapter } from "../providers";
+import type { SessionHistory } from "../providers/adapter";
 export type Entry = {
   provider: Provider;
   session: string;
@@ -42,7 +42,7 @@ export function clip(text: string, limit: number) {
   }
   return "";
 }
-const copied = (e: Entry): Entry => ({
+export const copied = (e: Entry): Entry => ({
   ...e,
   title: clip(e.title, 120),
   first: clip(e.first, 200),
@@ -80,7 +80,7 @@ export function complete(bytes: string, mid: boolean) {
     end = bytes.lastIndexOf("\n");
   return bytes.slice(start, Math.max(start, end));
 }
-const records = (s: string, mid = false) =>
+export const records = (s: string, mid = false) =>
   complete(s, mid)
     .split("\n")
     .flatMap(l => {
@@ -90,95 +90,6 @@ const records = (s: string, mid = false) =>
         return [];
       }
     });
-function claudeText(v: any): string | null {
-  if (v.type !== "user" || v.isMeta || v.toolUseResult) return null;
-  const c = v.message?.content;
-  if (typeof c === "string") return c;
-  if (!Array.isArray(c) || c.some(p => p.type !== "text")) return null;
-  return c.map(p => p.text ?? "").join(" ");
-}
-export function claudeEntry(session: string, head: string, tail: string, mid = false, mtime = 0): Entry | null {
-  const e: Entry = {
-    provider: "claude",
-    session,
-    title: "",
-    first: "",
-    last: "",
-    cwd: "",
-    branch: "",
-    updated_at: mtime,
-    interrupted: false,
-  };
-  for (const v of records(head)) {
-    if (v.type !== "user") continue;
-    if (v.entrypoint === "sdk-cli") return null;
-    if (!e.cwd) e.cwd = v.cwd ?? "";
-    const t = claudeText(v);
-    if (t !== null && typed(t)) {
-      e.first = t;
-      break;
-    }
-  }
-  let title = "",
-    named = "",
-    renamed = "";
-  const lines = records(tail, mid);
-  for (const v of lines) {
-    switch (v.type) {
-      case "continued-in":
-        return null;
-      case "ai-title":
-        title = v.aiTitle ?? "";
-        break;
-      case "agent-name":
-        named = v.agentName ?? "";
-        break;
-      case "custom-title":
-        renamed = v.customTitle ?? "";
-        break;
-      case "user": {
-        if (v.entrypoint === "sdk-cli") return null;
-        if (v.gitBranch) e.branch = v.gitBranch;
-        if (!e.cwd) e.cwd = v.cwd ?? "";
-        const t = claudeText(v);
-        if (t === null) break;
-        if (t.replace(/^[ \n\t]+/, "").startsWith("[Request interrupted")) e.interrupted = true;
-        else if (typed(t)) {
-          e.last = t;
-          e.interrupted = false;
-        }
-        break;
-      }
-    }
-  }
-  if (!e.cwd) return null;
-  e.title = renamed || named || title;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const v = lines[i];
-    if (v.type !== "user" && v.type !== "assistant") continue;
-    const time = timestampMs(v.timestamp ?? "");
-    if (time !== null) {
-      e.updated_at = Math.floor(time / 1000);
-      break;
-    }
-  }
-  return e;
-}
-export function codexTail(tail: string, mid = false) {
-  let last = "",
-    interrupted = false;
-  for (const v of records(tail, mid)) {
-    if (v.payload?.type === "turn_aborted") interrupted = true;
-    else if (v.type === "response_item" && v.payload?.type === "message" && v.payload?.role === "user") {
-      const t = (v.payload.content ?? []).map((p: any) => p.text ?? "").join(" ");
-      if (typed(t)) {
-        last = t;
-        interrupted = false;
-      }
-    }
-  }
-  return { last, interrupted };
-}
 export class Cache {
   files = new Map<string, { stamp: string; entry: Entry | null; seen: boolean }>();
   lookup(path: string, s: any) {
@@ -197,7 +108,7 @@ export class Cache {
   }
 }
 const stamp = (s: any) => `${s.ino}:${s.size}:${s.mtimeMs}`;
-async function readAt(path: string, offset: number, len: number) {
+export async function readAt(path: string, offset: number, len: number) {
   const f = await open(path);
   try {
     const b = Buffer.alloc(len),
@@ -207,42 +118,22 @@ async function readAt(path: string, offset: number, len: number) {
     await f.close();
   }
 }
-export async function readClaude(path: string, s: any): Promise<Entry | null> {
-  const head = await readAt(path, 0, Math.min(s.size, 128 * 1024));
-  let span = 65536;
-  for (;;) {
-    const start = Math.max(0, s.size - span),
-      tail = await readAt(path, start, s.size - start),
-      e = claudeEntry(basename(path, ".jsonl"), head, tail, start > 0, Math.floor(s.mtimeMs / 1000));
-    if (!e) return null;
-    if (!e.last && start > 0 && span < 2 * 1024 * 1024) {
-      span *= 2;
-      continue;
-    }
-    e.last ||= e.first;
-    e.first ||= e.last;
-    return e.first ? copied(e) : null;
+/** The entry `read` makes of the file at `path`, kept until the file changes. */
+export async function cached(cache: Cache, path: string, read: (path: string, s: any) => Promise<Entry | null>) {
+  try {
+    const s = await stat(path);
+    if (!s.isFile()) return null;
+    const c = cache.lookup(path, s);
+    return c ? c.entry : cache.store(path, s, await read(path, s));
+  } catch {
+    return null;
   }
 }
-export async function readCodex(path: string, s: any): Promise<Entry | null> {
-  let span = 65536;
-  for (;;) {
-    const start = Math.max(0, s.size - span),
-      t = codexTail(await readAt(path, start, s.size - start), start > 0);
-    if (!t.last && start > 0 && span < 2 * 1024 * 1024) {
-      span *= 2;
-      continue;
-    }
-    return copied({
-      provider: "codex",
-      session: "",
-      title: "",
-      first: "",
-      cwd: "",
-      branch: "",
-      updated_at: 0,
-      ...t,
-    });
+export async function directory(path: string) {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
   }
 }
 export class Store {
@@ -282,28 +173,33 @@ export type Update = {
 };
 export class Worker {
   store = new Store();
-  cache = new Cache();
   ready = false;
-  changed = new Set<string>();
-  rollouts = new Map<string, string>();
+  /** Where each provider's roots changed since it last looked. */
+  changed = new Map<Provider, Set<string>>();
   epoch = randomBytes(8).readBigUInt64LE() | 1n;
   stopping = false;
-  pool = new Pool({ config: { provider: "codex", timeout_ms: 5000 } });
+  histories = new Map<Provider, Promise<SessionHistory | null>>();
   watchers: FSWatcher[] = [];
   timer: ReturnType<typeof setTimeout> | null = null;
   refreshing: Promise<void> | null = null;
   static start() {
     const w = new Worker();
     void w.refresh();
-    w.startWatching();
+    void w.startWatching();
     return w;
   }
   async stop() {
     this.stopping = true;
     if (this.timer) clearTimeout(this.timer);
     for (const watcher of this.watchers) watcher.close();
-    this.pool.close();
+    for (const history of this.histories.values()) void history.then(h => h?.close());
     await this.refreshing;
+  }
+  /** A provider's history, opened on first use. */
+  history(p: Provider) {
+    let history = this.histories.get(p);
+    if (!history) this.histories.set(p, (history = adapter(p).history?.() ?? Promise.resolve(null)));
+    return history;
   }
   snapshot(): History {
     return {
@@ -328,24 +224,28 @@ export class Worker {
         : this.store.gone.filter(g => g.revision > revision).map(({ provider, session }) => ({ provider, session })),
     };
   }
-  startWatching() {
+  async startWatching() {
     for (const p of Provider.all) {
-      try {
-        const config = Provider.info(p).configDir();
-        const root = p === "claude" ? join(config, "projects") : config;
-        this.watchers.push(
-          watch(root, { recursive: true }, (_event, file) => {
-            if (file) this.changed.add(join(root, file.toString()));
-            if (this.timer) clearTimeout(this.timer);
-            this.timer = setTimeout(() => void this.readChanged(), 1000);
-          }),
-        );
-      } catch {}
+      const history = await this.history(p);
+      if (this.stopping) return;
+      for (const root of history?.roots() ?? [])
+        try {
+          this.watchers.push(
+            watch(root, { recursive: true }, (_event, file) => {
+              if (file) {
+                const paths = this.changed.get(p) ?? new Set();
+                this.changed.set(p, paths.add(join(root, file.toString())));
+              }
+              if (this.timer) clearTimeout(this.timer);
+              this.timer = setTimeout(() => void this.readChanged(), 1000);
+            }),
+          );
+        } catch {}
     }
     if (!this.watchers.length) {
       this.timer = setTimeout(() => {
         void this.refresh();
-        this.startWatching();
+        void this.startWatching();
       }, 300000);
       this.timer.unref();
     }
@@ -355,86 +255,8 @@ export class Worker {
     if (this.refreshing) await this.refreshing;
     const changes = [...this.changed];
     this.changed.clear();
-    let listCodex = false;
-    const root = join(Provider.info("claude").configDir(), "projects");
-    for (const path of changes) {
-      if (path.startsWith(root + "/")) {
-        if (path.endsWith(".jsonl")) {
-          const entry = await this.cached(path, "claude");
-          if (entry) {
-            try {
-              if ((await stat(entry.cwd)).isDirectory()) this.store.put(entry);
-            } catch {}
-          } else this.store.remove("claude", basename(path, ".jsonl"));
-        } else {
-          try {
-            for (const file of await readdir(path, { withFileTypes: true })) {
-              if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
-              const entry = await this.cached(join(path, file.name), "claude");
-              if (entry) this.store.put(entry);
-            }
-          } catch {}
-        }
-      } else {
-        const session = this.rollouts.get(path);
-        if (session) {
-          const old = this.store.get("codex", session);
-          if (!old) {
-            listCodex = true;
-            continue;
-          }
-          try {
-            const metadata = await stat(path),
-              summary = await this.cached(path, "codex");
-            if (summary)
-              this.store.put({
-                ...old,
-                last: summary.last || old.last,
-                interrupted: summary.interrupted,
-                updated_at: Math.max(old.updated_at, Math.floor(metadata.mtimeMs / 1000)),
-              });
-          } catch {
-            this.store.remove("codex", session);
-          }
-        } else if (path.endsWith("session_index.jsonl") || path.includes("/sessions/")) listCodex = true;
-      }
-    }
-    if (listCodex) {
-      try {
-        const reply = await this.pool.listThreads(null, { load: () => this.stopping });
-        for (const item of reply.result?.data ?? []) {
-          if (!item.id || !item.preview || !item.cwd) continue;
-          const summary = item.path ? await this.cached(item.path, "codex") : null;
-          if (item.path) this.rollouts.set(item.path, item.id);
-          const entry: Entry = {
-            provider: "codex",
-            session: item.id,
-            title: item.name ?? "",
-            first: item.preview,
-            last: summary?.last || item.preview,
-            cwd: item.cwd,
-            branch: item.gitInfo?.branch ?? "",
-            updated_at: item.updatedAt ?? 0,
-            interrupted: summary?.interrupted ?? false,
-          };
-          try {
-            if ((await stat(entry.cwd)).isDirectory()) this.store.put(entry);
-          } catch {}
-        }
-      } catch {}
-    }
-  }
-  async cached(path: string, provider: Provider) {
-    try {
-      const s = await stat(path);
-      if (!s.isFile()) return null;
-      const c = this.cache.lookup(path, s);
-      return c
-        ? c.entry
-        : this.cache.store(path, s, provider === "claude" ? await readClaude(path, s) : await readCodex(path, s));
-    } catch {
-      return null;
-    }
+    for (const [p, paths] of changes)
+      await (await this.history(p))?.changed([...paths], this.store, () => this.stopping);
   }
   async refresh() {
     if (this.refreshing) return this.refreshing;
@@ -446,61 +268,16 @@ export class Worker {
   async read() {
     const found: Entry[] = [],
       read: Provider[] = [];
-    try {
-      const projects = join(Provider.info("claude").configDir(), "projects");
-      for (const project of await readdir(projects, { withFileTypes: true })) {
-        if (!project.isDirectory()) continue;
-        const folder = join(projects, project.name);
-        for (const f of await readdir(folder, { withFileTypes: true })) {
-          if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
-          const e = await this.cached(join(folder, f.name), "claude");
-          if (e) found.push(e);
-        }
-      }
-      read.push("claude");
-    } catch (e) {
-      if ((e as any).code === "ENOENT") read.push("claude");
+    for (const p of Provider.all) {
+      const history = await this.history(p);
+      if (!history || this.stopping) continue;
+      const { sessions, complete } = await history.list(() => this.stopping);
+      found.push(...sessions);
+      if (complete) read.push(p);
     }
-    try {
-      let cursor: string | null = null;
-      for (let page = 0; page < 10 && !this.stopping; page++) {
-        const reply = await this.pool.listThreads(cursor, { load: () => this.stopping });
-        const result = reply.result;
-        for (const item of result.data ?? []) {
-          if (!item.id || !item.preview || !item.cwd) continue;
-          const e: Entry = {
-            provider: "codex",
-            session: item.id,
-            title: item.name ?? "",
-            first: item.preview,
-            last: item.preview,
-            cwd: item.cwd,
-            branch: item.gitInfo?.branch ?? "",
-            updated_at: item.updatedAt ?? 0,
-            interrupted: false,
-          };
-          if (item.path && isAbsolute(item.path)) {
-            this.rollouts.set(item.path, item.id);
-            const tail = await this.cached(item.path, "codex");
-            if (tail) {
-              e.last = tail.last || e.last;
-              e.interrupted = tail.interrupted;
-            }
-          }
-          found.push(copied(e));
-        }
-        cursor = result.nextCursor;
-        if (!cursor) break;
-      }
-      read.push("codex");
-    } catch {}
     const kept: Entry[] = [];
-    for (const e of found)
-      try {
-        if ((await stat(e.cwd)).isDirectory()) kept.push(e);
-      } catch {}
+    for (const e of found) if (await directory(e.cwd)) kept.push(e);
     this.store.replace(kept.sort((a, b) => b.updated_at - a.updated_at).slice(0, capacity), read);
-    this.cache.sweep();
     this.ready = true;
   }
 }

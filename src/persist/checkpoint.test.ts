@@ -58,10 +58,10 @@ test("checkpoint integer fields restore as bigint for small and wide values", as
     expect(json.stringify(cp.captureBinding(nextBinding, true))).toBe(bytes);
   }
 });
-for (const version of [2, 3, 4, 5])
+for (const version of [2, 3, 4, 5, 6])
   test(
-    version === 5
-      ? "V5 fixture is current and restores as saved"
+    version === 6
+      ? "V6 fixture is current and restores as saved"
       : `V${version} fixture migrates before typed decoding and restores unchanged terminal data`,
     async () => {
       const bytes = readFileSync(resolve(fixtures, `checkpoint-v${version}.json`), "utf8"),
@@ -69,7 +69,7 @@ for (const version of [2, 3, 4, 5])
         r = new Runtime();
       try {
         expect(decoded.from).toBe(version);
-        expect(decoded.migrated).toBe(version !== 5);
+        expect(decoded.migrated).toBe(version !== 6);
         expect(decoded.value.version).toBe(migrations.checkpoint_version);
         if (version === 2) {
           expect(decoded.value.panes[0].binding.provisional.provider).toBeNull();
@@ -86,14 +86,13 @@ for (const version of [2, 3, 4, 5])
           expect(r.panes[1].attachment.actor).toBeNull();
           expect(r.panes[0].terminal.text()).toContain("v3 history");
           if (version === 4) expect(r.panes[0].resume_hint.session.text()).toBe("v3-shared");
-          if (version === 5) expect(bytes).not.toContain("\\u0000");
+          if (version >= 5) expect(bytes).not.toContain("\\u0000");
         }
       } finally {
         r.destroy();
       }
     },
   );
-test.skip("generate the V5 fixture from the migrated V4 fixture (CORGI_UPDATE_FIXTURE=1 only)", () => {});
 test("saved checkpoint format matches its version", () => {
   expect(schema).toBe(readFileSync(resolve(fixtures, "checkpoint.schema"), "utf8"));
   using r = fresh();
@@ -105,7 +104,7 @@ test("saved checkpoint format matches its version", () => {
 test("sidebar order survives live and recovery checkpoints and defaults for old state", async () => {
   const r = fresh(),
     id = r.workspaces.items[0].id,
-    order = [{ native: 1 }, { pane: 2 }, { pane: 1 }];
+    order = [{ headless: 1 }, { pane: 2 }, { pane: 1 }];
   r.workspaces.items[0].agent_order = Order.restore(order);
   try {
     for (const live of [true, false]) {
@@ -268,7 +267,7 @@ test("cold recovery leaves an agent's pane dormant over its old screen, and a li
     expect([recovered.dormant, recovered.terminal.pid > 0]).toEqual([false, true]);
     expect([sleeping.dormant, sleeping.terminal.exited, sleeping.terminal.pid]).toEqual([true, true, -1]);
     expect(sleeping.terminal.text()).toContain("OLD OUTPUT");
-    expect(sleeping.restoring()).toBe("codex resume 'dormant-session'");
+    expect(sleeping.restoring()).toBe("codex resume dormant-session");
     await restore(live, cp.capture(cold, true), true);
     // The handoff gave `live` the panes' fds; the old daemon no longer owns them.
     for (const p of cold.panes) p.terminal.releaseFD();

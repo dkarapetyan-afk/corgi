@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { Control } from "./control";
-import { Quit } from "../subprocess";
+import { Quit } from "../../subprocess";
 function fixture(mode: string) {
   const root = mkdtempSync(join(tmpdir(), "corgi-control-review-")),
     exe = join(root, "claude");
@@ -13,7 +13,7 @@ function fixture(mode: string) {
     `#!${process.execPath}\nlet input='';process.stdin.on('data',b=>{input+=b;let i;while((i=input.indexOf('\\n'))>=0){const v=JSON.parse(input.slice(0,i));input=input.slice(i+1);const method=v.request.subtype;if(method==='initialize')process.stdout.write(JSON.stringify({type:'control_response',response:{request_id:v.request_id,subtype:'success',response:{}}})+'\\n');else if(${JSON.stringify(mode)}==='approval')process.stdout.write(JSON.stringify({type:'control_request',request_id:'permission',request:{subtype:'can_use_tool'}})+'\\n');else if(${JSON.stringify(mode)}==='overflow')process.stdout.write('x'.repeat(4*1024*1024+1));else if(${JSON.stringify(mode)}==='invalid-subtype')process.stdout.write(JSON.stringify({type:'control_response',response:{request_id:v.request_id,subtype:'other',response:{}}})+'\\n');}});\n`,
     { mode: 0o700 },
   );
-  const c = new Control("claude", exe);
+  const c = new Control(exe);
   return {
     c,
     async close() {
@@ -35,7 +35,7 @@ test("read-only control rejects unexpected provider requests", async () => {
 test("control messages retain the native four MiB limit", async () => {
   const f = fixture("overflow");
   try {
-    await expect(f.c.request("get_usage")).rejects.toThrow("NativeMessageTooLarge");
+    await expect(f.c.request("get_usage")).rejects.toThrow("HeadlessMessageTooLarge");
   } finally {
     await f.close();
   }

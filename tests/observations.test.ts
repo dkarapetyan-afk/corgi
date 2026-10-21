@@ -150,7 +150,7 @@ class Observations extends Runtime {
     await this.hook("PreToolUse", "codex", { tool_name: "request_user_input" });
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: this.pane,
       session: SESSION,
       through: 1,
@@ -165,7 +165,7 @@ class Observations extends Runtime {
     await this.finish();
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: this.pane,
       session: SESSION,
       through: old,
@@ -173,7 +173,7 @@ class Observations extends Runtime {
     this.assertTrue((await this.state()).unread);
     const result = await this.raw_rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: this.pane,
       session: "wrong",
       through: 2,
@@ -182,7 +182,7 @@ class Observations extends Runtime {
     this.assertTrue((await this.state()).unread);
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: this.pane,
       session: SESSION,
       through: 2,
@@ -190,16 +190,16 @@ class Observations extends Runtime {
     this.assertFalse((await this.state()).unread);
   }
   async test_mark_unread_brings_back_the_last_completion() {
-    const mark = (session: string) => this.raw_rpc({ op: "pane.mark_unread", protocol: 1, pane: this.pane, session });
+    const mark = (session: string) => this.raw_rpc({ op: "pane.mark_unread", protocol: 2, pane: this.pane, session });
     await mark(SESSION);
     this.assertFalse((await this.state()).unread);
     await this.finish();
-    await this.rpc({ op: "pane.acknowledge", protocol: 1, pane: this.pane, session: SESSION, through: 1 });
+    await this.rpc({ op: "pane.acknowledge", protocol: 2, pane: this.pane, session: SESSION, through: 1 });
     this.assertEqual((await mark("wrong")).err, "StaleAcknowledgement");
     this.assertFalse((await this.state()).unread);
     await mark(SESSION);
     this.assertEqual([(await this.state()).unread, (await this.state()).attention], [true, "finished"]);
-    await this.rpc({ op: "pane.acknowledge", protocol: 1, pane: this.pane, session: SESSION, through: 1 });
+    await this.rpc({ op: "pane.acknowledge", protocol: 2, pane: this.pane, session: SESSION, through: 1 });
     this.assertFalse((await this.state()).unread);
   }
   async test_active_viewer_visits_read_background_viewer_does_not() {
@@ -274,31 +274,24 @@ class Observations extends Runtime {
     await v.focus(this.pane);
     await this.until(async () => !(await this.state()).unread);
   }
-  async test_native_completion_is_correlated_and_unread_survives_next_turn() {
+  async test_headless_completion_is_correlated_and_unread_survives_next_turn() {
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
-    const snapshot = async () => (await this.session()).native_sessions[0];
+    const snapshot = async () => (await this.session()).headless_sessions[0];
     await this.until(async () => (await snapshot()).ready);
     const event = (method: string, turn: string, status?: string) =>
-      this.rpc({
-        op: "native.send",
-        session: ident,
-        message: {
-          method: "test/event",
-          params: {
-            method,
-            params: {
-              threadId: "thread",
-              turn: { id: turn, ...(status ? { status } : {}) },
-            },
-          },
-        },
-      });
+      this.headless_command(
+        ident,
+        "test/event " +
+          JSON.stringify({ method, params: { threadId: "thread", turn: { id: turn, ...(status ? { status } : {}) } } }),
+      );
     await event("turn/started", "one");
     await this.until(async () => (await snapshot()).state === "working");
     await event("turn/completed", "one", "completed");
@@ -306,7 +299,8 @@ class Observations extends Runtime {
     await event("turn/started", "two");
     await this.until(async () => (await snapshot()).state === "working");
     this.assertEqual((await snapshot()).observation.read, 0);
-    const seq = async () => (await this.rpc({ op: "native.events", session: ident })).next_seq;
+    const seq = async () =>
+      (await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session: ident })).next_seq;
     const before = await seq();
     await event("turn/completed", "one", "completed");
     // The stale completion goes through the provider process, not a worker.

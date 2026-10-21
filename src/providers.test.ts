@@ -1,47 +1,117 @@
 import { test, expect } from "bun:test";
-import { Provider, Backend, byProvider } from "./providers";
+import { Provider, byProvider, adapter } from "./providers";
 import { Model } from "./providers/model";
-import { Claude } from "./providers/claude";
-import { Codex } from "./providers/codex";
+import * as claude from "./providers/claude";
+import * as codex from "./providers/codex";
+import * as claudeHeadless from "./providers/claude/headless";
 import { Hooks, timestampMs } from "./providers/common";
+import * as sim from "./providers/sim";
+import type { Settings } from "./providers/adapter";
 test("per-provider values are keyed by name, in the registry's order", () => {
   expect(JSON.stringify(byProvider(p => p === "claude"))).toBe('{"codex":false,"claude":true}');
   expect(Provider.all).toEqual(["codex", "claude"]);
   expect(Provider.parse("claude")).toBe("claude");
   expect(Provider.parse("other")).toBeNull();
-  expect(Provider.named("claude-code")).toBe("claude");
+  expect(Provider.owning("/opt/bin/claude-code")).toBe("claude");
 });
-test("native adapters keep provider envelopes separate and identify concrete conversations", () => {
-  const v = {
-    method: "turn/completed",
-    params: { threadId: "a", turn: { id: "t", status: "interrupted" } },
-  };
-  expect(Backend.init("codex").nativeEvent(v)).toMatchObject({
-    session: "a",
-    turn: "t",
-    phase: "completed",
-    outcome: "interrupted",
-  });
-  expect(Backend.init("claude").nativeEvent(v).phase).toBe("none");
+test("a registered provider is listed, parsed and found until it is removed", () => {
+  const remove = sim.register();
+  try {
+    expect<string[]>(Provider.all).toEqual(["codex", "claude", "sim"]);
+    expect(Provider.parse("sim")).toBe(sim.sim);
+    expect(Provider.owning("sim")).toBe(sim.sim);
+    expect(adapter(sim.sim).name).toBe("Sim");
+    expect(adapter(sim.sim)).toBe(sim.adapter);
+    expect(Object.keys(byProvider(p => p))).toEqual(["codex", "claude", "sim"]);
+    expect(() => sim.register()).toThrow("ProviderExists");
+  } finally {
+    remove();
+  }
+  expect(Provider.all).toEqual(["codex", "claude"]);
+  expect(Provider.parse("sim")).toBeNull();
+  expect(() => adapter(sim.sim)).toThrow("UnknownProvider");
 });
-test("native request matching preserves string and integer identifiers", () => {
-  expect(Backend.init("codex").nativeEvent({ id: 42, method: "future/method" }).request_id).toBe(42);
+test("each provider resumes and forks a session with its own arguments", () => {
+  expect(claude.adapter.launch.resume("id'with quote")).toEqual(["--resume", "id'with quote"]);
+  expect(codex.adapter.launch.resume("id")).toEqual(["resume", "id"]);
+  const old = "01901234-1234-1234-1234-123456789abc",
+    from = { session: old, transcript: "" },
+    fork = claude.adapter.launch.fork(from, "Name"),
+    id = fork?.session ?? "";
+  expect(fork?.args).toEqual(["--resume", old, "--fork-session", "--session-id", id, "--name", "Name"]);
+  expect(id).toMatch(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/);
+  expect(claude.adapter.launch.fork(from, null)?.args).not.toContain("--name");
+  expect(codex.adapter.launch.fork(from, "Name")).toEqual({ args: ["fork", old], session: null, named: false });
+});
+test("a conversation can be forked once it has a session and, for Claude, a transcript", () => {
+  for (const p of [claude.adapter, codex.adapter])
+    expect(p.launch.fork({ session: "short", transcript: "" }, null)).toBeNull();
+  const session = "01901234-1234-1234-1234-123456789abc";
+  expect(claude.adapter.launch.fork({ session, transcript: "/nonexistent/transcript.jsonl" }, null)).toBeNull();
+  expect(claude.adapter.launch.fork({ session, transcript: import.meta.path }, null)).not.toBeNull();
+});
+test("a bypassing launch skips each provider's permission checks", () => {
+  const bypass: Settings = { permissions: "bypass", model: null, args: [] };
+  expect(claude.adapter.launch.start(bypass)).toEqual(["--dangerously-skip-permissions"]);
+  expect(codex.adapter.launch.start(bypass)).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
+  for (const p of Provider.all)
+    expect(adapter(p).launch.start({ permissions: "default", model: null, args: [] })).toEqual([]);
+  // Codex reports a sandboxed run that never asks as bypassing too.
+  expect(codex.adapter.launch.start({ ...bypass, args: ["-a", "never", "-s", "read-only"] })).toEqual([
+    "-a",
+    "never",
+    "-s",
+    "read-only",
+  ]);
+  expect(claude.adapter.launch.start({ permissions: "default", model: "opus", args: ["--verbose"] })).toEqual([
+    "--model",
+    "opus",
+    "--verbose",
+  ]);
+});
+test("a typed command keeps its account and options, not its session, prompt, model or permissions", () => {
+  const line = (args: string[], env: [string, string][] = []) => ({ env, args, flagged: false, cwd: "/" });
   expect(
-    Backend.init("claude").responseId({
-      type: "control_response",
-      response: { request_id: "a" },
-    }),
-  ).toBe("a");
-  expect(Backend.init("codex").responseId({ type: "control_response" })).toBeNull();
+    claude.adapter.launch.keep!(
+      line(
+        [
+          "claude",
+          "--dangerously-skip-permissions",
+          "--model",
+          "opus",
+          "--mcp-config",
+          "a.json",
+          "--verbose",
+          "--resume",
+          "s1",
+          "Fix the tabs",
+        ],
+        [
+          ["CLAUDE_CONFIG_DIR", "/work/.claude"],
+          ["ANTHROPIC_MODEL", "sonnet"],
+          ["CLAUDE_CODE_ENTRYPOINT", "cli"],
+          ["EDITOR", "vim"],
+        ],
+      ),
+    ),
+  ).toEqual({ args: ["--mcp-config", "a.json", "--verbose"], env: [["CLAUDE_CONFIG_DIR", "/work/.claude"]] });
+  expect(
+    codex.adapter.launch.keep!(
+      line(
+        ["codex", "--yolo", "-m", "gpt", "-c", "features.x=true", "--search", "resume", "t1"],
+        [["OPENAI_API_KEY", "k"]],
+      ),
+    ),
+  ).toEqual({ args: ["-c", "features.x=true", "--search"], env: [["OPENAI_API_KEY", "k"]] });
 });
-test("resume plans are typed argv and reject invalid or unsupported session references", () => {
-  expect(Provider.info("claude").resumeArgs({ id: "id'with quote" })).toEqual(["claude", "--resume", "id'with quote"]);
-  expect(() => Provider.info("claude").resumeArgs({ path: "/tmp/s" })).toThrow("InvalidSessionRef");
-  expect(() => Provider.info("codex").resumeArgs({ id: "a\nb" })).toThrow("InvalidSessionRef");
+test("inference asks Claude for the request's prompt, model and schema on its command line", () => {
+  const asked = claudeHeadless.summaryArgs({ instructions: "Sum up", model: "m", schema: "{}" });
+  expect(asked.slice(-6)).toEqual(["--system-prompt", "Sum up", "--model", "m", "--json-schema", "{}"]);
+  expect(claudeHeadless.summaryArgs({ instructions: "x", model: null, schema: null })).not.toContain("--model");
 });
 test("shared hook codec preserves permission context and rejects child observations", () => {
   for (const provider of Provider.all) {
-    const backend = Backend.init(provider);
+    const backend = adapter(provider);
     const hook = backend.hook({
       hook_event_name: "PreToolUse",
       session_id: "a",
@@ -50,6 +120,14 @@ test("shared hook codec preserves permission context and rejects child observati
     })!;
     expect(hook.asking).toBe(true);
     expect(hook.description).toBe("Pick a branch");
+    expect(hook.permissions).toBeNull();
+    for (const [mode, permissions] of [
+      ["bypassPermissions", "bypass"],
+      ["acceptEdits", "default"],
+    ])
+      expect(
+        backend.hook({ hook_event_name: "Stop", session_id: "a", permission_mode: mode, model: "m" }),
+      ).toMatchObject({ permissions, model: "m" });
     expect(
       backend.hook({
         hook_event_name: "Stop",
@@ -89,14 +167,14 @@ test("UTC timestamps and plan labels", () => {
   expect(timestampMs("1970-01-01T00:00:00.000Z")).toBe(0);
   expect(timestampMs("2026-09-24T10:00:00.123Z")).toBe(1790244000123);
   expect(timestampMs("2026-09-24T10:00:00+02:00")).toBeNull();
-  expect(Codex.plan("prolite").text()).toBe("Pro 100");
-  expect(Claude.plan("claude_max", "default_claude_max_20x").text()).toBe("Max 20x");
+  expect(codex.plan("prolite").text()).toBe("Pro 100");
+  expect(claude.plan("claude_max", "default_claude_max_20x").text()).toBe("Max 20x");
 });
 test("transcript ownership and task notices", () => {
-  expect(Claude.Line.decode({ isSidechain: true })).toBeNull();
-  expect(Claude.Line.of({ isSidechain: true, agentId: "a1", sessionId: "s" }, "a1")).not.toBeNull();
+  expect(claude.Line.decode({ isSidechain: true })).toBeNull();
+  expect(claude.Line.of({ isSidechain: true, agentId: "a1", sessionId: "s" }, "a1")).not.toBeNull();
   expect(
-    Claude.TaskNotice.decode(
+    claude.TaskNotice.decode(
       "<task-notification><task-id>x</task-id><summary>abc</summary><event><status>killed</status></event>",
     ),
   ).toEqual({ id: "x", status: null });
@@ -117,7 +195,7 @@ test("models canonicalize Bedrock, Vertex, aliases, and native million windows",
 });
 
 test("a background Agent call names the subagent it launched", () => {
-  const backend = Backend.init("claude");
+  const backend = claude.adapter;
   const launched = backend.hook({
     hook_event_name: "PostToolUse",
     session_id: "a",

@@ -78,7 +78,7 @@ class CodexConversations extends Titles {
     this.assertTrue((await second.state()).unread);
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: second.pane,
       session: A,
       through: 1,
@@ -94,7 +94,7 @@ class CodexConversations extends Titles {
     await this.switch(B);
     const result = await this.raw_rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: this.pane,
       session: A,
       through: 1,
@@ -167,7 +167,7 @@ class CodexConversations extends Titles {
     this.assertEqual((await second.state()).completed, 1);
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: second.pane,
       session: A,
       through: 1,
@@ -403,7 +403,7 @@ class ClaudeConversations extends Runtime {
     this.assertEqual(actor.agent.observation.completed, 1);
     await this.rpc({
       op: "pane.acknowledge",
-      protocol: 1,
+      protocol: 2,
       pane: second,
       session: "shared-claude",
       through: 1,

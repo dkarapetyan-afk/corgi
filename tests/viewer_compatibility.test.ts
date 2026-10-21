@@ -87,7 +87,7 @@ class ViewerCompatibility extends Runtime {
     for (const version of [null, 2, 4, -1, "3"]) {
       const request: any = {
         op: "viewer.open",
-        protocol: 1,
+        protocol: 2,
         cwd: this.temp.name,
       };
       if (version !== null) request.viewer_protocol = version;
@@ -101,7 +101,7 @@ class ViewerCompatibility extends Runtime {
   async test_server_rechecks_sync_on_inherited_connection() {
     const client = await JsonSocket.connect(this.path);
     try {
-      const call = (request: any) => client.request({ protocol: 1, ...request });
+      const call = (request: any) => client.request({ protocol: 2, ...request });
       const opened = await call({
         op: "viewer.open",
         viewer_protocol: 3,

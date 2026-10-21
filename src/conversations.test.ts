@@ -3,7 +3,7 @@ import { parseLabel } from "./activity/summary";
 import { test, expect } from "bun:test";
 import { Registry, Attachment, Actor } from "./conversations";
 import { Agent, Text } from "./agents";
-import { Snapshot, Child } from "./providers/codex/observer";
+import { Snapshot, Child } from "./providers/snapshot";
 import { View } from "./activity/tools";
 import { Inventory, Ended } from "./activity/background_tasks";
 import { Hooks } from "./providers/common";
@@ -52,19 +52,19 @@ test("attachments select stable actors and delayed hooks never change selection"
     h = new Hooks(),
     first = h.decode({ hook_event_name: "SessionStart", session_id: "a" })!,
     second = h.decode({ hook_event_name: "SessionStart", session_id: "b" })!;
-  const a = r.routeHook(b, "claude", first)!;
+  const a = r.routeHook(b, "claude", first, true)!;
   const generation = b.generation;
   expect(b.matches(generation, a.id)).toBe(true);
-  const c = r.routeHook(b, "claude", second)!;
+  const c = r.routeHook(b, "claude", second, true)!;
   expect(b.actor).toBe(c);
-  expect(r.routeHook(b, "claude", { ...first, kind: "tool_start" })).toBe(a);
+  expect(r.routeHook(b, "claude", { ...first, kind: "tool_start" }, true)).toBe(a);
   expect(b.actor).toBe(c);
   b.detach();
   expect(b.knows(a.id)).toBe(false);
   expect(b.actor).toBeNull();
 });
 test("Codex tools survive snapshots but never leak into another turn", () => {
-  const actor = new Actor({ id: 1 }),
+  const actor = new Actor({ id: 1, state: new Agent({ provider: "codex" }) }),
     request = {
       pane: 0,
       pid: 0,
@@ -193,11 +193,11 @@ test("first hook establishes identity without process detection but cannot reviv
   const registry = new Registry(),
     binding = new Attachment(),
     event = hook("prompt", "hook-only");
-  const actor = registry.routeHook(binding, "claude", event)!;
+  const actor = registry.routeHook(binding, "claude", event, true)!;
   actor.observeHook(event, 1n, false, 100);
   expect(binding.agent().state).toBe("working");
   binding.detach();
-  expect(registry.routeHook(binding, "claude", event)).toBeNull();
+  expect(registry.routeHook(binding, "claude", event, true)).toBeNull();
   expect(registry.items.length).toBe(1);
 });
 test("screen fallback keeps following work after a structured observation expires", () => {
@@ -363,17 +363,17 @@ test("Codex hooks cannot establish or switch a pane identity", () => {
   const registry = new Registry(),
     binding = new Attachment(),
     event = hook("session_start", "a");
-  expect(registry.routeHook(binding, "codex", event)).toBeNull();
+  expect(registry.routeHook(binding, "codex", event, false)).toBeNull();
   expect(registry.items.length).toBe(0);
   const a = registry.get("codex", "a"),
     b = registry.get("codex", "b");
   binding.select(a);
   binding.select(b);
   b.state.state = "done";
-  expect(registry.routeHook(binding, "codex", event)).toBe(a);
+  expect(registry.routeHook(binding, "codex", event, false)).toBe(a);
   expect(binding.actor).toBe(b);
   binding.detach();
-  expect(registry.routeHook(binding, "codex", event)).toBeNull();
+  expect(registry.routeHook(binding, "codex", event, false)).toBeNull();
 });
 
 function compactHook(kind: "compact_start" | "compact_end" | "session_start" | "tool_start") {
@@ -494,12 +494,12 @@ test("known background hooks route to their actor and process replacement revoke
     hook_event_name: "UserPromptSubmit",
     session_id: "a",
   })!;
-  expect(registry.routeHook(binding, "claude", hook)).toBe(actor);
+  expect(registry.routeHook(binding, "claude", hook, true)).toBe(actor);
   actor.observeHook(hook, 1n, false, 100);
   expect(actor.state.state).toBe("working");
   expect(binding.agent().sessionId()).toBe("b");
   binding.detach();
-  expect(registry.routeHook(binding, "claude", hook)).toBeNull();
+  expect(registry.routeHook(binding, "claude", hook, true)).toBeNull();
 });
 
 test("a second attachment does not erase a stop awaiting transcript confirmation", () => {
@@ -513,7 +513,7 @@ test("a second attachment does not erase a stop awaiting transcript confirmation
     session_id: "shared",
   })!;
   const binding = new Attachment();
-  expect(registry.routeHook(binding, "claude", start)).toBe(actor);
+  expect(registry.routeHook(binding, "claude", start, true)).toBe(actor);
   actor.observeHook(start, 11n, false, 101, "attached");
   expect(actor.state.observation.pending_stop).toBe(true);
   expect(actor.confirmStop(10n, "completed", 102)).toBe(true);
@@ -681,12 +681,11 @@ test("a Claude session's end ends the subagents its last Stop listed", () => {
 
 test("a pause ends once the Claude process that held it is gone", () => {
   const actor = new Registry().get("claude", "s");
-  const buffer = Buffer.alloc(1024 * 1024);
-  expect(actor.checkPause(buffer)).toBe(false);
+  expect(actor.checkPause()).toBe(false);
   actor.state.paused = true;
   actor.paused_for_wakeup = true;
   actor.pid = process.pid;
-  expect(actor.checkPause(buffer)).toBe(true);
+  expect(actor.checkPause()).toBe(true);
   expect(actor.state.paused).toBe(false);
 });
 

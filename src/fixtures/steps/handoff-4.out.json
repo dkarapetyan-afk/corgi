@@ -1,0 +1,59 @@
+{
+  "version": 4,
+  "runtime": {
+    "version": 5
+  },
+  "summaries": {
+    "pool": {
+      "config": {
+        "provider": "codex",
+        "model": "m",
+        "executable": null,
+        "disabled": false,
+        "timeout_ms": 45000
+      },
+      "slots": [
+        null,
+        {
+          "key": "pane-a",
+          "instructions": "Return JSON",
+          "schema": null,
+          "turns": 2,
+          "used": 3,
+          "usage": [
+            {
+              "thread": "thread-1",
+              "tokens": {
+                "input": 10,
+                "cached_input": 5,
+                "output": 1
+              }
+            }
+          ],
+          "client": {
+            "state": {
+              "pid": 51,
+              "input": "",
+              "output": "",
+              "exited": false,
+              "ready": true,
+              "cwd": "/tmp",
+              "next_id": 5,
+              "thread": "thread-1",
+              "created": 1,
+              "summary": {
+                "instructions": "Return JSON",
+                "model": "m",
+                "schema": null
+              }
+            },
+            "handles": [
+              9,
+              10
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

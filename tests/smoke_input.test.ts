@@ -1,4 +1,4 @@
-/** Smoke coverage for terminal input, sidebar targeting, and native tool activity. */
+/** Smoke coverage for terminal input, sidebar targeting, and headless tool activity. */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, PALETTE, screen_text } from "./runtime";
@@ -408,64 +408,52 @@ class SmokeInput extends Runtime {
     });
     await this.agent_frame("claude", "▶", "thinking");
   }
-  async test_sidebar_native_updates_and_selection_keep_approvals_pending() {
+  async test_sidebar_headless_updates_and_selection_keep_approvals_pending() {
     await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
     await this.attach();
     await this.get_type("frame");
     const ident = (
       await this.rpc({
-        op: "native.start",
+        op: "headless.start",
+        protocol: 2,
+        prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
     await this.agent_frame("codex", "○", "", PALETTE.muted);
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { id: 1, method: "test/approval" },
-    });
+    await this.headless_command(ident, "test/approval");
     const screen = await this.agent_frame("codex", "●", "🔧", PALETTE.warm);
     await this.click_text(
       screen.map(r => r.slice(0, 27)),
       "codex",
     );
-    await this.frame_with(`corgi native events ${ident}`);
-    const session = (await this.rpc({ op: "native.list" })).sessions[0];
+    await this.frame_with(`corgi headless events codex ${ident}`);
+    const session = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0];
     this.assertEqual([session.pending_requests, session.attention], [1, "needs_input"]);
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { id: 900, result: { decision: "decline" } },
-    });
+    await this.headless_answer(ident, "codex", false);
     await this.agent_frame("codex", "●", "", PALETTE.accent);
-    await this.rpc({
-      op: "native.send",
-      session: ident,
-      message: { id: 2, method: "test/exit" },
-    });
+    await this.headless_command(ident, "test/exit");
     // Ended is faint, but the clicked row is selected, where faint becomes muted.
     await this.agent_frame("codex", "○", "", PALETTE.muted);
-    await this.until(async () => (await this.rpc({ op: "native.list" })).sessions[0].exited);
-    await this.rpc({ op: "native.stop", session: ident });
+    await this.until(async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].exited);
+    await this.rpc({ op: "headless.stop", protocol: 2, provider: "codex", session: ident });
     await this.frame_with("No agents yet");
   }
-  async test_native_tool_activity_tracks_overlapping_calls_and_clears_on_turn_end() {
+  async test_headless_tool_activity_tracks_overlapping_calls_and_clears_on_turn_end() {
     await this.attach();
     await this.get_type("frame");
     for (const provider of ["codex", "claude"]) {
-      const ident = (await this.rpc({ op: "native.start", provider, cwd: this.temp.name })).session;
+      const ident = (
+        await this.rpc({ op: "headless.start", protocol: 2, prompt: "test/init", provider, cwd: this.temp.name })
+      ).session;
       await this.agent_frame(provider, "○");
-      const send = (method: string, tool = "a") =>
-        this.rpc({
-          op: "native.send",
-          session: ident,
-          message: { method: "test/" + method, params: { id: tool } },
-        });
+      const send = (method: string, tool = "a") => this.headless_command(ident, `test/${method} ${tool}`, provider);
       const count = (n: number) =>
         this.until(
           async () =>
-            (await this.rpc({ op: "native.list" })).sessions.find((s: any) => s.id === ident).active_tools === n,
+            (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.find((s: any) => s.session === ident)
+              .active_tools === n,
         );
       await send("tool-start");
       await count(1);
@@ -490,7 +478,7 @@ class SmokeInput extends Runtime {
       await send("exit");
       await count(0);
       await this.agent_frame(provider, "○", "", PALETTE.faint);
-      await this.rpc({ op: "native.stop", session: ident });
+      await this.rpc({ op: "headless.stop", protocol: 2, provider, session: ident });
       await this.frame_with("No agents yet");
     }
   }

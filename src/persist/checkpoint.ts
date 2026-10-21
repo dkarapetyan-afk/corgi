@@ -3,7 +3,7 @@ import { Runtime, Pane, ClosedAgent, Launch, closed_per_workspace } from "../run
 import { Workspace, Store } from "../workspace";
 import { Model, Tab, max_workspaces } from "../layout";
 import { Order } from "../agent_order";
-import { Agent, Text } from "../agents";
+import { Agent, Provider, Text } from "../agents";
 import { Attachment, Registry, max_actors } from "../conversations";
 import { ResumeHint } from "../resume_hint";
 import { Terminal } from "../pane/terminal";
@@ -15,7 +15,7 @@ import * as binary from "../base64";
 import * as json from "../json";
 import { validateCheckpoint } from "./schema";
 
-export const version = 5;
+export const version = 6;
 const invalid = (): never => {
   throw Error("InvalidCheckpoint");
 };
@@ -263,7 +263,7 @@ export async function restore(
   r.workspaces.next_pane_id = state.next_pane;
   r.next_session = state.next_session;
   r.revision = BigInt.asUintN(64, BigInt(state.revision) + 1n);
-  r.last_agent = state.last_agent ?? "codex";
+  r.last_agent = state.last_agent ?? Provider.first;
   r.agent_yolo = hydrate(r.agent_yolo, state.agent_yolo);
   r.agent_hidden = hydrate(r.agent_hidden, state.agent_hidden);
   r.agent_commands = (state.agent_commands ?? r.agent_commands).map((entry: any) => hydrate(new Entry(), entry));
@@ -330,7 +330,7 @@ export async function restore(
     r.closed.push(closed);
   }
   if (state.sessions.length) {
-    const { Session } = await import("../native");
+    const { Session } = await import("../headless");
     for (const saved of state.sessions) {
       const tracker = saved.usage_tracker;
       if (
@@ -350,7 +350,7 @@ export async function restore(
       const id = await r.create({
         workspace: n.workspace_id,
         cwd,
-        title: "Recovered native session",
+        title: "Recovered headless session",
         cols: 100,
         rows: 30,
         theme: {},
@@ -360,7 +360,10 @@ export async function restore(
       const p = r.pane(id)!;
       p.resume_hint = hydrate(new ResumeHint(), n.resume_hint);
       p.attachment = restoreBinding(r.conversations, n.binding, false);
-      for (const event of n.events) p.terminal.feed(event.line.replace(/[\x00-\x1f\x7f]/g, " ") + "\r\n");
+      for (const { event } of n.events) {
+        const { kind, ...rest } = event;
+        p.terminal.feed(`${kind} ${json.stringify(rest)}`.replace(/[\x00-\x1f\x7f]/g, " ") + "\r\n");
+      }
       p.terminal.feed(p.resume_hint.banner(Math.trunc(Date.now() / 1000)));
       p.terminal.prefill(p.resume_hint.command());
     }

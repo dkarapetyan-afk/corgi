@@ -31,6 +31,7 @@ const savedFields = [
   "watching",
   "watch_viewer",
   "launch_preview",
+  "headless_start",
   "snapshot_revision",
   "touched",
 ] as const;
@@ -130,17 +131,8 @@ function descriptors(manifest: any): { fds: number[]; state: any } {
   for (const client of state.clients) client.fd = add(client.fd);
   state.requester = add(state.requester);
   for (const pane of state.runtime.panes) pane.screen.fd = add(pane.screen.fd);
-  for (const session of state.runtime.sessions) {
-    session.stdin = add(session.stdin);
-    session.stdout = add(session.stdout);
-  }
-  // Inference workers expose the same allowlisted pipe fields as native sessions.
-  for (const session of state.summaries?.pool?.slots ?? []) {
-    if (session) {
-      session.stdin = add(session.stdin);
-      session.stdout = add(session.stdout);
-    }
-  }
+  for (const session of state.runtime.sessions) session.client.handles = session.client.handles.map(add);
+  for (const slot of state.summaries?.pool?.slots ?? []) if (slot) slot.client.handles = slot.client.handles.map(add);
   return { fds, state };
 }
 export async function replace(server: Server, requester: Client, executable: string): Promise<void> {
@@ -154,8 +146,6 @@ export async function replace(server: Server, requester: Client, executable: str
       p.terminal.flush();
       pending ||= p.terminal.pendingBytes > 0;
     }
-    // Queued session input travels in the handoff.
-    for (const s of server.runtime.sessions) s.flush();
     if (!pending) break;
     if (Date.now() >= deadline) {
       // A program that stops reading must not block reloads; its unread input is lost.

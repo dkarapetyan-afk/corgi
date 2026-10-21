@@ -24,7 +24,7 @@ const snapshot = () => ({
     },
   ],
   conversations: [],
-  native_sessions: [],
+  headless_sessions: [],
 });
 import { run } from "./main";
 import * as rpc from "./rpc";

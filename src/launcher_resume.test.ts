@@ -11,6 +11,8 @@ import {
   collapsed_rows,
   type Entry,
 } from "./launcher_resume";
+import * as sim from "./providers/sim";
+import { Writer } from "./text";
 
 const testEntry = (session: string, cwd: string, title: string, updated_at: number): Entry => ({
   provider: "claude",
@@ -122,6 +124,22 @@ test("a run of one agent names it once", () => {
   expect(startsRun(c, rows, 1, 1)).toBe(true);
   // Show more.
   expect(startsRun(c, rows, rows.length - 1, 0)).toBe(false);
+});
+
+test("a run is named after its provider", () => {
+  const remove = sim.register();
+  try {
+    const entries = [testEntry("a", "/w/corgi", "Sticky agent", 900), testEntry("b", "/w/corgi", "Review", 800)];
+    entries[1].provider = sim.sim;
+    const c = new Context({ pending: false, entries }, "/w/corgi", "/w/corgi", [], 1000);
+    const w = new Writer();
+    new View().drawCollapsed(w, c, 0, 1, 100);
+    expect(w.buffered()).toContain("HClaude");
+    expect(w.buffered()).toContain("HSim");
+    expect(w.buffered()).not.toContain("Codex");
+  } finally {
+    remove();
+  }
 });
 
 test("day headings and ages", () => {

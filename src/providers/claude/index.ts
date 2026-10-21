@@ -1,129 +1,140 @@
 import path from "node:path";
-import { field, str, Hooks, nativeEvent, planLabel } from "../common";
-import { info } from "./info";
-export const MessageType = ["assistant", "user", "result", "control_request", "control_response"] as const;
-export const BlockType = ["text", "tool_use", "tool_result"] as const;
-export const TranscriptLine = [
-  "assistant",
-  "user",
-  "system",
-  "attachment",
-  "agent-name",
-  "custom-title",
-  "ai-title",
-  "continued-in",
-  "queue-operation",
-] as const;
-export const TaskStatus = ["completed", "failed", "killed", "stopped"] as const;
-export class TaskNotice {
-  static decode(content: string) {
-    if (!content.trimStart().startsWith("<task-notification>")) return null;
-    const at = content.indexOf("<summary>"),
-      ev = content.indexOf("<event>");
-    const fields = content.slice(0, at >= 0 ? at : ev >= 0 ? ev : content.length);
-    const element = (k: string) => fields.match(new RegExp("<" + k + ">([\\s\\S]*?)</" + k + ">"))?.[1] ?? null;
-    const id = element("task-id"),
-      status = element("status");
-    return id === null ? null : { id, status: TaskStatus.includes(status as any) ? status : null };
-  }
+import { randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
+import { configHome, Hooks, planLabel } from "../common";
+import type { Adapter } from "../adapter";
+import * as hooksFile from "../hooks_file";
+import { Watcher } from "./screen";
+import * as daemon from "./daemon";
+import * as renaming from "./rename";
+import { Claude, stream_json, summaryArgs } from "./headless";
+import { transcript } from "./transcript";
+import * as usage from "./usage";
+import * as conversation from "./conversation";
+import { hookOrigin, unnest } from "./process";
+export { BlockType, Line, MessageType, TaskNotice, TaskStatus, TranscriptLine } from "./transcript";
+import { caps, info, keeping, vocabulary } from "./info";
+import * as commandLine from "../command_line";
+export function configDir(env = process.env) {
+  return configHome(env, vocabulary.config_env, ".claude");
 }
-export class Line {
-  type: string | null = null;
-  subtype = "";
-  sessionId = "";
-  agentId = "";
-  timestamp = "";
-  isSidechain = false;
-  isCompactSummary = false;
-  message: any = null;
-  static parse(v: any) {
-    return Object.assign(new Line(), {
-      type: TranscriptLine.includes(str(v, "type") as any) ? str(v, "type") : null,
-      subtype: str(v, "subtype"),
-      sessionId: str(v, "sessionId"),
-      agentId: str(v, "agentId"),
-      timestamp: str(v, "timestamp"),
-      isSidechain: field(v, "isSidechain") === true,
-      isCompactSummary: field(v, "isCompactSummary") === true,
-      message: field(v, "message"),
-    });
-  }
-  /** A prompt or tool result opens a turn; `turn_duration`, or the notice
-   * written in its place on an interrupt, closes it. Compaction summaries and
-   * local slash commands leave it as it was. */
-  turn(): "open" | "closed" | null {
-    if (this.type === "system") return this.subtype === "turn_duration" ? "closed" : null;
-    if (this.type !== "user" || this.isCompactSummary) return null;
-    const content = field(this.message, "content");
-    const text =
-      typeof content === "string"
-        ? content
-        : Array.isArray(content)
-          ? str(
-              content.find(b => str(b, "type") === "text"),
-              "text",
-            )
-          : "";
-    if (text.startsWith("[Request interrupted")) return "closed";
-    if (text.startsWith("<command-name>") || text.startsWith("<local-command-")) return null;
-    return "open";
-  }
-  static decode(v: any) {
-    const l = this.parse(v);
-    return l.isSidechain ? null : l;
-  }
-  static of(v: any, conversation: string) {
-    const l = this.parse(v);
-    return (l.isSidechain ? l.agentId : l.sessionId) === conversation ? l : null;
-  }
+export function subagentTranscript(transcript: string, session: string, agent: string) {
+  return path.join(path.dirname(transcript), session, "subagents", `agent-${agent}.jsonl`);
 }
-export class Claude {
-  static info = info;
-  static MessageType = MessageType;
-  static BlockType = BlockType;
-  static TranscriptLine = TranscriptLine;
-  static TaskStatus = TaskStatus;
-  static TaskNotice = TaskNotice;
-  static Line = Line;
-  static hook_events = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-    "SessionEnd",
-    "PreCompact",
-    "Notification",
-    "PostToolUseFailure",
-    "SubagentStart",
-    "SubagentStop",
-  ];
-  hooks = new Hooks();
-  hook(v: any) {
-    return this.hooks.decode(v);
-  }
-  nativeEvent(v: any) {
-    const kind = str(v, "type");
-    return nativeEvent({
-      session: str(v, "session_id"),
-      phase: kind === "assistant" ? "working" : kind === "result" ? "completed" : "none",
-      outcome: field(v, "is_error") === true ? "failed" : "completed",
-      request_id: kind === "control_request" ? field(v, "request_id") : null,
-      response_id: kind === "control_response" ? field(field(v, "response"), "request_id") : null,
-      tool_request: kind === "control_request" && str(field(v, "request"), "subtype") === "can_use_tool",
-    });
-  }
-  static titleSession(_title: string) {
-    return null;
-  }
-  static subagentTranscript(transcript: string, session: string, agent: string) {
-    return path.join(path.dirname(transcript), session, "subagents", `agent-${agent}.jsonl`);
-  }
-  static plan(kind: string, tier: string) {
-    const code = (s: string) => s.replace(/^default_/, "").replace(/^claude_/, "");
-    const named = planLabel(code(kind)),
-      refined = planLabel(code(tier));
-    return named.len > 0 && refined.text().startsWith(named.text()) ? refined : named;
-  }
+export function plan(kind: string, tier: string) {
+  const code = (s: string) => s.replace(/^default_/, "").replace(/^claude_/, "");
+  const named = planLabel(code(kind)),
+    refined = planLabel(code(tier));
+  return named.len > 0 && refined.text().startsWith(named.text()) ? refined : named;
 }
+/** The hook events Corgi listens to. */
+export const events = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PermissionRequest",
+  "Stop",
+  "SessionEnd",
+  "PreCompact",
+  "Notification",
+  "PostToolUseFailure",
+  "SubagentStart",
+  "SubagentStop",
+];
+const settings = () => new hooksFile.File("claude", configDir(), "settings.json", events);
+const hooks = new Hooks();
+export const adapter: Adapter = {
+  ...info,
+  caps,
+  inspect: c => commandLine.inspect(c, vocabulary),
+  owns: p =>
+    ["claude", "claude-code"].includes(path.basename(p)) ||
+    p.includes("/claude/versions/") ||
+    p.endsWith("/@anthropic-ai/claude-code/cli.js"),
+  installs: ({ home, root }) => [
+    ...(home
+      ? [".claude/local", ".local/bin", ".bun/bin", ".npm-global/bin", ".volta/bin"].map(dir =>
+          path.join(home, dir, "claude"),
+        )
+      : []),
+    ...["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(dir => root + dir + "/claude"),
+  ],
+  watch: () => new Watcher(),
+  hook: v => hooks.decode(v),
+  origin: hookOrigin,
+  unnest,
+  launch: {
+    start: s => [
+      ...(s.permissions === "bypass" ? [vocabulary.yolo] : []),
+      ...(s.model ? ["--model", s.model] : []),
+      ...s.args,
+    ],
+    keep: c => commandLine.keep(c, keeping),
+    resume: session => ["--resume", session],
+    // Its background daemon holds sessions that `--resume` refuses.
+    attach(session) {
+      try {
+        const job = daemon.jobIn(path.join(configDir(), "sessions"), session);
+        return job ? ["attach", job.text()] : null;
+      } catch {
+        return null;
+      }
+    },
+    fork({ session, transcript }, name) {
+      if (session.length !== 36) return null;
+      // The fork copies its transcript: nothing to fork until there is one.
+      if (transcript)
+        try {
+          lstatSync(transcript);
+        } catch {
+          return null;
+        }
+      const id = randomUUID();
+      return {
+        args: ["--resume", session, "--fork-session", "--session-id", id, ...(name ? ["--name", name] : [])],
+        session: id,
+        named: true,
+      };
+    },
+  },
+  rename: {
+    async channel(session) {
+      const peer = await renaming.peerIn(path.join(configDir(), "sessions"), session);
+      return peer ? name => renaming.rename(peer, session, name) : null;
+    },
+  },
+  headless: {
+    start: at => Claude.start(at, stream_json, null),
+    restore: Claude.restore,
+  },
+  inference: {
+    model: "claude-haiku-5-5",
+    start: (r, at) => Claude.start({ ...at, cwd: "/tmp" }, summaryArgs(r), { schema: r.schema !== null }),
+    restore: Claude.restore,
+  },
+  launcher: () => import("./launcher").then(m => m.open()),
+  history: () => import("./history").then(m => m.open()),
+  transcript: {
+    ...transcript,
+    continuation: (transcript, session) => path.join(path.dirname(transcript), session + ".jsonl"),
+    reader: usage.open,
+  },
+  conversation,
+  integration: {
+    directory: () => configDir(),
+    install: async () => [settings().install()],
+    async uninstall() {
+      const file = settings(),
+        { result } = file.uninstall();
+      if (result.outcome === "no_config" || result.outcome === "failed") return [result];
+      return [result, ...file.cleanup([file.path + ".corgi-backup"])];
+    },
+    status: async () => [settings().status()],
+    async startup() {
+      const hooks = settings().install();
+      if (hooks.outcome === "failed") console.error("hook setup:", hooks.error);
+    },
+    snippet: executable => hooksFile.snippet("claude", events, executable),
+  },
+};

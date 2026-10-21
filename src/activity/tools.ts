@@ -1,9 +1,6 @@
-import { field, str } from "../providers/common";
 import { Text } from "./summary";
 import { BoundedText } from "../bounded_text";
 class Turn extends BoundedText(160) {}
-import { Codex } from "../providers/codex";
-import { Claude } from "../providers/claude";
 export class View {
   commentary = new Text();
   running = 0;
@@ -12,7 +9,7 @@ export class View {
   completed = 0n;
   evidence = new Text();
 }
-function clip(value: string, limit: number) {
+export function clip(value: string, limit: number) {
   const b = Buffer.from(value);
   if (b.length <= limit) return value;
   let end = limit;
@@ -182,105 +179,5 @@ export class Tracker {
     if (slot < 0) return;
     this.finish(this.pending[slot]!, live);
     this.pending[slot] = null;
-  }
-  ingest(value: any, live: boolean) {
-    const r = Codex.Rollout.decode(value),
-      kind = r.type,
-      p = r.payload,
-      type = r.payloadType();
-    if (kind === "turn_context" || (kind === "event_msg" && type === "task_started")) {
-      this.bind(str(p, "turn_id"));
-      return;
-    }
-    if (kind === "event_msg" && ["task_complete", "turn_complete", "turn_aborted"].includes(type ?? "")) {
-      const turn = str(p, "turn_id");
-      if (!turn || turn === this.turn.text()) this.ended = true;
-      return;
-    }
-    if (kind !== "response_item" || !this.turn.len || this.ended) return;
-    if (type === "message" && str(p, "role") === "assistant" && str(p, "phase") === "commentary") {
-      const content = field(p, "content");
-      if (Array.isArray(content)) {
-        this.commentary = new Text(
-          clip(
-            "Latest agent update: " +
-              content
-                .filter(c => str(c, "type") === "output_text")
-                .map(c => str(c, "text"))
-                .join(""),
-            2048,
-          ),
-        );
-        this.dirty = true;
-      }
-      return;
-    }
-    const id = str(p, "call_id") || str(p, "id");
-    if (!id) return;
-    const key = this.key(id);
-    if (this.seen.includes(key)) return;
-    if (["function_call_output", "custom_tool_call_output"].includes(type ?? "")) {
-      this.finishId(key, live);
-      return;
-    }
-    if (!["function_call", "custom_tool_call", "local_shell_call", "web_search_call"].includes(type ?? "")) return;
-    const call = new Call();
-    call.id = key;
-    call.append((str(p, "name") || type) + ": ");
-    const input = str(p, "arguments") || str(p, "input");
-    if (input) {
-      try {
-        const args = JSON.parse(input),
-          detail = ["description", "cmd", "command", "code", "query"].map(k => str(args, k)).find(Boolean) ?? input;
-        call.detail(detail);
-      } catch {
-        const start = Buffer.byteLength(call.value);
-        if (input.trimStart().startsWith("*** Begin Patch") && call.patchFiles(input)) call.bound(start, false);
-        else if (!call.script(input)) call.detail(input);
-      }
-    } else if (type === "web_search_call") call.detail(str(field(p, "action"), "query"));
-    if (type === "web_search_call" && str(p, "status") === "completed") {
-      this.finish(call, live);
-      return;
-    }
-    this.save(call, live);
-  }
-  ingestClaude(value: any, live: boolean) {
-    if (!this.turn.len || this.ended) return;
-    const line = Claude.Line.decode(value);
-    if (!line) return;
-    if (line.type === "system" && line.subtype === "turn_duration") {
-      if (live) this.ended = true;
-      return;
-    }
-    const content = field(line.message, "content");
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
-      const type = str(block, "type");
-      if (line.type === "assistant" && type === "text") {
-        const text = str(block, "text").trim();
-        if (!text) continue;
-        this.commentary = new Text(clip("Latest agent update: " + text, 2048));
-        this.dirty = true;
-      } else if (line.type === "assistant" && type === "tool_use") {
-        const id = str(block, "id");
-        if (!id) continue;
-        const key = this.key(id);
-        if (this.seen.includes(key)) continue;
-        const call = new Call();
-        call.id = key;
-        call.append(str(block, "name") + ": ");
-        for (const name of ["description", "command", "file_path", "pattern", "query", "url", "prompt"]) {
-          const detail = str(field(block, "input"), name);
-          if (!detail) continue;
-          call.detail(name === "file_path" ? shortPath(detail) : detail);
-          break;
-        }
-        this.save(call, live);
-      } else if (line.type === "user" && type === "tool_result") {
-        const id = str(block, "tool_use_id");
-        if (id) this.finishId(this.key(id), live);
-      }
-    }
   }
 }

@@ -1,4 +1,4 @@
-/** Terminal evidence to native inference to named workspace link and click. */
+/** Terminal evidence to inference to named workspace link and click. */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, screen_text } from "./runtime";
@@ -78,7 +78,7 @@ class LinkLabels extends Runtime {
     this.assertEqual(state.effects, [{ open_url: payload.url }]);
     await this.advance(1);
     this.assertEqual(lines(this.log).length, 1);
-    this.assertEqual((await this.rpc({ op: "native.list" })).sessions, []);
+    this.assertEqual((await this.rpc({ op: "headless.list", protocol: 2 })).sessions, []);
     await this.command("pane.close", { target: pane });
     await this.untilAdvancing(3, async () => (await this.endpoints()).length === 0);
     this.assertNotIn("Finance ↗", (await viewer.poll()).data);
