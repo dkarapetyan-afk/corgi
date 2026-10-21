@@ -1,6 +1,6 @@
 /**
- * The review panel's git on the landing page. The recorder made the flicker
- * fix's checkout for real and kept what git answered about it in frames.json;
+ * The review panel's git on the landing page. The recorder made the thruster
+ * tuning's checkout for real and kept what git answered about it in frames.json;
  * this answers the panel the same, its times moved up to now. package.json's
  * "browser" field puts it in place of src/review/git.ts.
  */

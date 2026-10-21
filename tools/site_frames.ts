@@ -56,7 +56,7 @@ const data = JSON.parse(readFileSync(FRAMES, "utf8")) as {
   resources: unknown;
   /** Ghostty's codepoint widths, for the page's text.ts. */
   widths: unknown;
-  /** What git answered about the flicker fix's checkout, for the page's review panel. */
+  /** What git answered about the thruster tuning's checkout, for the page's review panel. */
   review: unknown;
   /** corgi's and moonlander's worktrees, for the page's worktree overviews. */
   worktrees: unknown;
@@ -1302,115 +1302,158 @@ function cleverFrame() {
     sidebar.worktreeBadge(side, s.workspaces, 2),
   ]);
 }
-/** The narrow sidebar beside the review panel: only the flicker fix's agent,
- * idle now its turn is over, with no tool counts to crowd the workspaces. */
-function soloFrame() {
-  const s = scene({ phone: false, corgi: true, unread: 0, ahead: true, focused: false, read: false });
-  s.entries = s.entries.slice(0, 1);
+/** The narrow sidebar beside the review panel: moonlander's agents under
+ * their worktrees, the thruster tuning idle now its turn is over, with no
+ * tool counts to crowd the workspaces. */
+function reviewFrame() {
+  const s = scene({ phone: false, corgi: false, unread: 0, ahead: true, focused: false, read: false });
   Object.assign(s.entries[0], { focused: true, state: "idle", attention: "none", activity: "" });
-  Object.assign(s.workspaces[0], { working: 0, attention: 0, agents: 1 });
+  Object.assign(s.workspaces[1], { working: 0, attention: 0, worktrees: MOON_TREES });
   for (const ws of s.workspaces) Object.assign(ws, { stats: { ...ws.stats, tools: 0 } });
+  s.entries = worktreeAgents.grouped(MOON_TREES, 2, s.entries, new worktreeAgents.State());
   const plain = frame(view, [], COLS, ROWS, uiFor(s, 24));
   keep(
-    "solo24",
+    "review24",
     grid(plain, COLS, ROWS).map(r => r.slice(0, 24)),
     plain,
   );
 }
 
 // ---------------------------------------------------------------- review
-// The flicker fix's checkout, made for real: main, then the branch's two
-// commits and a file not committed yet, each written when the story says.
-// The page runs Corgi's review panel on what git answers about it here.
-// Its lines fit the panel's 52 columns of code.
-const SIDEBAR_ZIG = `const std = @import("std");
-const Agent = @import("agent.zig").Agent;
-const Screen = @import("screen.zig").Screen;
-
-/// An agent's name row, then its activity row.
-fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
-    try s.clearLine(y);
-    try s.write(y, 1, a.glyph());
-    try s.write(y, 4, a.name);
-    try s.clearLine(y + 1);
-    try s.write(y + 1, 4, a.activity);
+// The thruster tuning's checkout, made for real: main, then the branch's
+// four commits and the gravity fix and its test, not committed yet, each
+// written when the story says. The page runs Corgi's review panel on what
+// git answers about it here. Its lines fit the panel's 52 columns of code.
+const LANDER_TS = `/** Where the lander is and how fast it moves,
+ * in metres and m/s, y down. */
+export interface Lander {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
 }
 
-pub fn drawList(s: *Screen, all: []const Agent) !void {
-    for (all, 0..) |a, i| {
-        try drawAgent(s, a, @intCast(13 + i * 2));
-    }
-}
+export const spawn = (x: number): Lander => ({
+  x,
+  y: 0,
+  vx: 0,
+  vy: 0,
+});
 `;
-const SIDEBAR_FIXED = SIDEBAR_ZIG.replace(
-  `/// An agent's name row, then its activity row.
-fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
-    try s.clearLine(y);
-    try s.write(y, 1, a.glyph());
-    try s.write(y, 4, a.name);
-    try s.clearLine(y + 1);
-    try s.write(y + 1, 4, a.activity);
+const LANDER_ENGINE = LANDER_TS.replace(
+  `  vy: number;
 }`,
-  `/// Both rows built whole and written at once, so
-/// a redraw never shows a cleared row.
-fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
-    var top = Row.init(s.width);
-    top.put(1, a.glyph());
-    top.put(4, a.name);
-    var under = Row.init(s.width);
-    under.put(4, a.activity);
-    try s.writeRows(y, &.{ top, under });
+  `  vy: number;
+  /** Tilt from upright, in radians. */
+  angle: number;
+  /** Fuel left, in kg. */
+  fuel: number;
+  /** The main engine is on. */
+  burning: boolean;
 }`,
 ).replace(
-  `const Screen = @import("screen.zig").Screen;`,
-  `const Row = @import("row.zig").Row;\nconst Screen = @import("screen.zig").Screen;`,
+  `  vy: 0,
+});`,
+  `  vy: 0,
+  angle: 0,
+  fuel: 800,
+  burning: false,
+});`,
 );
-const SCREEN_ZIG = `const std = @import("std");
+const PHYSICS_TS = `import type { Lander } from "./lander";
 
-pub const Screen = struct {
-    out: std.fs.File,
-    width: u16,
+/** Earth's pull, in m/s². */
+export const GRAVITY = 9.81;
 
-    pub fn clearLine(self: *Screen, y: u16) !void {
-        try self.out.writer().print("\\x1b[{d};1H\\x1b[2K", .{y + 1});
-    }
+/** One step of flight: the lander falls. */
+export function step(l: Lander, dt: number) {
+  l.vy += GRAVITY * dt;
+  l.x += l.vx * dt;
+  l.y += l.vy * dt;
+}
 
-    pub fn write(self: *Screen, y: u16, x: u16, text: []const u8) !void {
-        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
-    }
-};
+/** Down gently enough to stay on its legs. */
+export const safe = (l: Lander) =>
+  l.vy < 2 && Math.abs(l.vx) < 1;
 `;
-const SCREEN_ROWS = SCREEN_ZIG.replace(
-  `        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
-    }
+const PHYSICS_THRUST = PHYSICS_TS.replace(
+  `export const GRAVITY = 9.81;
 `,
-  `        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
-    }
-
-    /// Rows from \`y\` down, in one write.
-    pub fn writeRows(self: *Screen, y: u16, rows: []const Row) !void {
-        var buf = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer buf.deinit();
-        for (rows, 0..) |row, i| try row.render(buf.writer(), y + @as(u16, @intCast(i)));
-        try self.out.writeAll(buf.items);
-    }
+  `export const GRAVITY = 9.81;
+/** The main engine's push, in m/s². */
+export const THRUST = 4.2;
 `,
-).replace(`const std = @import("std");`, `const std = @import("std");\nconst Row = @import("row.zig").Row;`);
-const ROW_ZIG = `const std = @import("std");
+).replace(
+  `/** One step of flight: the lander falls. */
+export function step(l: Lander, dt: number) {
+  l.vy += GRAVITY * dt;`,
+  `/** One step of flight: the lander falls, slowed
+ * while its engine burns. */
+export function step(l: Lander, dt: number) {
+  let ay = GRAVITY;
+  if (l.burning) ay -= THRUST;
+  l.vy += ay * dt;`,
+);
+const PHYSICS_FUEL = PHYSICS_THRUST.replace(
+  `export const THRUST = 4.2;
+`,
+  `export const THRUST = 4.2;
+/** Fuel the engine burns, in kg/s. */
+export const BURN = 12;
+`,
+).replace(
+  `  if (l.burning) ay -= THRUST;
+`,
+  `  if (l.burning && l.fuel > 0) {
+    ay -= THRUST;
+    l.fuel = Math.max(0, l.fuel - BURN * dt);
+  }
+`,
+);
+const PHYSICS_TILT = PHYSICS_FUEL.replace(
+  `/** One step of flight: the lander falls, slowed
+ * while its engine burns. */
+export function step(l: Lander, dt: number) {
+  let ay = GRAVITY;
+  if (l.burning && l.fuel > 0) {
+    ay -= THRUST;`,
+  `/** One step of flight: the lander falls, and its
+ * engine pushes it along its tilt. */
+export function step(l: Lander, dt: number) {
+  let ax = 0,
+    ay = GRAVITY;
+  if (l.burning && l.fuel > 0) {
+    ax += Math.sin(l.angle) * THRUST;
+    ay -= Math.cos(l.angle) * THRUST;`,
+).replace(
+  `  l.vy += ay * dt;`,
+  `  l.vx += ax * dt;
+  l.vy += ay * dt;`,
+);
+const PHYSICS_MOON = PHYSICS_TILT.replace(
+  `/** Earth's pull, in m/s². */
+export const GRAVITY = 9.81;`,
+  `/** The moon's pull, in m/s². */
+export const GRAVITY = 1.62;`,
+);
+const PHYSICS_TEST = `import { expect, test } from "bun:test";
+import { spawn } from "./lander";
+import { GRAVITY, safe, step } from "./physics";
 
-/// A row of cells, built in memory before it reaches the screen.
-pub const Row = struct {
-    cells: [256]u8 = [_]u8{' '} ** 256,
-    width: u16,
+test("falls at the moon's pull", () => {
+  const l = spawn(0);
+  step(l, 1);
+  expect(l.vy).toBeCloseTo(GRAVITY);
+});
 
-    pub fn init(width: u16) Row {
-        return .{ .width = width };
-    }
-
-    pub fn put(self: *Row, x: u16, text: []const u8) void {
-        @memcpy(self.cells[x .. x + text.len], text);
-    }
-};
+test("touches down without bouncing", () => {
+  const l = spawn(0);
+  while (l.y < 120) {
+    l.burning = l.vy > 1.5;
+    step(l, 0.05);
+  }
+  expect(safe(l)).toBe(true);
+});
 `;
 /** A diff as the patch git gives for it, the whole file as context. */
 const patch = (d: FileDiff) =>
@@ -1422,7 +1465,7 @@ const sourceKey = (s: reviewGit.Source) => (s.kind === "worktree" ? `w:${s.again
 /** What git answers the panel about the checkout, for every scope and file
  * it can show: site/browser/git.ts answers the same on the page. */
 async function reviewFixture() {
-  const repo = join(tmpdir(), "corgi-site", "corgi");
+  const repo = join(tmpdir(), "corgi-site", "moonlander");
   rmSync(repo, { recursive: true, force: true });
   mkdirSync(join(repo, "src"), { recursive: true });
   let clock = secs - 3 * 3600;
@@ -1454,18 +1497,26 @@ async function reviewFixture() {
   };
   try {
     git("init", "-q", "-b", "main");
-    put("src/sidebar.zig", SIDEBAR_ZIG);
-    put("src/screen.zig", SCREEN_ZIG);
-    commit("sidebar: list agents two rows each");
-    git("checkout", "-q", "-b", "fix/sidebar-flicker");
-    later(90);
-    put("src/screen.zig", SCREEN_ROWS);
-    commit("screen: write several rows at once");
-    later(40);
-    put("src/sidebar.zig", SIDEBAR_FIXED);
-    commit("sidebar: draw each row in one write");
-    later(48);
-    put("src/row.zig", ROW_ZIG);
+    put("src/lander.ts", LANDER_TS);
+    put("src/physics.ts", PHYSICS_TS);
+    commit("physics: let the lander fall");
+    git("checkout", "-q", "-b", "feat/thrusters");
+    later(65);
+    put("src/lander.ts", LANDER_ENGINE);
+    commit("lander: carry fuel, a tilt and an engine");
+    later(25);
+    put("src/physics.ts", PHYSICS_THRUST);
+    commit("physics: fire the main engine");
+    later(30);
+    put("src/physics.ts", PHYSICS_FUEL);
+    commit("physics: burn fuel while the engine runs");
+    later(38);
+    put("src/physics.ts", PHYSICS_TILT);
+    commit("physics: push along the lander's tilt");
+    later(18);
+    put("src/physics.ts", PHYSICS_MOON);
+    later(2);
+    put("src/physics.test.ts", PHYSICS_TEST);
     const [head, branch, base] = await Promise.all([
       reviewGit.head(repo),
       reviewGit.branch(repo),
@@ -1480,7 +1531,7 @@ async function reviewFixture() {
     ];
     const fixture = {
       at: secs,
-      root: "~/corgi",
+      root: "~/moonlander",
       head,
       branch,
       base,
@@ -1528,7 +1579,7 @@ pickerFrames();
 overviewFrames();
 worktreeFrames();
 cleverFrame();
-soloFrame();
+reviewFrame();
 const review = await reviewFixture();
 if (unknown.size) console.log("unhandled sequences:", [...unknown].join(", "));
 

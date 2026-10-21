@@ -1025,15 +1025,15 @@ function workRows(key, t, w) {
       ...claudeBottom(w)];
   }
 }
-// The flicker fix's session, told short, once its turn is over.
-const flickerFixed = (w) => [
-  ...ask("fix the sidebar flicker"), [],
-  ...tool("Read", "sidebar.zig", "Read 2104 lines"),
-  ...say("`drawAgent` draws rows"), [["  twice. Fixing that.", A.text]],
-  ...tool("Update", "sidebar.zig", "6 added, 4 removed"),
-  ...tool("Bash", "zig build test", "48 passed"),
-  ...say("Fixed: rows draw"), [["  once now.", A.text]], [],
-  [["✻ Worked for 72s", A.hint]], [],
+// The thruster tuning's session, told short, once its turn is over.
+const thrustersTuned = (w) => [
+  ...ask("fix the bounce"), [],
+  ...tool("Read", "physics.ts", "Read 38 lines"),
+  ...say("Gravity is `9.81`;"), [["  moon wants ", A.text], ["1.62", A.code], [".", A.text]],
+  ...tool("Update", "physics.ts", "2 lines fixed"),
+  ...tool("Bash", "bun test", "2 passed"),
+  ...say("Fixed: it lands"), [["  softly now.", A.text]], [],
+  [["✻ Worked for 64s", A.hint]], [],
   ...claudeBottom(w)];
 // The same sessions told short enough for a phone's 28-column pane.
 function phoneRows(key, t, w) {
@@ -1824,7 +1824,7 @@ const agentRows = (i) => ({ r0: WATCH_ROWS[i], r1: WATCH_ROWS[i] + 1, c0: 1, c1:
 const WT_ROWS = F.wt34.length;
 
 // ---- the review panel: Corgi's own, at the window's right edge, on the
-// flicker fix's checkout as git answered the recorder (site/browser/git.ts).
+// thruster tuning's checkout as git answered the recorder (site/browser/git.ts).
 // Corgi's default width, beside a narrow sidebar, leaving the agent's pane
 // less than Corgi would. Its keys overlay stays shut.
 const REVIEW_W = 80;
@@ -1832,10 +1832,11 @@ function reviewPanel() {
   const p = new panel.Panel();
   p.open = true;
   p.keysHelp = false;
-  p.follow({ pane: 0, cwd: "~/corgi", name: "Fix sidebar flicker" });
-  // All files, newest edit first, with the new row.zig folded to its
-  // heading so the fix in sidebar.zig shows under it.
-  p.refresh().then(() => ["o", "x"].forEach((text) => p.key({ text })));
+  p.follow({ pane: 0, cwd: "~/moonlander", name: "Tune the thruster physics" });
+  // All files, newest edit first, with the new physics test folded to its
+  // heading so the gravity fix in physics.ts shows under it. Sorting keeps
+  // the cursor on its file, so it goes back to the top first.
+  p.refresh().then(() => [{ text: "o" }, { named: "home" }, { text: "x" }].forEach((k) => p.key(k)));
   return p;
 }
 function drawReview(g, p, focused, rows) {
@@ -2031,7 +2032,7 @@ function session(init = {}) {
     // typed, and the program holding it, if any. With `quiet`, agents show
     // only what `corgi pane send` asked them, kept in `asked`.
     term: null, quiet: false, asked: {}, fixed: false,
-    // With `idle`, the flicker fix's agent has finished, its pane still.
+    // With `idle`, the thruster tuning has finished, its pane still.
     idle: false,
     ...init,
   };
@@ -2135,12 +2136,11 @@ function session(init = {}) {
     if (S.term?.[id]) return termRows(id, t, w, focused);
     if (id === "sh") return shellRows(t, focused);
     if (S.quiet) return [...askedRows(id, t), ...claudeBottom(w)];
-    if (S.idle && id === "C0") return flickerFixed(w);
     if (id === "C2" && S.approvedAt != null) return tagRows(t, w);
     // keeps watch's sessions; its hidden band won't read this.
     W.compacting = S.compacting;
     // The shorter telling keeps watch wrote for phones reads at a glance.
-    const rows = closeBox(phoneRows(id, t, w), w), sent = S.pasted[id] ?? [];
+    const rows = S.idle && id === "M0" ? thrustersTuned(w) : closeBox(phoneRows(id, t, w), w), sent = S.pasted[id] ?? [];
     // Pasted notes wait in Claude's prompt, as Claude Code shows a paste.
     const at = sent.length ? rows.findLastIndex((row) => row[0]?.[0] === "❯ ") : -1;
     if (at >= 0) rows[at] = [rows[at][0], ...sent.map((text, n) => [`[Pasted text #${n + 1} +${text.split("\n").length - 1} lines] `, A.text])];
@@ -2442,9 +2442,9 @@ drawRunning(now());
 // is more that stays undimmed, unringed; `edit` changes the whole session's
 // frame before it's sliced. `touch` and `cards` say what answers
 // the pointer, as for `point`; with `live`, the first touch lifts the dim.
-// A slice with no rings isn't dimmed, and one with the review panel open
-// passes it the pointer and keys. A slice goes back to how it started once
-// it's out of view.
+// A slice with neither rings nor `lit` isn't dimmed, and one with the
+// review panel open passes it the pointer and keys. A slice goes back to
+// how it started once it's out of view.
 const cardRect = (s) => { const box = s.cardFor(s.S.ws, s.S.card)[1]; return { r0: box.top, r1: box.bottom, c0: box.left, c1: box.right }; };
 // The open card's Recent rows, down to the blank row under them.
 function recentRows(g, s) {
@@ -2783,9 +2783,16 @@ const FEATURES = {
     rings: (g) => [find(g, "1 unread →", { r0: 3, r1: 3 }), agentRows(4)],
     lit: () => [{ r0: AGENT_TOP - 2, r1: WATCH_ROWS[4] + 1, c0: 0, c1: SW - 2 }] },
   steps: { init: { hover: 0, card: 0 }, crop: [7, 0, 16, 122], touch: "agent", cards: "keep", rings: (g, s) => [agentRows(s.S.card), recentRows(g, s)], wires: [[0, 1]], lit: (g, s) => [cardRect(s)] },
-  // The flicker fix's agent, alone in the sidebar and idle, and its changes
-  // in the review panel, which has the keyboard as Corgi gives it on opening.
-  reviews: { init: { side: "solo24", idle: true, review: true, reviewKeys: true, tabs: { ...TABS, C: [named("fixes", pane("C0")), ...TABS.C.slice(1)] } }, crop: [0, 0, 24, 124] },
+  // moonlander's thruster tuning, idle under its worktree with the sprite's
+  // agent in another, and its changes in the review panel, which has the
+  // keyboard as Corgi gives it on opening. The rest of the sidebar and the
+  // agent's pane dim.
+  reviews: { init: { ws: "M", side: "review24", idle: true, review: true, reviewKeys: true, tabs: { ...TABS, M: [named("game", pane("M0"))] } }, crop: [0, 0, 24, 124],
+    // The thrusters' worktree heading and its agent's two rows, and the review panel.
+    lit: (g, s) => {
+      const w = F.review24[0].length, tree = find(g, "⌥", { c1: w - 1 });
+      return [{ r0: tree.r0, r1: tree.r0 + 2, c0: 0, c1: w - 2 }, { r0: 0, r1: s.S.rows - 1, c0: COLS - REVIEW_W, c1: COLS - 1 }];
+    } },
   // The worktree overview, live, with its brief of each worktree, over the
   // sidebar. An empty pane under the card leaves it a clear row each side.
   worktrees: { init: { side: "wt34", rows: WT_ROWS, trees: "corgi", tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, WT_ROWS, 124] },
@@ -2909,7 +2916,7 @@ class Feature {
     this.stage = this.el.parentElement;
     this.plan = null;
     // All but what it's about dims, with a ring on each thing it's about.
-    if (spec.rings) {
+    if (spec.rings || spec.lit) {
       this.stage.classList.add("marked");
       const dim = document.createElementNS(SVG, "svg"), wire = document.createElementNS(SVG, "svg");
       dim.classList.add("sim-dim"); wire.classList.add("sim-wire");
@@ -2968,9 +2975,9 @@ class Feature {
     this.full = full;
     const g = crop(full, this.r0, this.c0, this.rows, this.cols);
     this.screen.paint(g);
-    if (this.live || !this.spec.rings) return;
+    if (this.live || !this.marks) return;
     const local = (q) => ({ r0: q.r0 - this.r0, r1: q.r1 - this.r0, c0: q.c0 - this.c0, c1: q.c1 - this.c0 });
-    this.mark(g, this.spec.rings(full, s).filter(Boolean).map(local), (this.spec.lit?.(full, s) ?? []).map(local));
+    this.mark(g, (this.spec.rings?.(full, s) ?? []).filter(Boolean).map(local), (this.spec.lit?.(full, s) ?? []).map(local));
   }
   mark(g, targets, lit) {
     const stage = this.stage, box = stage.getBoundingClientRect(), term = this.el.getBoundingClientRect();
