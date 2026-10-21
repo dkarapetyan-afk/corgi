@@ -14,5 +14,5 @@
             .hash = "N-V-__8AAPlZGwBEa-gxrcypGBZ2R8Bse4JYSfo_ul8i2jlG",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "zig", "bridge.zig", "app_bridge.zig", "app_system.zig", "frame_diff_bridge.zig", "viewer_bridge.zig", "hook.zig", "posix.c", "pty-exec.c", "readiness.c", "crash.c" },
+    .paths = .{ "build.zig", "build.zig.zon", "zig", "bridge.zig", "app_bridge.zig", "app_system.zig", "frame_diff_bridge.zig", "viewer_bridge.zig", "hook.zig", "posix.zig", "pty-exec.c", "readiness.c", "crash.c" },
 }

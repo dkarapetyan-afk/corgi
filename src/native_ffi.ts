@@ -1,7 +1,7 @@
 import { dlopen, ptr, suffix, FFIType } from "bun:ffi";
 import { nativeRoot } from "./native_paths";
 export { ptr };
-export const lib = dlopen(`${nativeRoot}/lib/libcorgi_probe.${suffix}`, {
+const term = dlopen(`${nativeRoot}/lib/libcorgi_term.${suffix}`, {
   terminal_new: { args: [], returns: "ptr" },
   terminal_free: { args: ["ptr"], returns: "void" },
   terminal_resize: { args: ["ptr", "u16", "u16"], returns: "i32" },
@@ -10,23 +10,6 @@ export const lib = dlopen(`${nativeRoot}/lib/libcorgi_probe.${suffix}`, {
   terminal_pending: { args: ["ptr"], returns: "usize" },
   terminal_text: { args: ["ptr", "ptr", "usize"], returns: FFIType.i64_fast },
   terminal_snapshot: { args: ["ptr", "ptr", "usize"], returns: FFIType.i64_fast },
-  probe_macos_process: { args: ["i32", "ptr", "ptr", "ptr", "ptr", "i32"], returns: "i32" },
-  probe_process_cwd: { args: ["i32", "ptr", "i32"], returns: "i32" },
-  probe_connect: { args: ["cstring"], returns: "i32" },
-  probe_group_pids: { args: ["i32", "ptr", "i32"], returns: "i32" },
-  probe_process_job: { args: ["i32", "ptr"], returns: "i32" },
-  probe_process_args: { args: ["i32", "ptr", "usize"], returns: FFIType.i64_fast },
-  probe_getpgrp: { args: [], returns: "i32" },
-  probe_dup_above: { args: ["i32", "i32"], returns: "i32" },
-  probe_login_shell: { args: ["ptr", "i32"], returns: "i32" },
-  probe_winsize: { args: ["i32", "ptr"], returns: "i32" },
-  probe_fixture_children: { args: ["ptr"], returns: "i32" },
-  probe_fixture_exit: { args: ["i32"], returns: "i32" },
-  probe_wait_child: { args: ["i32"], returns: "i32" },
-  probe_peek: { args: ["i32", "ptr", "i32"], returns: "i32" },
-  probe_isatty: { args: ["i32"], returns: "i32" },
-  probe_writable: { args: ["i32", "i32"], returns: "i32" },
-  probe_winsize_pixels: { args: ["i32", "ptr"], returns: "i32" },
   native_log_stderr: { args: ["bool"], returns: "void" },
   frame_diff_new: { args: ["u16", "u16"], returns: "ptr" },
   frame_diff_free: { args: ["ptr"], returns: "void" },
@@ -44,6 +27,25 @@ export const lib = dlopen(`${nativeRoot}/lib/libcorgi_probe.${suffix}`, {
   viewer_encode_mouse: { args: ["ptr", "u16", "f32", "f32", "bool"], returns: FFIType.i64_fast },
   viewer_paste: { args: ["ptr", "usize", "bool", "i32"], returns: FFIType.i64_fast },
   viewer_paste_safe: { args: ["ptr", "usize"], returns: "bool" },
+});
+const system = dlopen(`${nativeRoot}/lib/libcorgi_system.${suffix}`, {
+  probe_macos_process: { args: ["i32", "ptr", "ptr", "ptr", "ptr", "i32"], returns: "i32" },
+  probe_process_cwd: { args: ["i32", "ptr", "i32"], returns: "i32" },
+  probe_connect: { args: ["cstring"], returns: "i32" },
+  probe_group_pids: { args: ["i32", "ptr", "i32"], returns: "i32" },
+  probe_process_job: { args: ["i32", "ptr"], returns: "i32" },
+  probe_process_args: { args: ["i32", "ptr", "usize"], returns: FFIType.i64_fast },
+  probe_getpgrp: { args: [], returns: "i32" },
+  probe_dup_above: { args: ["i32", "i32"], returns: "i32" },
+  probe_login_shell: { args: ["ptr", "i32"], returns: "i32" },
+  probe_winsize: { args: ["i32", "ptr"], returns: "i32" },
+  probe_fixture_children: { args: ["ptr"], returns: "i32" },
+  probe_fixture_exit: { args: ["i32"], returns: "i32" },
+  probe_wait_child: { args: ["i32"], returns: "i32" },
+  probe_peek: { args: ["i32", "ptr", "i32"], returns: "i32" },
+  probe_isatty: { args: ["i32"], returns: "i32" },
+  probe_writable: { args: ["i32", "i32"], returns: "i32" },
+  probe_winsize_pixels: { args: ["i32", "ptr"], returns: "i32" },
   probe_listen: { args: ["cstring"], returns: "i32" },
   probe_accept: { args: ["i32"], returns: "i32" },
   probe_pipe: { args: ["ptr"], returns: "i32" },
@@ -58,7 +60,7 @@ export const lib = dlopen(`${nativeRoot}/lib/libcorgi_probe.${suffix}`, {
   probe_send: { args: ["i32", "ptr", "i32"], returns: "i32" },
   probe_recv: { args: ["i32", "ptr", "i32"], returns: "i32" },
 });
-export const n = lib.symbols;
+export const n = { ...term.symbols, ...system.symbols };
 export function terminal() {
   const handle = n.terminal_new();
   if (!handle) throw Error("terminal allocation");

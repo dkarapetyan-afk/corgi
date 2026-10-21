@@ -6,7 +6,7 @@ export { n, ptr } from "./native_ffi";
 export { ReadyLoop, READ, WRITE, AsyncFD } from "./fd_loop";
 import { nativeRoot } from "./native_paths";
 export { nativeRoot };
-const lib = dlopen(`${nativeRoot}/lib/libcorgi_probe.${suffix}`, {
+const lib = dlopen(`${nativeRoot}/lib/libcorgi_term.${suffix}`, {
   app_terminal_fd: { args: ["ptr", "i32", "i32"], returns: "void" },
   app_terminal_json: { args: ["ptr", "ptr", "usize", "ptr", "usize"], returns: FFIType.i64_fast },
 });

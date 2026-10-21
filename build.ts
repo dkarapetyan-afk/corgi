@@ -62,13 +62,7 @@ if (!process.argv.includes("--no-native")) {
 if (process.argv.includes("--native-only")) process.exit(0);
 mkdirSync(`${root}/dist`, { recursive: true });
 const suffix = platform === "darwin" ? "dylib" : "so";
-const files = [
-  `lib/libcorgi_probe.${suffix}`,
-  `lib/libcorgi_system.${suffix}`,
-  `lib/libcorgi_fd.${suffix}`,
-  "bin/pty-exec",
-  "bin/corgi-hook",
-];
+const files = [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
 const hash = createHash("sha256");
 for (const file of files) hash.update(new Uint8Array(await Bun.file(`${nativeRoot}/${file}`).arrayBuffer()));
 const imports = files

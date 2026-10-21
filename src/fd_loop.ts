@@ -4,7 +4,7 @@ import { dlopen, ptr, suffix, type Pointer } from "bun:ffi";
 import { n } from "./native_ffi";
 import { nativeRoot } from "./native_paths";
 
-export const native = dlopen(`${nativeRoot}/lib/libcorgi_fd.${suffix}`, {
+export const native = dlopen(`${nativeRoot}/lib/libcorgi_system.${suffix}`, {
   fd_loop_new: { args: ["ptr"], returns: "ptr" },
   fd_loop_arm: { args: ["ptr", "i32", "u32", "u32"], returns: "i32" },
   fd_loop_free: { args: ["ptr"], returns: "void" },

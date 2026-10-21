@@ -9,13 +9,12 @@ pub fn build(b: *std.Build) void {
     const opts = b.addOptions();
     opts.addOption(bool, "check_leaks", false);
 
-    // Terminal emulation, frame diffs, keyboard encoding and process probes.
+    // Terminal emulation, frame diffs, keyboard and mouse encoding.
     const pane = b.createModule(.{ .root_source_file = b.path("zig/pane.zig"), .target = target, .optimize = optimize, .link_libc = true });
     pane.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
     pane.addOptions("corgi_options", opts);
     const mod = b.createModule(.{ .root_source_file = b.path("bridge.zig"), .target = target, .optimize = optimize, .link_libc = true });
     mod.addImport("pane", pane);
-    mod.addCSourceFile(.{ .file = b.path("posix.c"), .flags = &.{"-O3"} });
     // Each module below roots a copy of zig/: `pane` already owns the original os.zig.
     const sources = b.addWriteFiles();
     _ = sources.addCopyDirectory(b.path("zig"), "zig", .{});
@@ -26,15 +25,16 @@ pub fn build(b: *std.Build) void {
     const keyboard = b.createModule(.{ .root_source_file = sources.getDirectory().path(b, "zig/keyboard.zig"), .target = target, .optimize = optimize });
     keyboard.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
     mod.addImport("keyboard", keyboard);
-    install(b, b.addLibrary(.{ .name = "corgi_probe", .linkage = .dynamic, .root_module = mod }));
+    install(b, b.addLibrary(.{ .name = "corgi_term", .linkage = .dynamic, .root_module = mod }));
 
-    // Resource sampling and crash reports.
+    // POSIX/PTY helpers, process inspection, resources, readiness and crash reports.
     const system_root = sources.add("zig/bun_system.zig", "pub const resource_os = @import(\"trackers/resource_os.zig\");\n");
     const resource_os = b.createModule(.{ .root_source_file = system_root, .target = target, .optimize = optimize, .link_libc = true });
     resource_os.addOptions("corgi_options", opts);
     const system = b.createModule(.{ .root_source_file = b.path("app_system.zig"), .target = target, .optimize = optimize, .link_libc = true });
     system.addImport("resource_os", resource_os);
     system.addCSourceFile(.{ .file = b.path("crash.c"), .flags = &.{ "-O2", "-DSENTRY_BUILD_STATIC" } });
+    system.addCSourceFile(.{ .file = b.path("readiness.c"), .flags = &.{ "-O3", "-pthread", "-Wall", "-Wextra" } });
     system.linkLibrary(sentryLibrary(b, target, optimize));
     install(b, b.addLibrary(.{ .name = "corgi_system", .linkage = .dynamic, .root_module = system }));
 
@@ -46,13 +46,10 @@ pub fn build(b: *std.Build) void {
     hook.addImport("hook_deps", hook_deps);
     install(b, b.addExecutable(.{ .name = "corgi-hook", .root_module = hook }));
 
-    // PTY setup and descriptor readiness.
+    // PTY child setup.
     const pty_exec = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     pty_exec.addCSourceFile(.{ .file = b.path("pty-exec.c"), .flags = &.{ "-O2", "-Wall", "-Wextra" } });
     install(b, b.addExecutable(.{ .name = "pty-exec", .root_module = pty_exec }));
-    const readiness = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    readiness.addCSourceFile(.{ .file = b.path("readiness.c"), .flags = &.{ "-O3", "-pthread", "-Wall", "-Wextra" } });
-    install(b, b.addLibrary(.{ .name = "corgi_fd", .linkage = .dynamic, .root_module = readiness }));
 }
 
 fn install(b: *std.Build, artifact: *std.Build.Step.Compile) void {

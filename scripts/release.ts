@@ -14,13 +14,7 @@ type Target = (typeof targets)[number];
 // The native layer, in the paths build.ts embeds it from.
 const nativeFiles = (target: Target) => {
   const suffix = target.name.startsWith("macos") ? "dylib" : "so";
-  return [
-    `lib/libcorgi_probe.${suffix}`,
-    `lib/libcorgi_system.${suffix}`,
-    `lib/libcorgi_fd.${suffix}`,
-    "bin/pty-exec",
-    "bin/corgi-hook",
-  ];
+  return [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
 };
 export const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 export function releaseVersion(value: string) {

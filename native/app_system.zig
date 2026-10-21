@@ -1,6 +1,9 @@
 const std = @import("std");
 const resource_os = @import("resource_os").resource_os;
 const a = std.heap.c_allocator;
+comptime {
+    _ = @import("posix.zig");
+}
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/wait.h");

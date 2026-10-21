@@ -37,6 +37,13 @@ requested by its most recently active viewer; hidden panes retain their size.
 Background workers return observations for the daemon to validate and apply.
 Keep application policy in TypeScript and the native boundary small.
 
+The binary bundles two native shared libraries: `corgi_term` owns Ghostty
+terminal emulation, rendering, frame diffs and input encoding; `corgi_system`
+owns POSIX/PTY helpers, process inspection, resource sampling, descriptor
+readiness and crash reporting. Loading the system library does not initialize
+crash reporting; the application enables it explicitly. `pty-exec` and
+`corgi-hook` remain separate helper executables.
+
 ## Build, test and format
 
 ```sh
