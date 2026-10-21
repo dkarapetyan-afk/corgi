@@ -64,6 +64,27 @@ test("background result cannot follow a workspace into a different directory", (
   expect(w.git_ahead).toBeNull();
   expect(w.git_ref.head).toBe("");
 });
+test("clearing a push failure notifies viewers even when git status is unchanged", () => {
+  const store = new Store(),
+    workspace = new Workspace(1, "/repo"),
+    tracker = new Tracker();
+  store.items = [workspace];
+  workspace.git_ref = Ref.init("/repo", "head", "refs/heads/main", "origin", "refs/heads/main");
+  workspace.git_ahead = 0n;
+  workspace.git_push.phase = "failed";
+  workspace.git_push.message = "rejected";
+  tracker.jobs = [
+    {
+      id: workspace.id,
+      cwd: workspace.cwd,
+      ahead: 0n,
+      ref: new Ref(workspace.git_ref.view()),
+      commits: new Commits(),
+    },
+  ];
+  expect(tracker.apply(store)).toBe(true);
+  expect(workspace.git_push.view()).toEqual({ phase: "idle", message: "" });
+});
 test("commit metadata strips terminal controls and preserves Unicode", () => {
   const c = parseCommits("abc\0Person\x1b\0date\x00123\0fix 项目\x07\0");
   expect(c.len).toBe(1);

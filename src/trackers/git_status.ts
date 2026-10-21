@@ -135,9 +135,11 @@ export class Tracker {
         JSON.stringify(w.git_commits) !== JSON.stringify(job.commits);
       if (
         !w.git_ref.view().sameBranch(job.ref.view()) ||
-        (!w.git_ref.view().eql(job.ref.view()) && w.git_push.phase === "failed")
-      )
+        (w.git_push.phase === "failed" && (job.ahead === 0n || !w.git_ref.view().eql(job.ref.view())))
+      ) {
         w.git_push = new State();
+        changed = true;
+      }
       w.git_ref = job.ref;
       w.git_ahead = job.ahead;
       w.git_commits = job.commits;

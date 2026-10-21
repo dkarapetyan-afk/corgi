@@ -166,6 +166,17 @@ class GitPush extends Runtime {
     await this.click();
     await this.until(async () => (await this.workspace()).git_push.phase === "failed");
     this.assertEqual(remoteTip, await this.git("--git-dir", this.remote, "rev-parse", "main"));
+
+    const failed = await this.workspace();
+    this.assertIn("Retry !", (await this.gitViewer.poll()).data);
+    await this.git("push", "--force", "origin", "main");
+    await this.untilAdvancing(3, async () => (await this.workspace()).git_ahead === 0);
+    const pushed = await this.workspace();
+    this.assertEqual(pushed.git_ref, failed.git_ref);
+    this.assertEqual(pushed.git_push, { phase: "idle", message: "" });
+    const frame = (await this.gitViewer.poll()).data;
+    this.assertNotIn("Retry !", frame);
+    this.assertNotIn("Push failed", frame);
   }
 
   async test_background_workspace_push_does_not_switch_selection() {
