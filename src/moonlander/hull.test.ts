@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import * as moonlander from "./moonlander";
-import * as faces from "./moonlander_faces";
-import * as hull from "./moonlander_hull";
-import * as palette from "./palette";
-import * as terminal from "./moonlander_terminal";
-import { options } from "../tools/moonlander";
+import * as faces from "./faces";
+import * as hull from "./hull";
+import * as palette from "../palette";
+import * as terminal from "./terminal";
+import { options } from "../../tools/moonlander";
 
 function create() {
   const engine = moonlander.create({ size: () => ({ cols: 72, rows: 40 }), aspect: 2.2, random: () => 0.5 });

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import * as terminal from "./moonlander_terminal";
-import * as cli from "../tools/moonlander";
+import * as terminal from "./terminal";
+import * as cli from "../../tools/moonlander";
 
 test("--speed accepts integer multipliers from 2 through 10", () => {
   expect(cli.options([])).toEqual({});
@@ -55,7 +55,7 @@ process.stdout.write(Buffer.alloc(count * atlas.side * atlas.side, 128));
     uploads = new Map<number, number>(),
     placements = new Map<number, number>(),
     placed = (ids: (id: number) => boolean) => [...placements].reduce((n, [id, count]) => n + (ids(id) ? count : 0), 0);
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../tools/moonlander.ts")], {
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../../tools/moonlander.ts")], {
     env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ""}` },
     terminal: {
       cols: 100,
@@ -141,7 +141,7 @@ process.stdout.write(Buffer.alloc(count * atlas.side * atlas.side, 128));
 }, 10000);
 
 test("the built-in game uploads embedded glyphs without a font renderer and waits for its acknowledgement", async () => {
-  const { State } = await import("./moonlander_terminal");
+  const { State } = await import("./terminal");
   const state = new State(100, 30, () => {}, undefined, { hull: "turned" });
   // The passenger waits for its image rather than show text that then moves.
   const first = state.frame(100, 30, { width: 10, height: 22 }, true, 0);

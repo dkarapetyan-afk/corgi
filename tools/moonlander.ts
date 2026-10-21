@@ -2,10 +2,10 @@
 //! Run with `bun tools/moonlander.ts`. No daemon or viewer is needed.
 //! `--hull` picks how the ship's hull is drawn; `--help` lists the choices.
 import { join } from "node:path";
-import * as terminal from "../src/moonlander_terminal";
-import * as faces from "../src/moonlander_faces";
-import * as hull from "../src/moonlander_hull";
-export { clearText, upload } from "../src/moonlander_terminal";
+import * as terminal from "../src/moonlander/terminal";
+import * as faces from "../src/moonlander/faces";
+import * as hull from "../src/moonlander/hull";
+export { clearText, upload } from "../src/moonlander/terminal";
 
 export async function rasterize(atlas: faces.Atlas): Promise<Uint8Array> {
   const child = Bun.spawn(["uv", "run", "--script", join(import.meta.dir, "moonlander_faces.py")], {

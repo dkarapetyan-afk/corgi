@@ -1,7 +1,7 @@
 //! Moonlander cell rendering, shared by the terminal and website.
 import * as moonlander from "./moonlander";
-import * as hull from "./moonlander_hull";
-import type { Token } from "./palette";
+import * as hull from "./hull";
+import type { Token } from "../palette";
 
 const displayWidth = (text: string) => [...text].length;
 

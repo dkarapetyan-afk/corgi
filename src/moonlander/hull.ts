@@ -1,7 +1,7 @@
 //! The ship's hull, drawn from its upright dots: as braille in a few styles, or
 //! as Kitty image tiles, one per flight tilt. Shared by Bun and the browser.
 import * as moonlander from "./moonlander";
-import * as faces from "./moonlander_faces";
+import * as faces from "./faces";
 
 /** `image` turns the upright dots smoothly as Kitty graphics. Without them the
  * hull is braille: `turned-gray` turns the upright dots as pixel art with gray

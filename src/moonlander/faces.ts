@@ -1,6 +1,6 @@
 //! One character atlas for every mood and 2-degree turn; shared by Bun and the browser.
 import * as moonlander from "./moonlander";
-import type { Rgb } from "./palette";
+import type { Rgb } from "../palette";
 
 export const step = 2;
 export type Bits = 2 | 4 | 8;

@@ -83,7 +83,7 @@ import * as viewerNative from "./viewer_native";
 import { Provider } from "./providers";
 import { sat, byteLength, type Writer } from "./text";
 import * as errors from "./errors";
-import * as moonlanderTerminal from "./moonlander_terminal";
+import * as moonlanderTerminal from "./moonlander/terminal";
 
 /** A conversation a pane stopped running, and when, in seconds. */
 interface Stopped {

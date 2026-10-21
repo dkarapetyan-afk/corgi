@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import * as moonlander from "./moonlander";
-import * as hull from "./moonlander_hull";
-import * as scene from "./moonlander_scene";
-import * as animation from "./corgi_animation";
+import * as hull from "./hull";
+import * as scene from "./scene";
+import * as animation from "../corgi_animation";
 
 function create() {
   const engine = moonlander.create({ size: () => ({ cols: 72, rows: 40 }), aspect: 2.2, random: () => 0.5 });

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import * as moonlander from "./moonlander";
-import * as faces from "./moonlander_faces";
+import * as faces from "./faces";
 
 function chunks(png: Uint8Array) {
   const data = Buffer.from(png),

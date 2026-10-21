@@ -1,13 +1,13 @@
 //! Viewer-independent terminal adapter for Moonlander's shared engine and renderer.
 import { deflateSync } from "node:zlib";
 import * as moonlander from "./moonlander";
-import * as scene from "./moonlander_scene";
-import * as faces from "./moonlander_faces";
-import * as hull from "./moonlander_hull";
-import * as palette from "./palette";
-import * as keyboard from "./keyboard";
-import { masks } from "./assets/moonlander_glyphs";
-import type { Cell } from "./fork_motion";
+import * as scene from "./scene";
+import * as faces from "./faces";
+import * as hull from "./hull";
+import * as palette from "../palette";
+import * as keyboard from "../keyboard";
+import { masks } from "./glyphs";
+import type { Cell } from "../fork_motion";
 
 export type Rasterize = (atlas: faces.Atlas) => Uint8Array | Promise<Uint8Array>;
 function lines(screen: scene.Screen) {

@@ -15,7 +15,7 @@ import { Provider, byProvider } from "./providers";
 import type { ByProvider } from "./providers";
 import { Model } from "./providers/model";
 import * as corgiAnimation from "./corgi_animation";
-import * as moonlanderScene from "./moonlander_scene";
+import * as moonlanderScene from "./moonlander/scene";
 import * as sidebar from "./sidebar";
 import * as km from "./keymap";
 import * as bindings from "./bindings";
