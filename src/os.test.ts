@@ -105,13 +105,3 @@ test("release leaves a successor's socket in place", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-import { run } from "./subprocess";
-import { exec } from "./os";
-test("exec replaces the process and reports failed lookups with the source error", async () => {
-  expect(() => exec(["/missing/corgi-exec-test"])).toThrow("ExecFailed");
-  const script = `import {exec} from ${JSON.stringify(new URL("./os.ts", import.meta.url).pathname)};exec(['/bin/sh','-c','printf replaced; exit 7']);console.log('not reached');`;
-  const out = await run([process.execPath, "-e", script], { timeout_ms: 5000 });
-  expect(out.stdout.toString()).toBe("replaced");
-  expect(out.term).toEqual({ exited: 7 });
-});

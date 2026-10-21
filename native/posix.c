@@ -137,29 +137,8 @@ int probe_listen(const char *path) {
 }
 int probe_accept(int fd) { int peer=accept(fd,0,0); if(peer>=0) fcntl(peer,F_SETFD,FD_CLOEXEC); return peer; }
 int probe_pipe(int *fds) { if(pipe(fds)) return -errno; for(int i=0;i<2;i++) fcntl(fds[i],F_SETFD,FD_CLOEXEC); return 0; }
+#ifdef __APPLE__
 #include <sys/resource.h>
-#include <stdio.h>
-#ifdef __APPLE__
-#include <mach/mach.h>
-#endif
-long probe_rss_kib(void) {
-#ifdef __APPLE__
-    mach_task_basic_info_data_t info;
-    mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
-    if(task_info(mach_task_self(),MACH_TASK_BASIC_INFO,(task_info_t)&info,&count)!=KERN_SUCCESS) return -1;
-    return info.resident_size/1024;
-#else
-    // ru_maxrss can retain the spawning parent's pre-exec peak on Linux.
-    FILE *file=fopen("/proc/self/statm","r");
-    if(!file) return -1;
-    unsigned long virtual_pages, resident_pages;
-    int count=fscanf(file,"%lu %lu",&virtual_pages,&resident_pages);
-    fclose(file);
-    return count==2 ? (long)(resident_pages*(unsigned long)sysconf(_SC_PAGESIZE)/1024) : -1;
-#endif
-}
-
-#ifdef __APPLE__
 #include <libproc.h>
 #include <sys/sysctl.h>
 #include <mach/mach_time.h>

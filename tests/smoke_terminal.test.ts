@@ -153,11 +153,14 @@ class SmokeTerminal extends Runtime {
   }
   async test_cmd_v_without_paste_events_opens_no_card_locally() {
     const received = join(this.temp.name, "local-card-input");
+    const env = { ...this.env };
+    for (const name of ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]) delete env[name];
+    // Kitty keyboard encoding preserves Cmd in the captured key.
     await this.open_pane({
-      command: `stty raw -echo; printf CARD_READY; exec cat > ${quote(received)}`,
+      command: `stty raw -echo; printf '\\033[>1uCARD_READY'; exec cat > ${quote(received)}`,
     });
     const pty = await Pty.spawn([EXE, "attach"], {
-      env: this.env,
+      env,
       cwd: this.temp.name,
       cols: 100,
       rows: 30,
@@ -166,14 +169,15 @@ class SmokeTerminal extends Runtime {
     await pty.waitFor("\x1b[>0q");
     pty.write("\x1bP>|ghostty 1.3.1\x1b\\\x1b[?5522;0$y");
     await pty.waitFor("CARD_READY");
-    // An agent here reads this machine's clipboard itself: nothing to explain.
+    // An agent here reads this machine's clipboard itself: forward the key.
     pty.write("\x1b[118;9u");
     const start = pty.output.length;
     pty.resize(100, 31);
     await pty.waitFor(output => /\x1b\[H\x1b\[J[^]*\x1b\[\?2026l/.test(output.slice(start)));
     this.assertNotIn("Image not pasted", pty.output);
     pty.write("x");
-    await this.until(() => existsSync(received) && file(received) === "x");
+    await this.until(() => existsSync(received) && file(received).endsWith("x"));
+    this.assertEqual(file(received), "\x1b[118;9ux");
   }
   async test_relays_a_paste_to_a_program_that_takes_paste_events() {
     const received = join(this.temp.name, "relayed");

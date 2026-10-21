@@ -6,7 +6,15 @@ const a = os.allocator;
 const hyperlink = @import("hyperlinks.zig");
 const detection = @import("../detection.zig");
 const BoundedText = @import("../bounded_text.zig").BoundedText;
-const Theme = @import("../theme.zig").Theme;
+
+/// The host's default colors and its configurable ANSI palette. Applications
+/// still own their OSC overrides; changing the host only changes defaults.
+const Theme = struct {
+    foreground: ?vt.color.RGB = null,
+    background: ?vt.color.RGB = null,
+    palette: [16]?vt.color.RGB = .{null} ** 16,
+};
+
 pub const Terminal = struct {
     vt: vt.Terminal,
     stream: vt.TerminalStream,
@@ -46,7 +54,15 @@ pub const Terminal = struct {
     pub const Owner = enum { runtime, candidate };
 
     pub fn applyTheme(t: *Terminal, theme: Theme) void {
-        theme.apply(&t.vt);
+        if (theme.foreground) |color| t.vt.colors.foreground.default = color;
+        if (theme.background) |color| t.vt.colors.background.default = color;
+        var palette = t.vt.colors.palette.original.*;
+        for (theme.palette, 0..) |entry, i| if (entry) |color| {
+            palette[i] = color;
+        };
+        // Out of memory keeps the previous palette.
+        t.vt.colors.palette.changeDefault(t.vt.gpa(), palette) catch {};
+        t.vt.flags.dirty.palette = true;
         t.surface_revision +%= 1;
     }
     const synchronized_timeout_ms = 1000;
@@ -666,7 +682,7 @@ test "terminal reports host colors and keeps application overrides" {
         .background = .{ .r = 30, .g = 30, .b = 30 },
     };
     theme.palette[2] = .{ .r = 12, .g = 200, .b = 30 };
-    theme.apply(&t.vt);
+    t.applyTheme(theme);
     t.feed("\x1b]10;?\x1b\\\x1b]11;?\x07\x1b]4;2;?\x1b\\");
     try std.testing.expectEqualStrings("\x1b]10;rgb:dcdc/dcdc/dcdc\x1b\\\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b]4;2;rgb:0c0c/c8c8/1e1e\x1b\\", t.pending.items);
     try t.render.update(a, &t.vt);
@@ -675,7 +691,7 @@ test "terminal reports host colors and keeps application overrides" {
     // An app can override and reset colors locally without changing the host.
     t.feed("\x1b]11;rgb:01/02/03\x1b\\\x1b]4;2;rgb:04/05/06\x1b\\");
     theme.background = .{ .r = 50, .g = 50, .b = 50 };
-    theme.apply(&t.vt);
+    t.applyTheme(theme);
     try std.testing.expectEqual(vt.color.RGB{ .r = 1, .g = 2, .b = 3 }, t.vt.colors.background.get().?);
     try std.testing.expectEqual(vt.color.RGB{ .r = 4, .g = 5, .b = 6 }, t.vt.colors.palette.current[2]);
     t.feed("\x1b]111\x1b\\\x1b]104;2\x1b\\");

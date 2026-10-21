@@ -10,52 +10,19 @@ import {
   writeSync,
   fsyncSync,
   renameSync,
-  realpathSync,
   statSync,
   lstatSync,
-  fstatSync,
   unlinkSync,
   chmodSync,
   accessSync,
   constants,
 } from "node:fs";
-import { dirname, join, resolve, isAbsolute } from "node:path";
-import { userInfo, homedir } from "node:os";
-import { randomUUID, randomFillSync } from "node:crypto";
+import { dirname, isAbsolute } from "node:path";
+import { userInfo } from "node:os";
+import { randomUUID } from "node:crypto";
 import { n, ptr } from "./native_ffi";
-import { stringify } from "./json";
 export const max_path_bytes = 4096;
 export const env = (name: string): string | null => process.env[name] ?? null;
-export const timestamp = (): number => Math.floor(Date.now() / 1000);
-export const milliTimestamp = (): number => Date.now();
-export const microTimestamp = (): number => Date.now() * 1000;
-/** Bun sleep accepts milliseconds; this module preserves the source nanosecond boundary. */
-export const sleep = (ns: number | bigint) => Bun.sleep(Number(ns) / 1_000_000);
-export class Timer {
-  started = Bun.nanoseconds();
-  static start() {
-    return new Timer();
-  }
-  read() {
-    return BigInt(Math.max(0, Math.floor(Bun.nanoseconds() - this.started)));
-  }
-}
-export const random = {
-  bytes(buffer: Uint8Array) {
-    randomFillSync(buffer);
-  },
-};
-export const uuid = () => randomUUID();
-export function setenv(name: string, value: string) {
-  if (name.includes("\0") || name.includes("=") || !name || value.includes("\0")) throw Error("SetEnvFailed");
-  process.env[name] = value;
-}
-export function environMap() {
-  return { ...process.env };
-}
-export function realpathAlloc(dir: string, path: string) {
-  return realpathSync(resolve(dir, path));
-}
 export class Stat {
   constructor(
     public dev: bigint,
@@ -86,13 +53,6 @@ export function lstat(path: string): Stat {
     throw Error("FileNotFound");
   }
 }
-export function fstat(fd: number): Stat {
-  try {
-    return asStat(fstatSync(fd, { bigint: true }));
-  } catch {
-    throw Error("FileNotFound");
-  }
-}
 export function readFile(path: string, buffer: Uint8Array): number {
   const fd = openSync(path, "r");
   try {
@@ -105,19 +65,6 @@ export function readFile(path: string, buffer: Uint8Array): number {
     return used;
   } finally {
     closeSync(fd);
-  }
-}
-export function readToEndAlloc(fd: number, max: number): Buffer {
-  const parts: Buffer[] = [];
-  let total = 0;
-  for (;;) {
-    const chunk = Buffer.alloc(Math.min(8192, max + 1 - total));
-    if (!chunk.length) throw Error("StreamTooLong");
-    const count = readSync(fd, chunk, 0, chunk.length, null);
-    if (!count) return Buffer.concat(parts, total);
-    total += count;
-    if (total > max) throw Error("StreamTooLong");
-    parts.push(chunk.subarray(0, count));
   }
 }
 const cwd_buffer = Buffer.alloc(max_path_bytes);
@@ -364,27 +311,8 @@ export function shellEscape(args: Array<string | Uint8Array>): string | null {
   }
   return out.join(" ");
 }
-export function exec(args: string[]): never {
-  const path = args[0]?.includes("/") ? args[0] : findExecutable(args[0] ?? "");
-  if (!path || !process.execve) throw Error("ExecFailed");
-  try {
-    process.execve(path, args, environMap() as Record<string, string>);
-  } catch {
-    throw Error("ExecFailed");
-  }
-  throw Error("ExecFailed");
-}
 export function socketPath(): string {
   return env("CORGI_SOCKET") ?? `/tmp/corgi-${process.getuid?.() ?? userInfo().uid}/control.sock`;
-}
-export function statePath(name: string): string {
-  return join(
-    process.env.CORGI_ENV_DIR
-      ? join(process.env.CORGI_ENV_DIR, "state")
-      : (process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state")),
-    "corgi",
-    name,
-  );
 }
 export function atomicWrite(path: string, data: string | Uint8Array, mode = 0o600, private_parent = true): void {
   if (private_parent) privateDirectory(dirname(path));
@@ -412,16 +340,6 @@ export function atomicWrite(path: string, data: string | Uint8Array, mode = 0o60
       unlinkSync(temp);
     } catch {}
   }
-}
-export function directory(path: string): string {
-  let resolved: string;
-  try {
-    resolved = realpathSync(path);
-  } catch {
-    throw Error("FileNotFound");
-  }
-  if (!statSync(resolved).isDirectory()) throw Error("NotDir");
-  return resolved;
 }
 export function running(pid: number): boolean {
   try {
@@ -471,21 +389,6 @@ export function unixAddress(path: string) {
     throw Error("NameTooLong");
   return path;
 }
-export function connect(path: string): number {
-  unixAddress(path);
-  const fd = n.probe_connect(Buffer.from(path + "\0"));
-  if (fd < 0)
-    throw Error(
-      fd === -2
-        ? "FileNotFound"
-        : fd === -13
-          ? "AccessDenied"
-          : fd === -111 || fd === -61
-            ? "ConnectionRefused"
-            : "ConnectFailed",
-    );
-  return fd;
-}
 export function listen(path: string): number {
   if (!path.includes("/")) throw Error("BadSocketPath");
   privateDirectory(dirname(path));
@@ -493,58 +396,4 @@ export function listen(path: string): number {
   const fd = n.probe_listen(Buffer.from(path + "\0"));
   if (fd < 0) throw Error(fd === -98 || fd === -48 ? "AddressInUse" : fd === -13 ? "AccessDenied" : "BindFailed");
   return fd;
-}
-export function nonblock(fd: number) {
-  n.probe_nonblock(fd);
-}
-export function writeAll(fd: number, bytes: Uint8Array | string) {
-  const b = Buffer.from(bytes);
-  let offset = 0;
-  while (offset < b.length) {
-    const len = n.probe_write(fd, ptr(b.subarray(offset)), b.length - offset);
-    if (len === -4) continue;
-    if (len <= 0) throw Error("WriteFailed");
-    offset += len;
-  }
-}
-export function sendJson(fd: number, value: any) {
-  writeAll(fd, stringify(value) + "\n");
-}
-export function readLine(fd: number, max: number): Buffer {
-  const parts: Buffer[] = [];
-  let used = 0;
-  while (used < max) {
-    const bytes = Buffer.alloc(Math.min(8192, max - used)),
-      len = n.probe_read(fd, ptr(bytes), bytes.length);
-    if (len <= 0) throw Error("EndOfStream");
-    const chunk = bytes.subarray(0, len),
-      end = chunk.indexOf(10);
-    if (end >= 0) {
-      parts.push(chunk.subarray(0, end));
-      return Buffer.concat(parts);
-    }
-    parts.push(chunk);
-    used += len;
-  }
-  throw Error("MessageTooLarge");
-}
-export async function capture(
-  argv: string[],
-  options: {
-    cwd?: string;
-    env?: Record<string, string | undefined>;
-    input?: string;
-    timeout?: number;
-  } = {},
-): Promise<string> {
-  const subprocess = await import("./subprocess");
-  const output = await subprocess.run(argv, {
-    cwd: options.cwd,
-    env: options.env,
-    input: options.input,
-    timeout_ms: options.timeout ?? 10000,
-    stderr: true,
-  });
-  if (!output.ok()) throw Error(output.stderr.toString().trim() || "ChildFailed");
-  return output.stdout.toString();
 }
