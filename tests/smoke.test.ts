@@ -1,31 +1,8 @@
 /** Real PTY/socket regressions. Provider doubles never make inference requests. */
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  chmodSync,
-  symlinkSync,
-  unlinkSync,
-  realpathSync,
-} from "node:fs";
-import { join, dirname } from "node:path";
-import { createConnection } from "node:net";
-import { createHash } from "node:crypto";
-import { Runtime, Viewer, ROOT, EXE, FAKE, PALETTE, screen_text, scrollbar, layout_tree } from "./runtime";
-import {
-  TestCase,
-  registerCase,
-  run,
-  sleep,
-  quote,
-  shellJoin,
-  tempDir,
-  writeExecutable,
-  JsonSocket,
-  Pty,
-  deadline,
-} from "./support";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
+import { Runtime, EXE, PALETTE, screen_text, scrollbar, layout_tree } from "./runtime";
+import { registerCase, run, sleep, quote, shellJoin, writeExecutable, JsonSocket } from "./support";
 
 class Smoke extends Runtime {
   async focused() {

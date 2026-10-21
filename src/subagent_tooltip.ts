@@ -336,10 +336,6 @@ export function compact(value: bigint | number): string {
       : `${tenths / 10n}.${tenths % 10n}${suffixes[index]}`;
   }
 }
-export function tokenText(value: UsageView): string {
-  if (!value.known) return "— tokens";
-  return `${value.partial ? "≥" : ""}${compact(value.tokens.total())} tokens`;
-}
 function activity(agent: Agent): string {
   if (agent.compacting) return "Compacting";
   if (agent.state === "working" && agent.subagents.waiting) return "Waiting on subagents";

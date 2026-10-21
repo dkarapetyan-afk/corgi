@@ -1,6 +1,6 @@
 /* Layout: two columns of tiles, each a name, one line and a screen. Every
    screen is drawn from frames corgi itself rendered. Colors are
-   src/palette.zig, dark only, like corgi. */
+   src/palette.ts, dark only, like corgi. */
 :root {
   --bg: #181b20;
   --surface: #23282f;

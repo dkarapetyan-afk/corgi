@@ -35,12 +35,6 @@ test("a malformed theme reads as none instead of failing the request", () => {
     expect(protocol.decode("theme", value).theme).toBeNull();
   expect(protocol.decode("theme", { theme: { foreground: { r: 1, g: 2, b: 3 } } }).theme?.foreground?.g).toBe(2);
 });
-test("a reply's err names a rejection a client can switch on", () => {
-  expect(protocol.rejection("StaleLayout")).toBe("StaleLayout");
-  expect(protocol.rejection("GitPushInProgress")).toBe("GitPushInProgress");
-  expect(protocol.rejection("InvalidJson")).toBe("ServerRejected");
-  expect(protocol.rejection("")).toBe("ServerRejected");
-});
 test("the ops that wait for an import, a reload or a push", () => {
   expect(
     protocol.operations

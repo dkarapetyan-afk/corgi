@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
 import { Socket, type SocketConnectOpts } from "node:net";
-import { dlopen, ptr, suffix, FFIType, type Pointer } from "bun:ffi";
+import { dlopen, ptr, suffix, type Pointer } from "bun:ffi";
 import { n } from "./native_ffi";
 import { nativeRoot } from "./native_paths";
 
 export const native = dlopen(`${nativeRoot}/lib/libcorgi_fd.${suffix}`, {
   fd_loop_new: { args: ["ptr"], returns: "ptr" },
   fd_loop_arm: { args: ["ptr", "i32", "u32", "u32"], returns: "i32" },
-  fd_loop_stats: { args: ["ptr", "ptr"], returns: "void" },
   fd_loop_free: { args: ["ptr"], returns: "void" },
-  fd_raw: { args: ["i32"], returns: "i32" },
-  fd_cpu_ns: { args: [], returns: FFIType.u64_fast },
   fd_cloexec: { args: ["i32"], returns: "i32" },
-  fd_try_lock: { args: ["i32"], returns: "i32" },
 }).symbols;
 
 export const READ = 1,
@@ -23,8 +19,6 @@ export class ReadyLoop {
   private socket: Socket;
   private next = 1;
   private callbacks = new Map<number, (events: number) => void>();
-  stale = 0;
-  callbacksRun = 0;
   constructor() {
     const fd = new Int32Array(1);
     this.handle = native.fd_loop_new(ptr(fd))!;
@@ -40,10 +34,7 @@ export class ReadyLoop {
           events = pending.readUInt32LE(offset + 4);
         offset += 8;
         const callback = this.callbacks.get(token);
-        if (callback) {
-          this.callbacksRun++;
-          callback(events);
-        } else this.stale++;
+        if (callback) callback(events);
       }
       pending = pending.subarray(offset);
     });
@@ -70,11 +61,6 @@ export class ReadyLoop {
       },
     };
   }
-  stats() {
-    const out = new BigUint64Array(2);
-    native.fd_loop_stats(this.handle, ptr(out));
-    return { waits: Number(out[0]), events: Number(out[1]), callbacks: this.callbacksRun, stale: this.stale };
-  }
   close() {
     if (!this.handle) return;
     this.callbacks.clear();
@@ -90,7 +76,7 @@ export class AsyncFD {
   private writeWake?: () => void;
   private watch;
   constructor(
-    private loop: ReadyLoop,
+    loop: ReadyLoop,
     readonly fd: number,
   ) {
     this.watch = loop.watch(fd, () => {

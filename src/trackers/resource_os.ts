@@ -25,10 +25,6 @@ export type Host = {
 };
 export type Inventory = { items: Identity[]; truncated: boolean };
 export type Stat = { identity: Identity; ticks: bigint; pages: bigint };
-let native: (request: any) => any = systemCall;
-export function setNative(call: (request: any) => any) {
-  native = call;
-}
 export function parseStat(pid: number, text: string): Stat | null {
   const begin = text.indexOf("("),
     end = text.lastIndexOf(")");
@@ -65,8 +61,7 @@ function linuxStat(pid: number) {
 /** The host's processes; on Linux, only the trees under `roots` when given. */
 export function inventory(roots?: number[]): Inventory {
   if (process.platform === "darwin") {
-    if (!native) throw Error("NativeBoundaryUnavailable");
-    const result = native({ op: "resource.inventory" });
+    const result = systemCall({ op: "resource.inventory" });
     return {
       ...result,
       items: result.items.map((item: any) => ({
@@ -108,8 +103,7 @@ export function field(text: string, key: string): bigint | null {
 }
 export function counters(pid: number): Counters | null {
   if (process.platform === "darwin") {
-    if (!native) return null;
-    const result = native({ op: "resource.counters", pid });
+    const result = systemCall({ op: "resource.counters", pid });
     return result
       ? {
           ...result,
@@ -141,8 +135,7 @@ export function counters(pid: number): Counters | null {
 }
 export function host(): Host {
   if (process.platform === "darwin") {
-    if (!native) throw Error("NativeBoundaryUnavailable");
-    const result = native({ op: "resource.host" });
+    const result = systemCall({ op: "resource.host" });
     return {
       ...result,
       busy: BigInt(result.busy),

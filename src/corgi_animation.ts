@@ -799,9 +799,7 @@ export class Sleep {
     Object.assign(this, fields);
   }
 }
-export const puff_steps = 5,
-  puff_step_ms = 900,
-  puff_duration_ms = 4500,
+export const puff_duration_ms = 4500,
   dream_period_ms = 11000;
 export function pick(sleepers: bigint[], period: bigint, skip: bigint | null): bigint | null {
   let best: bigint | null = null,
@@ -869,7 +867,6 @@ export function writeWag(room: number, now: number, intensity: number, backgroun
   );
 }
 export class Presentation {
-  static reveal_duration_ms = 450;
   static reveal_feather = 3;
   playback = new Playback();
   mode: Mode = "content";

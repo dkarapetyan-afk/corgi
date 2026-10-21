@@ -2,7 +2,7 @@ import { test, expect, spyOn } from "bun:test";
 import { actionNames, failure, providerAlias, paneId, run } from "./main";
 import { specs } from "./action";
 import * as rpc from "./rpc";
-import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve, dirname, relative } from "node:path";
 test("provider named launchers use their original argv0", () => {
   expect(providerAlias("/tmp/codex")).toBe("codex");

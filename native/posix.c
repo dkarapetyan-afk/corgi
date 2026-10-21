@@ -138,10 +138,8 @@ int probe_listen(const char *path) {
 int probe_accept(int fd) { int peer=accept(fd,0,0); if(peer>=0) fcntl(peer,F_SETFD,FD_CLOEXEC); return peer; }
 int probe_pipe(int *fds) { if(pipe(fds)) return -errno; for(int i=0;i<2;i++) fcntl(fds[i],F_SETFD,FD_CLOEXEC); return 0; }
 #ifdef __APPLE__
-#include <sys/resource.h>
 #include <libproc.h>
 #include <sys/sysctl.h>
-#include <mach/mach_time.h>
 #endif
 // Process-group inventory; the provider policy stays in TypeScript.
 int probe_group_pids(int pgid, int *pids, int cap) {
@@ -167,7 +165,7 @@ int probe_group_pids(int pgid, int *pids, int cap) {
     (void)pgid;(void)pids;(void)cap;return -ENOSYS;
 #endif
 }
-// Numeric output: parent PID, process group, start microseconds, CPU ns, footprint.
+// Parent PID, process group and foreground process group.
 int probe_process_job(int pid, int *values) {
 #ifdef __APPLE__
     struct proc_bsdinfo bsd;
@@ -195,12 +193,6 @@ int probe_macos_process(int pid, uint64_t *values, char *cwd, char *exe, char *a
     if(proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&bsd,sizeof(bsd))==sizeof(bsd)) {
         values[0]=bsd.pbi_ppid; values[1]=bsd.pbi_pgid;
         values[2]=bsd.pbi_start_tvsec*1000000ULL+bsd.pbi_start_tvusec; flags|=1;
-    }
-    struct rusage_info_v2 usage;
-    mach_timebase_info_data_t timebase;
-    if(!proc_pid_rusage(pid,RUSAGE_INFO_V2,(rusage_info_t*)&usage) && !mach_timebase_info(&timebase)) {
-        values[3]=(uint64_t)((__uint128_t)(usage.ri_user_time+usage.ri_system_time)*timebase.numer/timebase.denom);
-        values[4]=usage.ri_phys_footprint; flags|=2;
     }
     struct proc_vnodepathinfo path;
     if(proc_pidinfo(pid,PROC_PIDVNODEPATHINFO,0,&path,sizeof(path))==sizeof(path)) {

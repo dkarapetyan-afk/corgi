@@ -1,6 +1,6 @@
 import * as build_id from "./build_id";
 import { accessSync, constants, realpathSync, statSync, readdirSync } from "node:fs";
-import { resolve as absolute, join, isAbsolute } from "node:path";
+import { resolve as absolute, join } from "node:path";
 import { Provider } from "./providers";
 import { PathSearch } from "./os";
 import { testBuild } from "./build_assets";

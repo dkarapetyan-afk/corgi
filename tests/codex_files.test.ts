@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFil
 import { dirname, join } from "node:path";
 import { Runtime } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { registerCase, shellJoin, sleep, tempDir } from "./support";
+import { registerCase, shellJoin, tempDir } from "./support";
 import { A, B, Titles } from "./codex_titles";
 import { Summaries, inferenceProgram, lines } from "./activity_summary";
 import { CodexObserver, TerminalAttachment, write_codex_terminal } from "./provider_sim";

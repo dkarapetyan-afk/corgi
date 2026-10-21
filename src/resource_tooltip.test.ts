@@ -1,8 +1,6 @@
 import { test, expect } from "bun:test";
-import { geometry, aimed, State, draw } from "./resource_tooltip";
+import { geometry, aimed, State } from "./resource_tooltip";
 import { Rect } from "./layout";
-import { Writer } from "./text";
-import { Process, Work, Snapshot } from "./trackers/resources";
 test("resource card stays within terminal bounds", () => {
   for (const cols of [68, 88, 120, 200])
     for (const rows of [24, 30, 40]) {

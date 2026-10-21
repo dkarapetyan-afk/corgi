@@ -109,8 +109,6 @@ class Children extends Titles {
     this.assertEqual(border.slice(border.indexOf("╭"), border.indexOf("╮") + 1).length, 88);
     // Token totals are bold in the palette's strong gray.
     this.assertRegex(frame, new RegExp(`\\x1b\\[1m\\x1b\\[38;2;${PALETTE.strong}m≥?\\d`));
-    writeFileSync("/tmp/corgi-subagents-screen.txt", screen.join("\n"));
-    writeFileSync("/tmp/corgi-subagents-frame.json", JSON.stringify({ cols: 120, rows: 40, frame }));
     for (const hoverY of [y - 1, y]) {
       await a.input(`\x1b[<35;6;${hoverY + 1}M`);
       this.assertNotIn("Including subagents", a.state.data);
@@ -242,8 +240,6 @@ class NativeUsage extends Runtime {
       this.assertRegex(screen_text(frame, 100, 30).join("\n"), /now\s+●\s+\.{1,3}/);
       this.assertNotIn("Total", (await b.poll()).data);
     }
-    writeFileSync("/tmp/corgi-agent-hover-screen.txt", screen_text(frame, 100, 30).join("\n"));
-    writeFileSync("/tmp/corgi-agent-hover-frame.json", JSON.stringify({ cols: 100, rows: 30, frame }));
     await a.input("\x1b[<35;40;10M");
     this.assertNotIn("Total", (await a.poll()).data);
     await a.request({ op: "size", cols: 64, rows: 13 });

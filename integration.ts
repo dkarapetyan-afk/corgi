@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Scope } from "./scripts/process_scope";
 const repo = import.meta.dir;

@@ -37,7 +37,6 @@ export type Result = "none" | "save" | "cancel";
 /** The longest name, in bytes, outside launch commands. */
 export const name_limit = 80;
 const max_length = 2048;
-const capacity = 4096;
 /** C0 and C1 controls and DEL, which a folder's name may hold and the
  * terminal would act on. */
 const controls = /[\x00-\x1f\x7f-\x9f]/g;

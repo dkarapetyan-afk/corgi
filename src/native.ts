@@ -75,7 +75,6 @@ export class Session {
   attachment = new Attachment();
   members: Actor[] = [];
   requests_released = false;
-  invalid_json_logged = false;
   input: Buffer = Buffer.alloc(0);
   output: Buffer = Buffer.alloc(0);
   deferred: Buffer = Buffer.alloc(0);
@@ -398,7 +397,6 @@ export class Session {
     try {
       value = json.parse(line);
     } catch {
-      this.invalid_json_logged = true;
       return false;
     }
     const method = this.provider === "codex" ? str(value, "method") : "";

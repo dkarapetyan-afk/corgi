@@ -18,7 +18,7 @@ import {
 } from "./new_workspace";
 import { printable } from "./name_dialog";
 import { Writer } from "./text";
-import { Style, bgRgb, colors, fgRgb, mix } from "./palette";
+import { bgRgb, colors, fgRgb, mix } from "./palette";
 
 const c = (s: string) => s.charCodeAt(0);
 const tree: Record<string, string[]> = {

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Counts, Window as ActivityWindow, Tracker } from "./tokens";
-import { Tokens, Codex, Meter, View } from "./live";
+import { Tokens, Codex, View } from "./live";
 import { Reading, Points, View as ContextView } from "./context_window";
 import { lookup, equivalent } from "./prices";
 import { limits, Window, claudeAccount, codexAccount } from "./account";

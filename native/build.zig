@@ -8,8 +8,6 @@ pub fn build(b: *std.Build) void {
     const ghostty = b.dependency("ghostty", .{ .target = target, .optimize = optimize, .simd = false, .@"emit-lib-vt" = true });
     const opts = b.addOptions();
     opts.addOption(bool, "check_leaks", false);
-    opts.addOption(bool, "viewer_test_driver", false);
-    opts.addOption(bool, "test_build", false);
 
     // Terminal emulation, frame diffs, keyboard encoding and process probes.
     const pane = b.createModule(.{ .root_source_file = b.path("zig/pane.zig"), .target = target, .optimize = optimize, .link_libc = true });

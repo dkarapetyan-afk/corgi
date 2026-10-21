@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, openSync, readFileSync, writeSync, ftruncateSync, fsyncSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { flock } from "../native_bridge";
-import { Info, Window, expired, restoreLimits } from "./account";
+import { Info, expired, restoreLimits } from "./account";
 import { Text } from "../providers/common";
 import { parse, stringify } from "../json";
 export const interval = 60,
@@ -10,8 +10,6 @@ export const interval = 60,
 export class State {
   info = new Info();
   next_usage = 0;
-  next_profile = 0;
-  rate_limited = false;
   update(fresh: Info, now: number) {
     const previous = this.info;
     this.info = Object.assign(new Info(), fresh);
@@ -23,19 +21,12 @@ export class State {
   }
   display(now: number) {
     const result = Object.assign(new Info(), this.info);
-    if (this.rate_limited && !result.usage_error.len) result.usage_error = new Text("server returned 429");
     if (typeof result.limits === "object" && expired(result.usage_fetched_at, now) && !result.usage_error.len)
       result.usage_error = new Text(result.usage_fetched_at <= 0 ? "fetch time unknown" : "last success 10m+ ago");
-    else if (result.limits === "none" && this.rate_limited) result.limits = "rate_limited";
     return result;
   }
   failed(reason: string) {
-    this.rate_limited = false;
     this.info.usage_error = new Text(reason);
-  }
-  failedResponse(status: number) {
-    this.failed(status ? `server returned ${status}` : "request failed");
-    this.rate_limited = status === 429;
   }
 }
 function lock(fd: number, operation: number) {
@@ -43,7 +34,8 @@ function lock(fd: number, operation: number) {
 }
 
 function restoreState(value: any) {
-  const state = Object.assign(new State(), value);
+  const state = new State();
+  state.next_usage = typeof value.next_usage === "number" ? value.next_usage : 0;
   state.info = Object.assign(new Info(), value.info ?? {});
   for (const key of ["account", "plan", "usage_error"] as const)
     state.info[key] = new Text(typeof value.info?.[key] === "string" ? value.info[key] : "");
@@ -102,39 +94,3 @@ export function Locked<T extends object>(
   };
 }
 export const Cache = Locked(() => new State(), "account-previews", restoreState);
-export type Response = {
-  status: number;
-  retry_at: number | null;
-  body: string;
-};
-export function response(bytes: string, now: number): Response {
-  let rest = bytes,
-    result: Response = { status: 0, retry_at: null, body: "" };
-  while (rest.startsWith("HTTP/")) {
-    const end = rest.indexOf("\r\n\r\n");
-    if (end < 0) return { status: 0, retry_at: null, body: "" };
-    const lines = rest.slice(0, end).split("\r\n"),
-      status = Number(lines.shift()?.split(" ")[1]);
-    result = {
-      status: Number.isInteger(status) && status >= 0 && status <= 65535 ? status : 0,
-      retry_at: null,
-      body: "",
-    };
-    for (const line of lines) {
-      const colon = line.indexOf(":");
-      if (colon < 0 || line.slice(0, colon).toLowerCase() !== "retry-after") continue;
-      const value = line.slice(colon + 1).trim();
-      if (/^\d+$/.test(value) && Number(value) <= 0xffffffff) result.retry_at = now + Number(value);
-      else {
-        const parsed = Date.parse(value) / 1000;
-        if (Number.isFinite(parsed) && parsed > now) result.retry_at = parsed;
-      }
-    }
-    rest = rest.slice(end + 4);
-  }
-  result.body = rest;
-  return result;
-}
-export function nextAttempt(reply: Response, now: number) {
-  return reply.status === 429 ? Math.max(now + interval, reply.retry_at ?? now + cooldown) : now + interval;
-}

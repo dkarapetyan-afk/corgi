@@ -1,5 +1,5 @@
 import { Text } from "../providers/common";
-import { View, Tokens } from "../usage/live";
+import { View } from "../usage/live";
 import { sub } from "../usage/tokens";
 export type Point = { at: number; label: Text; usage: View };
 export class Timeline {

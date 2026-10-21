@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { EXE, Pty, quote, registerCase, shellJoin, sleep, writeExecutable } from "./support";
+import { EXE, Pty, quote, registerCase, shellJoin, writeExecutable } from "./support";
 
 class Links extends Runtime {
   async setUp() {

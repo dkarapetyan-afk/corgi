@@ -1,6 +1,6 @@
 /** Real viewer launch controls and read-only agent previews. */
-import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { registerCase, writeExecutable, shellJoin, quote, sleep, EXE, ROOT, JsonSocket } from "./support";
 import { Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";

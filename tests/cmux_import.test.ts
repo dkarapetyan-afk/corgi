@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { registerCase, TestCase, writeExecutable, ROOT } from "./support";
 import { screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";

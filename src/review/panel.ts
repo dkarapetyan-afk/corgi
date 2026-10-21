@@ -2670,9 +2670,3 @@ function age(seconds: number): string {
   if (seconds < 86400 * 2) return `${Math.round(seconds / 3600)} h`;
   return `${Math.round(seconds / 86400)} d`;
 }
-function ago(seconds: number): string {
-  if (seconds < 90) return "just now";
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 86400 * 2) return `${Math.round(seconds / 3600)} h ago`;
-  return `${Math.round(seconds / 86400)} days ago`;
-}

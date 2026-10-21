@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { registerCase, run, shellJoin } from "./support";
+import { registerCase, run } from "./support";
 import { Runtime } from "./runtime";
 import { Viewer } from "./viewer_client";
 import { fixture } from "./ports";

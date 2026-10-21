@@ -1,8 +1,8 @@
 import * as clock from "./clock";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { Model, Tab } from "./layout";
-import type { Axis, PaneId } from "./layout";
+import type { Axis } from "./layout";
 import { Store, Workspace } from "./workspace";
 import { Provider, byProvider, Text, validRef } from "./providers";
 import { Agent } from "./agents";
@@ -17,7 +17,6 @@ import * as keys from "./keys";
 import * as trackers from "./trackers";
 import { Model as AgentModel } from "./providers/model";
 import { Status as InferenceStatus } from "./inference/setup";
-import { label as paneLabel } from "./pane/label";
 import type { Target } from "./agent_order";
 import { Briefs } from "./worktree_briefs";
 export type Create = {

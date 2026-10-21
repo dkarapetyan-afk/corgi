@@ -67,7 +67,7 @@ export async function run(
       `Command timed out: ${argv[0]}`,
     );
     if (options.check !== false) assert.equal(code, 0, `${shellJoin(argv)}: ${code}\n${err}\n${out}`);
-    return { stdout: out, stderr: err, code, returncode: code };
+    return { stdout: out, stderr: err, code };
   } catch (error) {
     proc.kill("SIGKILL");
     await proc.exited;
@@ -124,7 +124,7 @@ export class JsonSocket {
   socket!: Socket;
   lines = new Lines();
   closed = false;
-  static async connect(path: string) {
+  static async connect(path: string, timeout = 3000) {
     const client = new JsonSocket();
     client.socket = createConnection(path);
     client.socket.setEncoding("utf8");
@@ -143,7 +143,7 @@ export class JsonSocket {
           client.socket.once("connect", resolve);
           client.socket.once("error", reject);
         }),
-        3000,
+        timeout,
         `Socket connect timed out: ${path}`,
       );
     } catch (error) {
@@ -299,9 +299,6 @@ export class TestCase {
   }
   assertLessEqual(a: any, b: any, message?: unknown) {
     assert.ok(a <= b, (message as string) ?? `${a} > ${b}`);
-  }
-  assertAlmostEqual(a: number, b: number, places = 7, message?: unknown) {
-    assert.ok(Math.abs(a - b) < 10 ** -places, message as string);
   }
   assertRegex(value: string, expression: string | RegExp, message?: unknown) {
     assert.match(value, typeof expression === "string" ? new RegExp(expression) : expression, message as string);

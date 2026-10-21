@@ -1,4 +1,4 @@
-import { BoundedText, Path, truncateUtf8, ascii } from "./bounded_text";
+import { BoundedText, Path, ascii } from "./bounded_text";
 import path from "node:path";
 import * as observation from "./observation";
 import { Provider, str } from "./providers";

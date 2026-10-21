@@ -67,7 +67,6 @@ class Worktrees extends Runtime {
     // The untracked file's one line.
     this.assertIn("1 file  +1 −0", screen);
     this.assertNotIn("Summary", frame);
-    writeFileSync("/tmp/corgi-worktree-table-screen.txt", screen);
     await a.input("\x1b[27u");
     this.assertNotIn("Compared with local main", (await a.poll()).data);
     this.assertIn("2 worktrees", a.state.data);

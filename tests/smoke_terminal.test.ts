@@ -1,7 +1,7 @@
 /** Terminal, hook, native-session, and executable-discovery regressions. */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import {
   deadline,
   EXE,
@@ -708,7 +708,6 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     const before = await pty.settings();
     pty.start([EXE], { env: this.env, cwd: this.temp.name });
     await pty.waitFor("workspaces", 4000);
-    const offset = pty.output.length;
     pty.write(keys);
     this.assertEqual(await deadline(pty.proc.exited, 4000, "Corgi did not detach"), 0);
     await sleep(0.1);

@@ -45,7 +45,7 @@ import {
   type Workspace,
   type Native,
 } from "./mirror";
-import { parse as parseAction, needsPane, type Action } from "./action";
+import { needsPane, type Action } from "./action";
 import * as corgiBadge from "./corgi_badge";
 import * as forkMotion from "./fork_motion";
 import * as newWorkspace from "./new_workspace";
@@ -81,7 +81,6 @@ import * as summaries from "./review/summaries";
 import * as subagentTooltip from "./subagent_tooltip";
 import * as viewerNative from "./viewer_native";
 import { Provider } from "./providers";
-import { rank } from "./agent_order";
 import { sat, byteLength, type Writer } from "./text";
 import * as errors from "./errors";
 import * as moonlanderTerminal from "./moonlander_terminal";
@@ -2334,20 +2333,6 @@ export class Controller {
     this.cancelDividers();
     this.selection = null;
     this.dirty = true;
-  }
-  private async newAgentShortcut(): Promise<void> {
-    const launch = this.agent_launcher;
-    if (launch) {
-      if (launch.pinned) {
-        await this.launchRow(launch.selected);
-        return;
-      }
-      launch.pinned = true;
-      this.dirty = true;
-      return;
-    }
-    this.sidebar_open = true;
-    this.openLauncher(true);
   }
   private moveLauncher(next: boolean, wrap: boolean): void {
     const launch = this.agent_launcher;

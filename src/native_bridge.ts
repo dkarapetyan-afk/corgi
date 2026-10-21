@@ -1,5 +1,4 @@
 import { dlopen, ptr, suffix, FFIType, type Pointer } from "bun:ffi";
-import { resolve } from "node:path";
 import { processArgs as readProcessArgs, processCwd } from "./os";
 import { n } from "./native_ffi";
 import * as json from "./json";

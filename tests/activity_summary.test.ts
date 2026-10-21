@@ -1,5 +1,4 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { registerCase, sleep } from "./support";
 import { Viewer } from "./viewer_client";
 import { screen_text, EXE } from "./runtime";
@@ -465,7 +464,6 @@ class SummaryCases extends Summaries {
         rows.findIndex(r => r.includes(label) && (r.includes("○") || r.includes("●"))),
       );
       this.assertEqual(positions, [positions[0], positions[0] + 1, positions[0] + 2]);
-      writeFileSync("/tmp/corgi-timeline-frame.json", JSON.stringify({ cols: 100, rows: 30, frame }));
       await viewer.request({ op: "badge", visible: true });
       await viewer.input("\x1b[<35;3;1M");
       await viewer.advance(0.6);
@@ -485,7 +483,6 @@ class SummaryCases extends Summaries {
       this.assertRegex(systemRow, /Corgi \(Activity summarizer\)\s+GPT-6 Luna\s+1\.2k\s+1\.8k\s+1\.2k/);
       this.assertRegex(agentRow, /codex · \S+\s+—\s+6\.9k\s+7\.8k/);
       this.assertNotIn("tracked sessions", overview);
-      writeFileSync("/tmp/corgi-overview-frame.json", JSON.stringify({ cols: 100, rows: 30, frame: overview }));
       await viewer.request({ op: "badge", visible: false });
       frame = await hover(100, 30);
       await viewer.poll();

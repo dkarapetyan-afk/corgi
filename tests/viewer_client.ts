@@ -8,7 +8,6 @@ export class Viewer {
   closed = false;
   proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   private lines = new Lines();
-  private stderr: Promise<string>;
   private reader: Promise<void>;
   private queue = Promise.resolve();
   private constructor(public test: any) {
@@ -19,7 +18,7 @@ export class Viewer {
       stdout: "pipe",
       stderr: "pipe",
     }));
-    const stderr = (this.stderr = new Response(proc.stderr).text());
+    const stderr = new Response(proc.stderr).text();
     this.reader = (async () => {
       const decoder = new TextDecoder();
       try {

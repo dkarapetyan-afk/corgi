@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { Agent, Provider, Text, type State } from "./agents";
 import { n, ptr, processArgs } from "./native_bridge";
 import { processJob, processTree, processArgs as readProcessArgs } from "./os";
@@ -132,11 +132,6 @@ export function claudeComposer(screen: string) {
   if (/esc to cancel|enter to select|enter to confirm|enter to submit/.test(tail(screen))) return "unknown";
   return "open";
 }
-export const Composer = {
-  open: "open",
-  covered: "covered",
-  unknown: "unknown",
-} as const;
 export class PromptWatch {
   seen = false;
   covered = 0;

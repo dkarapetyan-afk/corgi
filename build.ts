@@ -1,4 +1,4 @@
-import { resolve, basename } from "node:path";
+import { basename } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 const root = import.meta.dir;

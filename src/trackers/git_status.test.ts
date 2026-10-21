@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Tracker, command, clean, parseCommits, Commits } from "./git_status";
+import { Tracker, clean, parseCommits, Commits } from "./git_status";
 import { Store, Workspace } from "../workspace";
 import { Ref } from "./git_push";
 import { execFile } from "node:child_process";

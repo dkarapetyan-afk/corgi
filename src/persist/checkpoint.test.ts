@@ -345,7 +345,7 @@ test("compact checkpoint preserves screens input modes cursor and title without 
     expect(next.bracketed_paste).toBe(true);
     expect(after.surface.cursor).toEqual(before.surface.cursor);
     expect(next.title).toBe("agent title");
-    expect(next.native({ op: "info" }).pending.length).toBe(0);
+    expect(next.pendingBytes).toBe(0);
     expect(next.text()).toContain("alternate");
     next.feed("\x1b[?1049l");
     expect(next.text()).toContain("primary history");

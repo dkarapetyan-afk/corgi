@@ -99,32 +99,6 @@ export function writeSanitized(w: Writer, value: string, room: number): void {
   }
   writeEllipsis(w, clean, room);
 }
-/** Keep the root and the longest whole-component suffix that fits. */
-export function writeDirectory(w: Writer, path: string, room: number): void {
-  if (displayWidth(path) <= room) return w.write(path);
-  const prefix = path.startsWith("~/") ? "~/.../" : path.startsWith("/") ? "/.../" : ".../";
-  if (room <= prefix.length) return writeClipped(w, path, room);
-  let tail = path;
-  for (;;) {
-    const slash = tail.indexOf("/");
-    if (slash < 0) break;
-    tail = tail.slice(slash + 1);
-    if (prefix.length + displayWidth(tail) <= room) {
-      w.write(prefix);
-      return w.write(tail);
-    }
-  }
-  w.write(prefix);
-  // A single oversized filename still keeps its end and complete codepoints.
-  let width = displayWidth(tail);
-  while (tail.length > 0 && width > room - prefix.length - 1) {
-    const cp = tail.codePointAt(0)!;
-    width -= codepointWidth(cp);
-    tail = tail.slice(cp > 0xffff ? 2 : 1);
-  }
-  w.write("…");
-  w.write(tail);
-}
 /** Fits a path in `room` columns: its first two components, then the last,
  * then as many between as fit, nearest the last first, with one "…" for the
  * rest. The second component goes before the last is cut. An absolute path's

@@ -5,7 +5,7 @@ import { Timeline } from "./activity/timeline";
 import { View, Codex as NativeMeter } from "./usage/live";
 import { Reading, Points } from "./usage/context_window";
 import { Claude } from "./providers/claude";
-import { Agent, Provider, Text, type Presence, type State } from "./agents";
+import { Agent, Provider, Text, type Presence } from "./agents";
 import type { Outcome } from "./observation";
 import { Model } from "./providers/model";
 import { PromptWatch, claudeRunning } from "./detection";

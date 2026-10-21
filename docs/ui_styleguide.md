@@ -7,6 +7,7 @@ The palette and status tables below describe the current implementation.
 ## Design principles
 
 - Make the task, current focus, and next action apparent at a glance.
+- Minimize required input. Infer context and offer sensible defaults.
 - Support both keyboard and mouse use. Neither should feel like a fallback.
 - Use spacing, alignment, gray steps, and bold to establish hierarchy.
   Reserve color for meaning; pair status color with a glyph or label.
@@ -33,6 +34,10 @@ The palette and status tables below describe the current implementation.
 
 ## Keyboard and mouse interaction
 
+- Keep basic actions in one form, with optional settings outside the required
+  path. Submitting completes the action without another configuration prompt.
+- Keep renaming scoped to the name; do not follow it with a folder prompt.
+- Save workspace names, default folders, and selection automatically.
 - Make primary actions reachable from the keyboard and visible mouse targets.
   Route both through the same action so their effects and validation agree.
 - Show a few relevant shortcuts beside actions or in a footer. Use the current

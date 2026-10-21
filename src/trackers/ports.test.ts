@@ -1,7 +1,6 @@
 import { test, expect } from "bun:test";
 import {
   procSockets,
-  procInventory,
   type Socket,
   Snapshot,
   kind,

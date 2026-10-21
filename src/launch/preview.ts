@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Provider, byProvider, Text } from "../providers";
 import { Model } from "../providers/model";
-import { Info, codexAccount, limits, serializeLimits } from "../usage/account";
+import { Info, serializeLimits } from "../usage/account";
 import { none, update as updateLimitHistory } from "../usage/limits";
 import { Pool } from "../inference";
 import { Client } from "../providers/claude/account";

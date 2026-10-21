@@ -315,8 +315,6 @@ class Resources extends Runtime {
     this.assertIn("TOP PROCESSES", viewer.state.data);
     this.assertEqual(viewer.state.pane, pane);
     await this.until(async () => (await this.session()).resources.interval_ms === 1000, 5);
-    writeFileSync("/tmp/corgi-resource-screen.ansi", viewer.state.data);
-    writeFileSync("/tmp/corgi-resource-screen.txt", screen_text(viewer.state.data, 120, 40).join("\n"));
     await viewer.input("\x1b[<35;118;38M");
     this.assertNotIn("TOP PROCESSES", viewer.state.data);
     this.assertNotIn(hover, viewer.state.data);

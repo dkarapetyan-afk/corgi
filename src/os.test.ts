@@ -29,10 +29,10 @@ test("the login shell comes from the account database, not SHELL", () => {
 test("a process's own arguments, executable and environment are readable", () => {
   const buf = Buffer.alloc(1024 * 1024),
     bare = processArgs(process.pid, buf)!;
-  expect(bare.argc).toBeGreaterThan(0);
+  expect(bare.args().length).toBeGreaterThan(0);
   expect(bare.complete).toBe(true);
   expect(bare.exe).toBe("");
-  expect(bare.env_len).toBe(0);
+  expect(bare.environ()).toHaveLength(0);
   const full = processArgs(process.pid, buf, { env: true })!;
   expect(full.complete).toBe(true);
   expect(full.exe.length).toBeGreaterThan(0);

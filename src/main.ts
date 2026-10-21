@@ -1,6 +1,6 @@
 import * as protocol from "./protocol";
 import { basename, dirname, resolve } from "node:path";
-import { mkdirSync, openSync, closeSync, readFileSync, unlinkSync, existsSync } from "node:fs";
+import { mkdirSync, openSync, closeSync, readFileSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import * as os from "./os";
 import * as rpc from "./rpc";

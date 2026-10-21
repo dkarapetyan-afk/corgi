@@ -98,7 +98,7 @@ export function processPath(pid: number, buffer: Uint8Array = Buffer.alloc(max_p
     }
   }
   if (process.platform !== "darwin" || !buffer.length) return null;
-  const values = new BigUint64Array(5),
+  const values = new BigUint64Array(3),
     cwd = Buffer.alloc(buffer.length),
     args = Buffer.alloc(buffer.length),
     exe = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -108,10 +108,8 @@ export function processPath(pid: number, buffer: Uint8Array = Buffer.alloc(max_p
 }
 export class ProcessArgs {
   argv: string[] = [];
-  argc = 0;
   exe = "";
   env: string[] = [];
-  env_len = 0;
   complete = false;
   args() {
     return this.argv;
@@ -120,10 +118,7 @@ export class ProcessArgs {
     return this.env;
   }
   addEnv(entry: string) {
-    if (entry && this.env.length < 512) {
-      this.env.push(entry);
-      this.env_len = this.env.length;
-    }
+    if (entry && this.env.length < 512) this.env.push(entry);
   }
 }
 export function processArgs(
@@ -155,8 +150,7 @@ export function processArgs(
       if (out.argv.length < 256) out.argv.push(bytes.toString("utf8", at, end));
       at = end + 1;
     }
-    out.argc = out.argv.length;
-    out.complete = out.argc === argc;
+    out.complete = out.argv.length === argc;
     if (want.env && seen === argc)
       while (at < len) {
         const end = bytes.indexOf(0, at);
@@ -177,7 +171,6 @@ export function processArgs(
     const whole = len < area.length && area[len - 1] === 0,
       argv = area.toString("utf8", 0, whole ? len - 1 : len).split("\0");
     out.argv = argv.slice(0, 256);
-    out.argc = out.argv.length;
     out.complete = whole && argv.length <= 256;
     if (want.env) {
       const rest = bytes.subarray(size, bytes.length - max_path_bytes),

@@ -19,7 +19,7 @@ curl -fsSL https://corgi.computer/install.sh | bash
 4. Choose **Detach** in the shortcut menu to leave processes running.
 5. Run `corgi` again to reconnect.
 
-See the [documentation](docs/README.md) for setup, workspaces and troubleshooting.
+See the [documentation](docs/reference.md) for setup, workspaces and troubleshooting.
 
 ## Uninstall
 

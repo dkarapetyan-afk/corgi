@@ -25,12 +25,9 @@ export function defaultModel(value: any): string {
 }
 export class Client {
   session: Control | null = null;
-  cursor = 0n;
-  next_id = 0n;
   identity: string | null = null;
   account = new Info();
   next_auth = 0;
-  next_usage = 0;
   /** The model Claude Code runs when none is configured, as its picker
    * resolves "default"; empty until read. */
   default_model = new Text();
@@ -38,7 +35,6 @@ export class Client {
   close() {
     this.session?.close();
     this.session = null;
-    this.cursor = 0n;
   }
   async preview(stopping?: any, quit?: Quit) {
     try {
@@ -91,7 +87,6 @@ export class Client {
       if (this.identity !== identity) {
         this.close();
         this.identity = identity;
-        this.next_usage = 0;
         this.default_model = new Text();
         this.default_checked = false;
       }

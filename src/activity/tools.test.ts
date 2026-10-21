@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { Tracker, Call } from "./tools";
 import { parseLabel } from "./summary";
 import * as prompt from "./prompt";
-import { Children, Inventory, Ended, classify } from "./background_tasks";
+import { Children, Inventory, classify } from "./background_tasks";
 test("completed tools are deduplicated, historical calls do not advance waves, and turns reset", () => {
   const t = new Tracker(),
     call = {

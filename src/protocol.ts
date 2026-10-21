@@ -536,39 +536,6 @@ const requests = {
   },
   "test.advance": { ms: "i64" },
 } as const satisfies Partial<Record<Op, Fields>>;
-const rejections = new Set([
-  "StaleLayout",
-  "NoPane",
-  "AmbiguousViewer",
-  "NoViewer",
-  "UnsupportedViewerProtocol",
-  "UnsupportedProtocol",
-  "ProtocolRequired",
-  "GitPreviewChanged",
-  "GitPushInProgress",
-  "ReloadInProgress",
-  "NoWorkspace",
-  "NothingToPush",
-  "TooManyPushes",
-  "NoWorktree",
-  "WorktreeLocked",
-  "WorktreeInUse",
-  "WorktreeRemoveFailed",
-  "WorktreeRemoving",
-  "WorktreeAddFailed",
-  "BranchExists",
-  "FolderExists",
-  "InvalidBranch",
-  "BranchesUnavailable",
-  "AgentBusy",
-  "RenameUnavailable",
-  "NoConversation",
-  "InvalidName",
-  "ShellNotFound",
-]);
-export function rejection(name: string): string {
-  return rejections.has(name) ? name : "ServerRejected";
-}
 /** JSON replies contain values and serialized fields, never class methods. */
 export type Wire<T> = unknown extends T ? T : T extends { toJSON(): infer Value } ? WireFields<Value> : WireFields<T>;
 type WireFields<T> = unknown extends T

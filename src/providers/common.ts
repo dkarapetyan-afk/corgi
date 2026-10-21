@@ -105,22 +105,6 @@ export function nativeEvent(fields: Partial<NativeEvent> = {}): NativeEvent {
     ...fields,
   };
 }
-export const HookEvent = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "PermissionRequest",
-  "PreCompact",
-  "PostCompact",
-  "Stop",
-  "Interrupt",
-  "SessionEnd",
-  "Notification",
-  "SubagentStart",
-  "SubagentStop",
-] as const;
 export type Hook = ReturnType<Hooks["decode"]>;
 /** Where Claude's EnterWorktree and ExitWorktree report moving the session. */
 const moves: Record<string, string> = { EnterWorktree: "worktreePath", ExitWorktree: "restoredCwd" };

@@ -1,9 +1,8 @@
 import { parse } from "./json";
-/** Flat shared layout; mirrors src/layout.zig. */
+/** Flat shared layout. */
 export const max_workspaces = 32,
   /** Most panes one tab or one import holds; the runtime keeps no total. */
-  max_panes = 64,
-  max_borders = 67;
+  max_panes = 64;
 export type PaneId = number;
 export const PaneId = { none: 0, first: 1, next: (id: number) => id + 1 };
 export type TabId = number;

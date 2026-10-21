@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { sleep, shellJoin, run } from "./support";
+import { shellJoin, run } from "./support";
 import { CodexObserver, TerminalAttachment, write_codex_terminal } from "./provider_sim";
 
 export const A = "01901234-1234-1234-1234-123456789abc";

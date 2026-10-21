@@ -1,4 +1,3 @@
-import { dirname, join } from "node:path";
 import { Provider, byProvider } from "../providers";
 import type { ByProvider } from "../providers";
 import * as settings from "../settings";

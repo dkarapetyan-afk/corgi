@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, PALETTE, screen_text } from "./runtime";
-import { registerCase, run, quote, sleep, writeExecutable } from "./support";
+import { registerCase, run, quote, writeExecutable } from "./support";
 
 import { CodexObserver, write_codex_terminal } from "./provider_sim";
 

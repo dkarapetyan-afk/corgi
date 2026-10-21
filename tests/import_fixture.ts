@@ -1,7 +1,6 @@
-import { createConnection } from "node:net";
-import { existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXE, sleep, tempDir } from "./support";
+import { EXE, JsonSocket, sleep, tempDir } from "./support";
 
 const removePrefixes = [
   "CORGI_",
@@ -81,37 +80,14 @@ export class ImportFixture {
 
   async exchange(path: string, message: Record<string, unknown>, timeoutMs = 3000): Promise<any> {
     if (!path.startsWith(this.root + "/")) throw new Error(`socket outside test fixture: ${path}`);
-    return new Promise((resolve, reject) => {
-      const client = createConnection(path);
-      let response = "";
-      const timer = setTimeout(() => {
-        client.destroy();
-        reject(new Error("RPC timeout"));
-      }, timeoutMs);
-      client.on("connect", () => client.write(JSON.stringify(message) + "\n"));
-      client.on("data", chunk => {
-        response += chunk.toString();
-        if (response.includes("\n")) {
-          clearTimeout(timer);
-          client.end();
-          try {
-            resolve(JSON.parse(response.slice(0, response.indexOf("\n"))));
-          } catch (error) {
-            reject(error);
-          }
-        }
-      });
-      client.on("error", error => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      client.on("end", () => {
-        if (!response.includes("\n")) {
-          clearTimeout(timer);
-          reject(new Error("RPC socket closed"));
-        }
-      });
-    });
+    const end = Date.now() + timeoutMs;
+    const client = await JsonSocket.connect(path, timeoutMs);
+    try {
+      client.send(message);
+      return await client.read(Math.max(0, end - Date.now()));
+    } finally {
+      client.close();
+    }
   }
 
   async until<T>(predicate: () => Promise<T> | T, timeoutSeconds = 8): Promise<T> {

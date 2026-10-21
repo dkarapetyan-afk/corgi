@@ -12,17 +12,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
-#include <termios.h>
-#include <time.h>
 #include <fcntl.h>
-#include <sys/file.h>
 
 // The thread reports readiness only; JS owns every application byte.
 struct fd_loop {
     int epoll, wake, notify;
     pthread_t thread;
     atomic_int stop;
-    atomic_uint_fast64_t waits, events;
 };
 struct notification { uint32_t token, events; };
 
@@ -36,7 +32,6 @@ static void *run(void *context) {
     struct epoll_event events[64];
 #endif
     while (!atomic_load(&loop->stop)) {
-        atomic_fetch_add(&loop->waits, 1);
 #ifdef __APPLE__
         int count = kevent(loop->epoll, NULL, 0, events, 64, NULL);
 #else
@@ -52,7 +47,6 @@ static void *run(void *context) {
             uint32_t token = events[i].data.u32, ready = events[i].events;
 #endif
             if (!token || atomic_load(&loop->stop)) return NULL;
-            atomic_fetch_add(&loop->events, 1);
             struct notification event = {token, ready};
             const char *data = (const char *)&event;
             size_t offset = 0;
@@ -124,12 +118,6 @@ int fd_loop_arm(void *context, int fd, uint32_t token, uint32_t interests) {
 #endif
 }
 
-void fd_loop_stats(void *context, uint64_t *out) {
-    struct fd_loop *loop = context;
-    out[0] = atomic_load(&loop->waits);
-    out[1] = atomic_load(&loop->events);
-}
-
 void fd_loop_free(void *context) {
     struct fd_loop *loop = context;
     atomic_store(&loop->stop, 1);
@@ -150,18 +138,4 @@ void fd_loop_free(void *context) {
     free(loop);
 }
 
-int fd_raw(int fd) {
-    struct termios attr;
-    if (tcgetattr(fd, &attr)) return -errno;
-    cfmakeraw(&attr);
-    return tcsetattr(fd, TCSANOW, &attr) ? -errno : 0;
-}
-
-uint64_t fd_cpu_ns(void) {
-    struct timespec value;
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &value);
-    return (uint64_t)value.tv_sec * 1000000000ULL + value.tv_nsec;
-}
-
 int fd_cloexec(int fd) { return fcntl(fd, F_SETFD, FD_CLOEXEC); }
-int fd_try_lock(int fd) { return flock(fd, LOCK_EX | LOCK_NB) ? -errno : 0; }

@@ -87,8 +87,6 @@ function encode(rows: Cell[][]): Runs {
   });
 }
 const made = new Map<string, Runs | Runs[]>();
-/** Frames the page can't take yet, and why: they stay as the page has them. */
-const HELD: Record<string, string> = {};
 function keep(name: string, cells: Cell[][] | Cell[][][], ansi?: string) {
   const list = Array.isArray(cells[0]?.[0]?.[0]);
   made.set(name, list ? (cells as Cell[][][]).map(encode) : encode(cells as Cell[][]));
@@ -101,7 +99,6 @@ const ms = milliTimestamp(),
   secs = Math.floor(ms / 1000),
   minute = 60_000,
   day = 86_400,
-  GiB = 1 << 30,
   MiB = 1 << 20;
 type Usage = { known: true; tokens?: { input: number; cached_input: number; output: number } };
 const tokens = (input: number, cached: number, output: number): Usage => ({
@@ -724,8 +721,8 @@ function watchFrames() {
                     keep(`${pre}card_C3_0p`, cardCells(out.buffered(), phone), out.buffered());
                   }
                 }
-                // The pointer on moonlander's link: only the URL chip on the bottom row differs.
-                if (unread === 1 && ahead && !focused && !read) {
+                // The shared URL chip, with the pointer on moonlander's link.
+                if (!phone && corgi && width === WIDTHS[0] && unread === 1 && ahead && !focused && !read) {
                   const side = sidebar.View.init(win, ROWS, true, 0, s.entries.length)
                     .withWidth(width)
                     .withWorkspaces(s.workspaces.length, 0)
@@ -936,13 +933,17 @@ function pickerFrames() {
     keep(name, grid(out, PICK.cols, PICK.rows), out);
   };
   (["codex", "claude", "custom0", "terminal"] as Row[]).forEach((row, i) => draw(launcher(row), `launcher${i}`));
-  ["", "fl", "zzz", ""].forEach((query, i) => {
+  for (const [i, query] of [
+    [0, ""],
+    [1, "fl"],
+    [3, ""],
+  ] as const) {
     const menu = launcher("claude");
     if (i === 3) menu.resume_view.focused = true;
     else menu.resume_view.startSearch();
     for (const ch of query) menu.resume_view.query.key(ch.charCodeAt(0));
     draw(menu, `search${i}`);
-  });
+  }
   // The restoring card each conversation opens behind, centered on the
   // picker's pane, wide and on a phone, as its dig ends. The dig is the one row
   // that moves; the page plays it over the card from a flipbook per card width.
@@ -1628,12 +1629,7 @@ for (const [name, frames] of made) {
 const missing = Object.keys(data.frames).filter(k => !made.has(k));
 console.log(`${made.size} frames, ${changed} changed${missing.length ? `; not made here: ${missing.join(", ")}` : ""}`);
 if (writes) {
-  // Frames this run no longer makes go, unless held.
-  data.frames = Object.fromEntries([
-    ...[...made].filter(([name]) => !HELD[name]),
-    ...Object.keys(HELD).map(name => [name, data.frames[name]]),
-  ]);
-  for (const [name, why] of Object.entries(HELD)) console.log(`kept the page's ${name}: ${why}`);
+  data.frames = Object.fromEntries(made);
   data.resources = resources;
   data.widths = widthRanges();
   data.review = review;

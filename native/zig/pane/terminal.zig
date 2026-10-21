@@ -33,8 +33,6 @@ pub const Terminal = struct {
     title_revision: u64 = 0,
     exited: bool = false,
     exit_status: c_int = 0,
-    /// Started a program rather than a shell, so the pane ends with it.
-    runs_command: bool = false,
     pending: std.ArrayList(u8) = .empty,
     /// The text the program last copied with OSC 52, until the daemon
     /// passes it to a viewer.
@@ -67,9 +65,6 @@ pub const Terminal = struct {
     }
     const synchronized_timeout_ms = 1000;
 
-    pub fn emulator(t: *Terminal) *vt.Terminal {
-        return &t.vt;
-    }
     pub fn hyperlinks(t: *Terminal) []const hyperlink.Link {
         return t.links.links;
     }

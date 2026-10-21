@@ -55,7 +55,7 @@ const scenes: Record<string, string> = {
   main: workspace,
   setup: workspace + "key ctrl+b i; settle; key down down down down; settle",
   menu: workspace + "rclicktext claude 2; settle",
-  launcher: workspace + "key ctrl+b a; settle",
+  launcher: workspace + 'key ctrl+b c; waittext "New terminal"; settle',
 };
 
 /** A Corgi theme's tokens on a terminal theme, as the palette computes them. */

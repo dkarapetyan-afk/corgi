@@ -20,7 +20,6 @@ export class Client {
   woken = 0n;
   launch_preview: Subscription | null = null;
   snapshot_revision: bigint | null = null;
-  last_snapshot = 0;
   watched = true;
   session_hash = 0n;
   session_shown = 0n;
@@ -207,9 +206,6 @@ export class Client {
       this.pending.push(json.parse(this.input.subarray(0, end).toString()));
       this.input = Buffer.from(this.input.subarray(end + 1));
     }
-  }
-  clearControls(): void {
-    this.controls = [];
   }
   close(): void {
     if (this.dead) return;

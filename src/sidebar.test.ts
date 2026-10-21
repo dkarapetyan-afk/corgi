@@ -6,7 +6,7 @@ import * as corgiAnimation from "./corgi_animation";
 import * as corgiFrames from "./corgi_frames";
 import { Terminal } from "./pane/terminal";
 import { View as ContextView } from "./usage/context_window";
-import { Writer, displayWidth, writeClipped, writeDirectory, directoryLabel } from "./text";
+import { Writer, displayWidth, writeClipped, directoryLabel } from "./text";
 import {
   View,
   entry,
@@ -170,19 +170,6 @@ test("directory labels keep path boundaries, Unicode and terminal safety", () =>
   const w = new Writer();
   writeClipped(w, "ab项目", 5);
   expect(w.s).toBe("ab项");
-});
-
-test("compact paths preserve root and folder within column budget", () => {
-  let w = new Writer();
-  writeDirectory(w, "~/dev/personal/corgi", 15);
-  expect(w.s).toBe("~/.../corgi");
-  w = new Writer();
-  writeDirectory(w, "/very/long/parent/项目", 12);
-  expect(w.s).toBe("/.../项目");
-  w = new Writer();
-  writeDirectory(w, "~/extraordinarilylongfolder", 14);
-  expect(displayWidth(w.s)).toBeLessThanOrEqual(14);
-  expect(w.s.endsWith("folder")).toBe(true);
 });
 
 test("all three workspace rows select while bottom controls remain distinct", () => {

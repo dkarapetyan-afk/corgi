@@ -101,15 +101,6 @@ export function managed(rel: Release, exe: string): string | null {
   privateDirectory(root);
   return root;
 }
-export function stagedVersion(rel: Release, exe: string): string | null {
-  try {
-    const root = managed(rel, exe),
-      v = root && read(root, "staged");
-    return v && compare(v, rel.version) > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
 async function lock(root: string, name: string, wait: boolean): Promise<(() => void) | null> {
   const fd = openSync(join(root, name), "a", 0o600);
   while (!flock(fd)) {

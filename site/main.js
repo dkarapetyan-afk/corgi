@@ -1822,16 +1822,6 @@ function find(g, text, { r0 = 0, r1 = g.length - 1, c0 = 0, c1 = g[0].length - 1
 }
 const agentRows = (i) => ({ r0: WATCH_ROWS[i], r1: WATCH_ROWS[i] + 1, c0: 1, c1: SW - 3 });
 const WT_ROWS = F.wt34.length;
-// A popover recorded over a whole window: its box, and the line to it from
-// the badge that opened it.
-function popover(g, f) {
-  const top = f.findIndex((row) => row.some(([ch]) => ch === "╭")), bottom = f.findLastIndex((row) => row.some(([ch]) => ch === "╯"));
-  const left = f[top].findIndex(([ch]) => ch === "╭"), right = f[bottom].findLastIndex(([ch]) => ch === "╯");
-  for (let r = top; r <= bottom; r++) {
-    for (let c = left; c <= right; c++) g[r][c] = f[r][c];
-    for (let c = SW - 2; c < left; c++) if (/[╶─]/.test(f[r][c][0])) g[r][c] = f[r][c];
-  }
-}
 
 // ---- the review panel: Corgi's own, at the window's right edge, on the
 // flicker fix's checkout as git answered the recorder (site/browser/git.ts).
@@ -2030,11 +2020,11 @@ function session(init = {}) {
     git: "ahead", gitAt: 0, gitHover: false, approvedAt: null, tagged: false, clear: null, newButton: true, solo: false,
     // Refactor the viewer compacting, its herd walking in from herdAt.
     compacting: false, herdAt: null,
-    // A recorded sidebar and window height in place of the agent list's, a
-    // recorded popover over it all, and the review panel open, with the
-    // keyboard or not; keys reach it while the screen has the page's focus.
+    // A recorded sidebar and window height in place of the agent list's,
+    // and the review panel open, with the keyboard or not; keys reach it
+    // while the screen has the page's focus.
     // Notes it sent wait in a pane's prompt.
-    side: null, rows: ROWS, cols: COLS, single: false, over: null, review: false, reviewKeys: false, active: false, pasted: {},
+    side: null, rows: ROWS, cols: COLS, single: false, review: false, reviewKeys: false, active: false, pasted: {},
     // With `trees`, the worktree overview of the workspace it names, open.
     trees: null,
     // The hackable band's terminals by pane: scrollback, the line being
@@ -2271,7 +2261,6 @@ function session(init = {}) {
     }
     drawPanes(g, t);
     if (S.review) drawReview(g, review, S.reviewKeys && S.active, S.rows);
-    if (S.over) popover(g, F[S.over]);
     if (S.trees?.open) drawTrees(g, S.trees, S.rows);
     if (S.linkHover) CHIP.forEach((cell, c) => (g[S.rows - 1][c] = cell));
     if (S.res) { const rect = resRectAt(S.res, S.rows); paste(g, resCells(S.res, sample(t), resCard, rect, S.resHeld), rect); }

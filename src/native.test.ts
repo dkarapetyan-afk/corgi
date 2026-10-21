@@ -191,8 +191,7 @@ test("native raw pipe transport initializes and retains bounded journal", async 
 });
 
 test("a restored candidate session does not signal its process until adopted", () => {
-  const registry = new Registry(),
-    transport = session();
+  const transport = session();
   transport.owner = "handoff";
   transport.child.id = process.pid;
   transport.destroy();

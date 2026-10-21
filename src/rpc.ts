@@ -6,7 +6,6 @@ export class Connection {
   private pending: { resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
   private buffer = "";
   private closed: Error | null = null;
-  onEvent?: (value: unknown) => void;
   constructor(path: string | Socket) {
     this.socket = typeof path === "string" ? createConnection(path) : path;
     this.socket.setEncoding("utf8");
@@ -27,7 +26,6 @@ export class Connection {
           const message = json.parse(line),
             pending = this.pending.shift();
           if (pending) pending.resolve(message);
-          else this.onEvent?.(message);
         } catch (error) {
           this.fail(error as Error);
         }
@@ -41,8 +39,7 @@ export class Connection {
     for (const p of this.pending.splice(0)) p.reject(error);
   }
   request<K extends protocol.Op>(op: K, ...args: protocol.Arguments<K>): Promise<protocol.Response<K>> {
-    // Replies are raw operation-specific JSON. Consumers normalize their model;
-    // unsolicited events and deliberately malformed requests stay unknown.
+    // Replies are raw operation-specific JSON. Consumers normalize their model.
     return this.rawRequest(protocol.envelope(op, args[0])) as Promise<protocol.Response<K>>;
   }
   rawRequest(value: unknown): Promise<unknown> {

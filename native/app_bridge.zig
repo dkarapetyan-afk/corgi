@@ -48,16 +48,12 @@ fn failure(alloc: std.mem.Allocator, name: []const u8, out: [*]u8, cap: usize) i
 fn perform(t: *pane.Terminal, alloc: std.mem.Allocator, req: Request, out: [*]u8, cap: usize) !i64 {
     switch (req.op) {
         .info => return result(alloc, .{
-            .cols = t.vt.cols,
-            .rows = t.vt.rows,
             .title = t.vt.getTitle() orelse "",
             .surface_identity = t.surface_identity,
             .surface_revision = t.surface_revision,
             .title_pid = t.title_pid,
             .title_revision = t.title_revision,
             .modes = pane.surface.modes(t),
-            .copied = t.copied,
-            .pending = t.pending.items,
             .initial_input = t.initial_input,
             .synchronized_since = t.synchronized_since,
             .active_screen = t.vt.screens.active_key,

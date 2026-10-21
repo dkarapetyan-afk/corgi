@@ -1,8 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { Runtime, screen_text } from "./runtime";
+import { Runtime } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { registerCase, run, sleep } from "./support";
+import { registerCase, run } from "./support";
 
 class GitTooltip extends Runtime {
   viewers: Viewer[] = [];
@@ -62,11 +62,6 @@ class GitTooltip extends Runtime {
     this.assertRegex(frame, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
     for (const text of ["Newest first", "newest first", "compared with upstream"]) this.assertNotIn(text, frame);
     this.assertNotIn("14 unpushed commits", (await b.poll()).data);
-    const clean = frame
-      .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "")
-      .replace(/\x1b7/g, "")
-      .replace(/\x1b8/g, "");
-    writeFileSync("/tmp/corgi-git-tooltip-screen.txt", screen_text(clean, 120, 40).join("\n"));
     await a.input("\x1b[<35;5;3M");
     this.assertNotIn("14 unpushed commits", a.state.data);
     await a.input("\x1b[<35;25;3M");

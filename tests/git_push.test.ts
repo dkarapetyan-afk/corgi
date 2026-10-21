@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, chmodSync, unlinkSync, existsSync } from "
 import { join } from "node:path";
 import { Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { registerCase, run, sleep } from "./support";
+import { registerCase, run } from "./support";
 
 class GitPush extends Runtime {
   root!: string;
@@ -84,7 +84,6 @@ class GitPush extends Runtime {
       await this.hover();
       await this.gitViewer.advance(0.6);
       this.assertIn("ready to push", (await this.gitViewer.poll()).data);
-      writeFileSync("/tmp/corgi-git-push-hover.txt", screen_text(this.gitViewer.state.data, 100, 30).join("\n"));
       const calls = join(this.remote, "calls");
       this.hook(`echo push >> "${calls}"\nsleep 1`);
       await this.git("branch", "unrelated");

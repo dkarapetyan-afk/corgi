@@ -1,6 +1,6 @@
 import type { Worker as SummaryWorker } from "./activity/worker";
-import { mkdirSync, chmodSync, statSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { chmodSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { Runtime } from "./runtime";
 import { Store } from "./workspace";
 import { Client } from "./peer";
