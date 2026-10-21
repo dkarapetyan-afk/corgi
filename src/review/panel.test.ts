@@ -98,6 +98,8 @@ test("opens on all: commits and working copy together", async () => {
   const body = rows.join("\n");
   expect(body).toContain("export const v5 = 50;");
   expect(body).toMatch(/⋯ {2}\d+ unmodified lines/);
+  // A fold before a change names the line that holds it, like git's hunk header.
+  expect(body).toMatch(/⋯ {2}\d+ unmodified lines {2}· {2}export const v\d+ = \d+;/);
   p.hide();
 });
 

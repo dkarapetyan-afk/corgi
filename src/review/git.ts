@@ -24,6 +24,8 @@ export interface Change {
   dels: number | null;
   binary: boolean;
   generated: boolean;
+  /** A diff driver gives git a funcname rule, so its hunk headers name the folds. */
+  funcname: boolean;
 }
 /** What a listing diffs: the working tree against a revision, or one commit. */
 export type Source = { kind: "worktree"; against: string } | { kind: "commit"; hash: string };
@@ -189,6 +191,7 @@ export function parseChanges(raw: string): Change[] {
           dels: null,
           binary: false,
           generated: false,
+          funcname: false,
         });
         order.push(to);
         i += 3;
@@ -196,7 +199,16 @@ export function parseChanges(raw: string): Change[] {
       }
       const path = fields[i + 1];
       const kind: ChangeKind = letter === "A" ? "added" : letter === "D" ? "deleted" : "modified";
-      changes.set(path, { path, from: null, kind, adds: null, dels: null, binary: false, generated: false });
+      changes.set(path, {
+        path,
+        from: null,
+        kind,
+        adds: null,
+        dels: null,
+        binary: false,
+        generated: false,
+        funcname: false,
+      });
       order.push(path);
       i += 2;
       continue;
@@ -222,11 +234,31 @@ export function parseChanges(raw: string): Change[] {
 }
 const generated_names =
   /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|go\.sum|poetry\.lock|Gemfile\.lock)$|\.min\.(js|css)$|\.map$/;
-export function parseCheckAttr(raw: string): Set<string> {
-  const out = new Set<string>();
+/** The diff drivers with a funcname rule built into git. */
+const builtin_funcnames = new Set(
+  "ada bash bibtex cpp csharp css dts elixir fortran fountain golang html java kotlin markdown matlab objc pascal perl php python ruby rust scheme tex".split(
+    " ",
+  ),
+);
+/** `check-attr -z` output: the generated paths, and each path's named diff driver. */
+export function parseCheckAttr(raw: string): { generated: Set<string>; drivers: Map<string, string> } {
+  const generated = new Set<string>(),
+    drivers = new Map<string, string>();
   const fields = raw.split("\0");
-  for (let i = 0; i + 2 < fields.length; i += 3)
-    if (fields[i + 2] === "set" || fields[i + 2] === "true") out.add(fields[i]);
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const [path, attr, value] = [fields[i], fields[i + 1], fields[i + 2]];
+    if (attr === "linguist-generated" && (value === "set" || value === "true")) generated.add(path);
+    else if (attr === "diff" && !["set", "unset", "unspecified"].includes(value)) drivers.set(path, value);
+  }
+  return { generated, drivers };
+}
+/** `config -z --get-regexp` output for funcname keys: the drivers they configure. */
+export function parseFuncnames(raw: string): Set<string> {
+  const out = new Set<string>();
+  for (const entry of raw.split("\0")) {
+    const key = /^diff\.(.+)\.x?funcname\n/.exec(entry);
+    if (key) out.add(key[1]);
+  }
   return out;
 }
 
@@ -269,6 +301,7 @@ async function untracked(root: string): Promise<Change[]> {
       dels: 0,
       binary: false,
       generated: false,
+      funcname: false,
     }));
   const counted = listed.slice(0, counted_untracked);
   for (let i = 0; i < counted.length; i += 16)
@@ -289,14 +322,24 @@ export async function changes(root: string, source: Source): Promise<Change[]> {
   const listed = parseChanges(out.stdout.toString());
   if (source.kind === "worktree") listed.push(...(await untracked(root)));
   const paths = listed.map(c => c.path);
-  let marked = new Set<string>();
+  let marked = new Set<string>(),
+    drivers = new Map<string, string>(),
+    configured = new Set<string>();
   if (paths.length) {
-    const attrs = await git(root, ["check-attr", "-z", "--stdin", "linguist-generated"], {
-      input: paths.join("\0") + "\0",
-    }).catch(() => null);
-    if (attrs?.ok()) marked = parseCheckAttr(attrs.stdout.toString());
+    const [attrs, keys] = await Promise.all([
+      git(root, ["check-attr", "-z", "--stdin", "linguist-generated", "diff"], {
+        input: paths.join("\0") + "\0",
+      }).catch(() => null),
+      git(root, ["config", "-z", "--get-regexp", String.raw`^diff\..*\.x?funcname$`]).catch(() => null),
+    ]);
+    if (attrs?.ok()) ({ generated: marked, drivers } = parseCheckAttr(attrs.stdout.toString()));
+    if (keys?.ok()) configured = parseFuncnames(keys.stdout.toString());
   }
-  for (const change of listed) change.generated = marked.has(change.path) || generated_names.test(change.path);
+  for (const change of listed) {
+    const driver = drivers.get(change.path);
+    change.generated = marked.has(change.path) || generated_names.test(change.path);
+    change.funcname = driver !== undefined && (builtin_funcnames.has(driver) || configured.has(driver));
+  }
   return listed;
 }
 
@@ -325,16 +368,25 @@ export async function fileDiff(root: string, source: Source, change: Change): Pr
         : await blobSize(root, source.hash, change.path);
   const old_size = change.kind === "added" || change.kind === "untracked" ? 0 : await blobSize(root, old_rev, old_path);
   if (old_size + new_size > diff.max_bytes) return { kind: "too_large", bytes: old_size + new_size };
-  const context = `-U${diff.max_lines + 1}`;
   const paths = change.from ? [change.from, change.path] : [change.path];
-  const args =
-    change.kind === "untracked"
+  const args = (lines: number) => {
+    const context = `-U${lines}`;
+    return change.kind === "untracked"
       ? ["diff", "--no-index", "--no-color", "--no-ext-diff", context, "--", "/dev/null", change.path]
       : source.kind === "worktree"
         ? ["diff", "--no-color", "--no-ext-diff", context, "-M", source.against, "--", ...paths]
         : ["diff", "--no-color", "--no-ext-diff", context, "-M", old_rev, source.hash, "--", ...paths];
+  };
   try {
-    const out = await git(root, args, { max_output: 3 * diff.max_bytes + 65536 });
+    // At the fold margin, and with no hunks joined, every fold ends where one of git's hunks starts.
+    const [out, hunks] = await Promise.all([
+      git(root, args(diff.max_lines + 1), { max_output: 3 * diff.max_bytes + 65536 }),
+      change.funcname
+        ? git(root, ["-c", "diff.interHunkContext=0", ...args(diff.fold_margin)], {
+            max_output: 3 * diff.max_bytes + 65536,
+          }).catch(() => null)
+        : null,
+    ]);
     // `--no-index` exits 1 when the files differ.
     if (!out.ok() && !(change.kind === "untracked" && "exited" in out.term && out.term.exited === 1))
       return { kind: "failed", message: out.stderr.toString().trim() || "git diff failed" };
@@ -342,6 +394,7 @@ export async function fileDiff(root: string, source: Source, change: Change): Pr
     if (parsed === "binary") return { kind: "binary" };
     if (parsed.old.length + parsed.new.length > diff.max_lines)
       return { kind: "too_large", bytes: old_size + new_size };
+    if (hunks?.stdout.length) parsed.headers = diff.headers(hunks.stdout.toString());
     return { kind: "diff", diff: parsed };
   } catch (error) {
     const name = (error as Error).message;

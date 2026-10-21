@@ -47,9 +47,36 @@ test("parses raw and numstat records together, renames included", () => {
     "1\t1\t\0old.txt\0new.txt\0" +
     "-\t-\tx.png\0";
   expect(git.parseChanges(raw)).toEqual([
-    { path: "src/a.ts", from: null, kind: "modified", adds: 3, dels: 1, binary: false, generated: false },
-    { path: "new.txt", from: "old.txt", kind: "renamed", adds: 1, dels: 1, binary: false, generated: false },
-    { path: "x.png", from: null, kind: "added", adds: null, dels: null, binary: true, generated: false },
+    {
+      path: "src/a.ts",
+      from: null,
+      kind: "modified",
+      adds: 3,
+      dels: 1,
+      binary: false,
+      generated: false,
+      funcname: false,
+    },
+    {
+      path: "new.txt",
+      from: "old.txt",
+      kind: "renamed",
+      adds: 1,
+      dels: 1,
+      binary: false,
+      generated: false,
+      funcname: false,
+    },
+    {
+      path: "x.png",
+      from: null,
+      kind: "added",
+      adds: null,
+      dels: null,
+      binary: true,
+      generated: false,
+      funcname: false,
+    },
   ]);
 });
 
@@ -216,10 +243,40 @@ test("a file over the budget is never read", async () => {
     dels: 0,
     binary: false,
     generated: false,
+    funcname: false,
   };
   expect(await git.fileDiff(root, { kind: "worktree", against: "HEAD" }, change)).toEqual({
     kind: "too_large",
     bytes: 2_100_000,
   });
   rmSync(join(root, "big.txt"));
+});
+
+test("a diff driver with a funcname rule names folds with git's headers", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "corgi-review-funcname-")));
+  const at = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]).toString();
+  const lines = (head: string) => [head, ...Array.from({ length: 12 }, (_, i) => `x${i}`), "old", ""].join("\n");
+  try {
+    at("init", "-q");
+    at("config", "diff.sections.xfuncname", "^\\[.*\\]$");
+    writeFileSync(join(repo, ".gitattributes"), "*.tex diff=tex\n*.cfg diff=sections\n*.dat diff=plain\n");
+    const files = { "a.tex": "\\section{Intro}", "a.cfg": "[server]", "a.dat": "head" };
+    for (const [name, head] of Object.entries(files)) writeFileSync(join(repo, name), lines(head));
+    at("add", ".");
+    at("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base");
+    for (const [name, head] of Object.entries(files))
+      writeFileSync(join(repo, name), lines(head).replace("old", "new"));
+    const source: git.Source = { kind: "worktree", against: "HEAD" };
+    const by = Object.fromEntries((await git.changes(repo, source)).map(c => [c.path, c]));
+    expect([by["a.tex"].funcname, by["a.cfg"].funcname, by["a.dat"].funcname]).toEqual([true, true, false]);
+    const headers = async (name: string) => {
+      const loaded = await git.fileDiff(repo, source, by[name]);
+      return loaded.kind === "diff" ? loaded.diff.headers : undefined;
+    };
+    expect(await headers("a.tex")).toEqual(new Map([[11, "\\section{Intro}"]]));
+    expect(await headers("a.cfg")).toEqual(new Map([[11, "[server]"]]));
+    expect(await headers("a.dat")).toBeNull();
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });

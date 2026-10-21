@@ -31,6 +31,9 @@ export class FileDiff {
   units: Unit[] = [];
   adds = 0;
   dels = 0;
+  /** git's hunk headers by the new-side line their hunk starts at, when a
+   * diff driver gives git a funcname rule. */
+  headers: Map<number, string> | null = null;
   /** Changed words per row, filled a change block at a time as rows show. */
   private emphasis_cache = new Map<number, Ranges | null>();
   text(row: Row): string {
@@ -134,6 +137,17 @@ export function parse(patch: string): FileDiff | "binary" {
   for (const side of [diff.old, diff.new]) for (let i = 0; i < side.length; i++) side[i] = side[i].replace(/\r$/, "");
   diff.units = fold(diff.rows);
   return diff;
+}
+
+/** The function names in a `git diff`'s hunk headers, by the new-side line
+ * each hunk starts at. */
+export function headers(patch: string): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const line of patch.split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@ (.+)$/.exec(line);
+    if (hunk && hunk[2].trim()) out.set(Number(hunk[1]), hunk[2].trim());
+  }
+  return out;
 }
 
 /** Folds each unchanged run longer than the margin, keeping `fold_margin`

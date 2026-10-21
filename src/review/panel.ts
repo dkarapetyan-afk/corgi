@@ -10,6 +10,7 @@ import { Rect, type Direction } from "../layout";
 import * as palette from "../palette";
 import { codepointWidth, compactCount, Writer } from "../text";
 import * as diff from "./diff";
+import * as funcname from "./funcname";
 import * as git from "./git";
 import * as notes from "./notes";
 import * as syntax from "./syntax";
@@ -2165,13 +2166,17 @@ export class Panel {
           if (y0 < dy) continue;
           const bg = cursor ? tint.cursor : tint.fold;
           c.fill(y0, bg);
-          c.text(
+          const hint = cursor ? "  →  expand" : "",
+            holder = funcname.forFold(d, item.unit, syntax.language(path));
+          let x = c.text(
             2,
             y0,
-            `⋯  ${plural(item.unit.end - item.unit.start, "unmodified line")}${cursor ? "  →  expand" : ""}`,
+            `⋯  ${plural(item.unit.end - item.unit.start, "unmodified line")}`,
             cursor ? colors.muted : colors.faint,
             bg,
           );
+          if (holder) x = c.text(x, y0, `  ·  ${holder}`, colors.muted, bg, false, c.w - x - hint.length - 1);
+          c.text(x, y0, hint, colors.muted, bg);
           const unit = item.unit,
             at = item.at;
           c.hit(0, y0, c.w, 1, {

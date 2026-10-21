@@ -48,7 +48,8 @@ export async function commits(_root: string, _base: Base | null): Promise<Commit
 export async function changes(_root: string, source: Source): Promise<Change[]> {
   const listed = fixture.listings[sourceKey(source)];
   if (!listed) throw Error("GitFailed");
-  return listed.map(c => ({ ...c }));
+  // Recorded before Changes carried `funcname`.
+  return listed.map(c => ({ ...c, funcname: c.funcname ?? false }));
 }
 export async function edited(_root: string, paths: string[]): Promise<Map<string, number>> {
   return new Map(paths.filter(path => path in fixture.edited).map(path => [path, fixture.edited[path] + shift * 1000]));
