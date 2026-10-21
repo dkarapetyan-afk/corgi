@@ -9,6 +9,7 @@ import * as km from "./keymap";
 import { Worker, pane, workspace } from "./import/catalog";
 import { Writer } from "./text";
 import * as releaseLabel from "./release_label";
+import type { Connection } from "./rpc";
 
 /** The screen's text after replaying the cursor moves in `ansi`. */
 function screen(ansi: string, cols: number, rows: number): string[] {
@@ -46,6 +47,144 @@ function hits(menu: Menu, cols = 100, rows = 30, s = status(), prefs = new Prefe
   }
   return out;
 }
+
+const no_setup_rpc: Pick<Connection, "call"> = {
+  call: async () => {
+    throw new Error("Unexpected setup RPC");
+  },
+};
+
+test("setup keeps its options while aiming diagonally across list rows and gaps", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  const hover = (x: number, y: number, now: number) => menu.hover(100, 30, x, y, s, prefs, now);
+  hover(15, 3, 0);
+  // Resting on the selected row does not spend the crossing's grace period.
+  await menu.poll(no_setup_rpc, 100, 30, 1000);
+  for (const [x, y, now] of [
+    [22, 4, 1100],
+    [28, 5, 1200],
+    [30, 6, 1300],
+    [34, 7, 1400],
+  ]) {
+    hover(x, y, now);
+    expect(menu.item).toBe("clever_corgi");
+  }
+  // The divider and blank space in the options cancel a pending list hover.
+  hover(35, 7, 1450);
+  hover(36, 7, 1500);
+  expect(await menu.poll(no_setup_rpc, 100, 30, 2000)).toBe(false);
+  expect(menu.item).toBe("clever_corgi");
+  hover(25, 7, 2100);
+  expect(menu.item).toBe("theme");
+  hover(30, 5, 2200);
+  expect(menu.item).toBe("theme");
+  hover(36, 3, 2300);
+  expect(menu.item).toBe("theme");
+});
+
+test("setup selects the crossed row when the pointer pauses", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  menu.hover(100, 30, 15, 3, s, prefs, 0);
+  menu.hover(100, 30, 22, 4, s, prefs, 100);
+  expect(await menu.poll(no_setup_rpc, 100, 30, 399)).toBe(false);
+  expect(menu.item).toBe("clever_corgi");
+  expect(await menu.poll(no_setup_rpc, 100, 30, 400)).toBe(true);
+  expect(menu.item).toBe("flourishes");
+});
+
+test("vertical setup browsing selects every row immediately in both directions", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  for (const [y, item] of [
+    [3, "clever_corgi"],
+    [4, "flourishes"],
+    [5, "readings"],
+    [4, "flourishes"],
+    [3, "clever_corgi"],
+  ] as const) {
+    menu.hover(100, 30, 15, y, s, prefs, 100);
+    expect(menu.item).toBe(item);
+  }
+  expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
+});
+
+test("turning straight down cancels a diagonal setup guard immediately", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  menu.hover(100, 30, 15, 3, s, prefs, 0);
+  menu.hover(100, 30, 22, 4, s, prefs, 100);
+  expect(menu.item).toBe("clever_corgi");
+  menu.hover(100, 30, 22, 5, s, prefs, 150);
+  expect(menu.item).toBe("readings");
+  expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
+});
+
+test("setup stops guarding when moving away, leaving the frame, or resizing", async () => {
+  const s = status(),
+    prefs = new Preferences();
+  for (const end of ["back", "outside", "resize", "vertical"] as const) {
+    const menu = Menu.open();
+    menu.hover(100, 30, 15, 3, s, prefs, 0);
+    menu.hover(100, 30, 22, 4, s, prefs, 100);
+    switch (end) {
+      case "back":
+        menu.hover(100, 30, 21, 4, s, prefs, 200);
+        break;
+      case "outside":
+        menu.hover(100, 30, 0, 0, s, prefs, 200);
+        break;
+      case "resize":
+        menu.hover(102, 30, 23, 4, s, prefs, 200);
+        break;
+      case "vertical":
+        menu.hover(100, 30, 15, 3, s, prefs, 150);
+        menu.hover(100, 30, 15, 7, s, prefs, 200);
+        break;
+    }
+    expect(menu.item).toBe(end === "outside" ? "clever_corgi" : end === "vertical" ? "theme" : "flourishes");
+    expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
+  }
+});
+
+test("setup clicks and keyboard navigation override a guarded hover", async () => {
+  const s = status(),
+    prefs = new Preferences();
+  for (const action of ["click", "move", "options"] as const) {
+    const menu = Menu.open();
+    menu.hover(100, 30, 15, 3, s, prefs, 0);
+    menu.hover(100, 30, 28, 5, s, prefs, 100);
+    if (action === "click") menu.click({ item: "theme" }, s, prefs);
+    else if (action === "move") menu.move(true, s, prefs);
+    else menu.openOptions(s, prefs);
+    expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
+    expect(menu.item).toBe(action === "click" ? "theme" : action === "move" ? "flourishes" : "clever_corgi");
+  }
+});
+
+test("resizing setup cancels a pending row even without further pointer motion", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  menu.hover(100, 30, 15, 3, s, prefs, 0);
+  menu.hover(100, 30, 22, 4, s, prefs, 100);
+  expect(await menu.poll(no_setup_rpc, 60, 30, 500)).toBe(false);
+  expect(menu.item).toBe("clever_corgi");
+});
+
+test("single-column setup hovers immediately", () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  menu.hover(60, 30, 15, 3, s, prefs, 0);
+  menu.hover(60, 30, 22, 4, s, prefs, 100);
+  expect(menu.item).toBe("flourishes");
+});
 
 test("setup lists every setting beside the selected one's options", () => {
   const menu = Menu.open();
@@ -510,7 +649,7 @@ test("each import source opens its sessions beside the list", async () => {
   };
   const conn: any = { call: async (op: string) => (op === "onboarding.status" ? { progress } : { ok: true }) };
   await menu.import_picker.begin(conn);
-  expect(await menu.poll(conn)).toBe(true);
+  expect(await menu.poll(conn, 100, 30)).toBe(true);
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("Copying into Corgi");
   expect(menu.back()).toBe(true);
   expect(menu.focus).toBe("options");
@@ -518,7 +657,7 @@ test("each import source opens its sessions beside the list", async () => {
   expect(menu.focus).toBe("options");
   progress.phase = "complete";
   menu.import_picker.last_poll = 0;
-  await menu.poll(conn);
+  await menu.poll(conn, 100, 30);
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("Import complete");
   expect(menu.enter(s, prefs)).toEqual({ kind: "imported", workspace: 7 });
   menu.close();

@@ -38,6 +38,8 @@ import * as shellPicker from "./shell_picker";
 import * as scrollThumb from "./scroll_thumb";
 import * as settingRow from "./setting_row";
 import * as dropdown from "./dropdown";
+import * as menuAim from "./menu_aim";
+import { milliTimestamp } from "./clock";
 import type { ShellStatus } from "./launch/command";
 import type { Connection } from "./rpc";
 import type { Use, Uses } from "./inference/setup";
@@ -450,12 +452,24 @@ export class Menu {
   private dropdown: { option: number; at: number } | null = null;
   /** Pointer adjustments preview until release, then save once. */
   private intensity_drag: number | null = null;
+  /** The selected row's exit point while the pointer aims for its options. */
+  private aim: {
+    x: number;
+    y: number;
+    last_x: number;
+    at: number | null;
+    item: Item;
+    cols: number;
+    rows: number;
+  } | null = null;
+  private pending_item: Item | null = null;
   /** The frame's growth toward the preset detail, eased between draws. */
   private grow = { from: 0, to: 0, at_ms: 0 };
   static open(): Menu {
     return new Menu();
   }
   close(): void {
+    this.clearAim();
     this.intensity_drag = null;
     this.import_picker.close();
   }
@@ -521,9 +535,18 @@ export class Menu {
     if (this.import_picker.stage === "complete") this.import_picker.restart();
   }
   /** True when the import picker changed and needs drawing. */
-  async poll(conn: Pick<Connection, "call">): Promise<boolean> {
+  async poll(conn: Pick<Connection, "call">, cols: number, rows: number, now = milliTimestamp()): Promise<boolean> {
+    if (this.aim && (this.aim.cols !== cols || this.aim.rows !== rows)) this.clearAim();
+    let hovered = false;
+    if (this.aim?.at != null && now - this.aim.at >= menuAim.aim_ms) {
+      if (this.pending_item && this.focus === "list" && this.item === this.aim.item) {
+        this.item = this.pending_item;
+        hovered = true;
+      }
+      this.clearAim();
+    }
     const picker = this.importing();
-    return picker !== null && (await picker.poll(conn));
+    return (picker !== null && (await picker.poll(conn))) || hovered;
   }
   /** Prefix shortcuts in setup: the prefix waits for the next key, which
    * detaches when it is the preset's detach key; setup drops the other
@@ -587,6 +610,7 @@ export class Menu {
   /** Moves the cursor within the focused column, past either end to the
    * other when `wrap`. */
   move(next: boolean, s: Status, prefs: Preferences, wrap = true): void {
+    this.clearAim();
     if (this.editing) return;
     if (this.dropdown !== null) {
       const d = this.dropdown,
@@ -619,6 +643,7 @@ export class Menu {
   }
   /** Gives the options focus, on the one in use. False when none can be chosen. */
   openOptions(s: Status, prefs: Preferences): boolean {
+    this.clearAim();
     if (this.importing()) {
       this.focus = "options";
       return true;
@@ -640,6 +665,7 @@ export class Menu {
   }
   /** Returns focus to the list. False when it already has it. */
   back(): boolean {
+    this.clearAim();
     if (this.intensity_drag !== null) {
       this.intensity_drag = null;
       return true;
@@ -665,6 +691,7 @@ export class Menu {
   }
   /** Enter: an on/off setting flips from the list; the rest open their options. */
   enter(s: Status, prefs: Preferences): Apply | null {
+    this.clearAim();
     if (this.editing) {
       // A template with a problem stays open; the line under it says why.
       // Saving an empty field saves the default it shows.
@@ -713,6 +740,7 @@ export class Menu {
   }
   /** A click: the list selects, then opens; an option applies. */
   click(hit: Hit, s: Status, prefs: Preferences): Apply | null {
+    this.clearAim();
     if ("intensity" in hit) {
       this.focus = "options";
       this.cursor = 0;
@@ -768,8 +796,39 @@ export class Menu {
     this.dropdown = null;
     return choice && !choice.current ? choice.apply : null;
   }
-  /** Pointer motion highlights rows in the focused column. */
-  hover(hit: Hit, s: Status, prefs: Preferences): void {
+  private clearAim(): void {
+    this.aim = null;
+    this.pending_item = null;
+  }
+  /** Keep the selected setting while crossing other rows toward its options. */
+  hover(cols: number, rows: number, x: number, y: number, s: Status, prefs: Preferences, now = milliTimestamp()): void {
+    const l = this.rest(cols, rows),
+      hit = this.hit(cols, rows, x, y, s, prefs),
+      from = this.aim;
+    this.pending_item = null;
+    if (l && !l.single && l.list > 0 && this.focus === "list" && this.dropdown === null) {
+      if (hit && "item" in hit && hit.item === this.item) {
+        this.aim = { x, y, last_x: x, at: null, item: this.item, cols, rows };
+        return;
+      }
+      if (
+        from &&
+        from.item === this.item &&
+        from.cols === cols &&
+        from.rows === rows &&
+        (from.at === null || now - from.at < menuAim.aim_ms) &&
+        x > from.last_x &&
+        menuAim.aimed(new Rect(l.options.x, l.b.y + 2, l.options.w, l.body), from, x, y)
+      ) {
+        from.last_x = x;
+        from.at = now;
+        this.pending_item = hit && "item" in hit ? hit.item : null;
+        return;
+      }
+      this.clearAim();
+      if (hit && "item" in hit) this.aim = { x, y, last_x: x, at: null, item: hit.item, cols, rows };
+    } else this.clearAim();
+    if (hit === null) return;
     if ("choice" in hit) {
       if (this.dropdown !== null) this.dropdown.at = hit.choice;
     } else if (this.dropdown !== null) return;

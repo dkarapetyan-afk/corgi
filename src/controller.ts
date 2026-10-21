@@ -4368,7 +4368,10 @@ export class Controller {
       this.dirty = true;
       return;
     }
-    if (!release && (x >= this.width || y >= this.height)) return;
+    if (!release && (x >= this.width || y >= this.height)) {
+      this.corgi_setup?.hover(this.width, this.height, x, y, this.runtime.inference, this.prefs);
+      return;
+    }
     const tabs_x = this.sidebarView([]).tabX();
     const tabs_width = this.width - tabs_x;
     if (this.ui_mouse_down) {
@@ -4384,7 +4387,7 @@ export class Controller {
         if (hit !== null) await this.applySetup(setup.click(hit, s, this.prefs));
         else if (!setup.contains(this.width, this.height, x, y)) this.closeMenu();
       } else if (!release && (button === 35 || button === 32)) {
-        if (hit !== null) setup.hover(hit, s, this.prefs);
+        setup.hover(this.width, this.height, x, y, s, this.prefs);
       } else if (!release && (button === 64 || button === 65)) setup.move(button === 65, s, this.prefs, false);
       this.dirty = true;
       return;
@@ -4979,7 +4982,7 @@ export class Controller {
   async expireInput(): Promise<void> {
     await this.wakeFocused();
     if (this.onboarding && (await this.onboarding.poll(this.rpc()))) this.dirty = true;
-    if (this.corgi_setup && (await this.corgi_setup.poll(this.rpc()))) this.dirty = true;
+    if (this.corgi_setup && (await this.corgi_setup.poll(this.rpc(), this.width, this.height))) this.dirty = true;
     await this.pollLauncher();
     this.pollScopeMenu();
     if (this.link_tooltip.due(milliTimestamp())) this.dirty = true;

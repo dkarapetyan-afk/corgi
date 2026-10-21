@@ -35,23 +35,7 @@ export interface Aim {
   at: number;
 }
 /** A pointer resting this long short of the card has stopped aiming for it. */
-export const aim_ms = 300;
-/** Amazon's mega-dropdown "menu aim": after the pointer leaves the resource
- * row, cells inside the triangle from its exit point to the card's left edge
- * are on the way to the card, even across other sidebar rows. Moves arrive a
- * whole cell at a time and cells are about twice as tall as wide, so the apex
- * sits two columns behind the exit point: a first step straight down still
- * counts as aiming, a second does not. */
-export function aimed(rect: Rect, from: { x: number; y: number }, x: number, y: number): boolean {
-  const ax = from.x - 2;
-  const ay = from.y;
-  const edge = rect.x;
-  if (x <= ax || x >= edge) return false;
-  const top = (rect.y - ay) * (x - ax);
-  const bottom = (rect.y + rect.h - 1 - ay) * (x - ax);
-  const slope = (y - ay) * (edge - ax);
-  return slope >= top && slope <= bottom;
-}
+export { aim_ms, aimed } from "./menu_aim";
 export interface Process {
   pid: number;
   start: bigint;

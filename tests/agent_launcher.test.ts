@@ -953,6 +953,30 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     this.assertEqual(json(file).corgi_intensity, 0);
   }
 
+  async test_corgi_setup_guards_diagonal_hover() {
+    const view = await Viewer.create(this, 100, 30);
+    const text = async () => screen_text((await view.poll()).data, 100, 30).join("\n");
+    await view.input("\x02i");
+    await this.until(async () => /Model +● Auto/.test(await text()));
+    // Cross Visual flourishes, Resources, a gap, and Theme toward the options.
+    const motion = (x: number, y: number) => `\x1b[<35;${x + 1};${y + 1}M`;
+    await view.input(motion(15, 3) + motion(22, 4) + motion(28, 5) + motion(30, 6) + motion(34, 7) + motion(36, 7));
+    this.assertRegex(await text(), /Model +● Auto/);
+    // Leaving the terminal cancels the crossed row's pending selection.
+    await view.input(motion(15, 3) + motion(22, 4) + motion(100, 4));
+    await view.advance(0.4);
+    this.assertRegex(await text(), /Model +● Auto/);
+    // Straight down and back up select immediately, without an aim timeout.
+    await view.input(motion(15, 3) + motion(15, 4));
+    this.assertIn("Intensity", await text());
+    await view.input(motion(15, 3));
+    this.assertRegex(await text(), /Model +● Auto/);
+    // A stationary pointer on a crossed row eventually selects that setting.
+    await view.input(motion(15, 3) + motion(22, 4));
+    await this.until(async () => (await text()).includes("Intensity"));
+    await view.input("\x1b");
+  }
+
   async test_corgi_setup_changes_inference_provider() {
     const view = await Viewer.create(this, 100, 30);
     const text = async () => screen_text((await view.poll()).data, 100, 30).join("\n");
