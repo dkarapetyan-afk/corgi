@@ -62,16 +62,18 @@ evals; live model checks consume provider usage.
 
 ```sh
 ./go.ts --sandbox review
-bun tools/probe.ts run current -e 'key ctrl+b c; snap'
+bun tools/ui_driver.ts run current -e 'key ctrl+b c; snap'
 ```
 
 The sandbox supplies a seeded repository and fake agents with separate HOME,
 provider configuration and state. Add a world in [tools/sandboxes/](tools/sandboxes/)
 when a feature needs repeatable setup. Sandbox `--restart` discards that world.
 
-The [probe](tools/probe.ts) drives a real viewer in an isolated PTY and records
-screens. It uses `dist/corgi`, so rebuild first. Its command reference is at the
-top of the file. Use [UI tokens and rules](docs/ui_styleguide.md) for visual work.
+The [UI driver](tools/ui_driver.ts) drives a real viewer in an isolated PTY
+and records screens. It uses `dist/corgi`, so rebuild first. Scripts live in
+[tools/ui_scenarios/](tools/ui_scenarios/) and use the `.scenario` extension.
+The command reference is at the top of the driver. Use
+[UI tokens and rules](docs/ui_styleguide.md) for visual work.
 
 ## Reload, restart and recovery
 

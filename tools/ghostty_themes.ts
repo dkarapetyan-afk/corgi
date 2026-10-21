@@ -1,5 +1,5 @@
 /**
- * Ghostty's bundled themes, for the probe to answer color queries with and
+ * Ghostty's bundled themes, for the UI driver to answer color queries with and
  * for the theme browser to list, led by the colors Ghostty uses when no
  * theme is set. `GHOSTTY_THEMES` overrides the folder.
  */

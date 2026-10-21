@@ -1,13 +1,13 @@
 /**
- * UI probe: drives a real `corgi` viewer in a PTY with isolated state and
+ * UI driver: drives a real `corgi` viewer in a PTY with isolated state and
  * renders what it wrote through Ghostty. Compare any two builds screen by screen.
  *
- *   bun tools/probe.ts run current script.probe
- *   bun tools/probe.ts run ./dist/corgi -e 'key ctrl+b c; snap'
- *   bun tools/probe.ts compare --left /path/to/baseline --right current script.probe
- *   bun tools/probe.ts suite --left /path/to/baseline --right current [names...]
+ *   bun tools/ui_driver.ts run current script.scenario
+ *   bun tools/ui_driver.ts run ./dist/corgi -e 'key ctrl+b c; snap'
+ *   bun tools/ui_driver.ts compare --left /path/to/baseline --right current script.scenario
+ *   bun tools/ui_driver.ts suite --left /path/to/baseline --right current [names...]
  *
- * `current` is PROBE_BINARY or dist/corgi. Executable paths are resolved from
+ * `current` is UI_DRIVER_BINARY or dist/corgi. Executable paths are resolved from
  * the calling directory. Each viewer starts its own daemon unless --daemon
  * (run), --left-daemon or --right-daemon (compare/suite) selects another build.
  *
@@ -51,7 +51,7 @@ import * as ghostty from "./ghostty_themes";
 import { Scope } from "../scripts/process_scope";
 
 const ROOT = resolve(import.meta.dir, "..");
-export const BINARY = resolve(process.env.PROBE_BINARY ?? join(ROOT, "dist/corgi"));
+export const BINARY = resolve(process.env.UI_DRIVER_BINARY ?? join(ROOT, "dist/corgi"));
 
 export interface Record_ {
   kind: "snap" | "style" | "bytes" | "raw";
@@ -147,7 +147,7 @@ export class Session {
     public cols = 100,
     public rows = 30,
   ) {
-    this.home = mkdtempSync(join(tmpdir(), "corgi-probe-"));
+    this.home = mkdtempSync(join(tmpdir(), "corgi-ui-driver-"));
     this.env = {
       ...process.env,
       HOME: this.home,
@@ -411,7 +411,7 @@ export class Session {
         this.records.push({ kind: "raw", name: args[0] ?? "raw", text: JSON.stringify(this.output.slice(this.mark)) });
         break;
       default:
-        throw new Error(`unknown probe command ${op}`);
+        throw new Error(`unknown UI scenario command ${op}`);
     }
   }
   async close() {
@@ -430,7 +430,7 @@ export class Session {
     this.screen.destroy();
     this.terminal.close();
     await this.scope?.assertClean();
-    if (!process.env.PROBE_KEEP) rmSync(this.home, { recursive: true, force: true });
+    if (!process.env.UI_DRIVER_KEEP) rmSync(this.home, { recursive: true, force: true });
     else console.error(`kept ${this.home}`);
   }
 }
@@ -483,7 +483,7 @@ export async function runScript(
 /** Blanks cells that change with time rather than with input: the CPU
  * reading between samples, a sleeping corgi's Z, spinners. */
 export function normalize(text: string): string {
-  if (process.env.PROBE_EXACT) return text;
+  if (process.env.UI_DRIVER_EXACT) return text;
   return (
     text
       // A workspace's resource row appears with the daemon's sampling ticks.
@@ -493,7 +493,7 @@ export function normalize(text: string): string {
       )
       .replace(/[ᶻz](?= *[│ ])/g, " ")
       .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, "⠿")
-      .replace(/corgi-probe-[A-Za-z0-9]{6}/g, "corgi-probe-XXXXXX")
+      .replace(/corgi-ui-driver-[A-Za-z0-9]{6}/g, "corgi-ui-driver-XXXXXX")
       // A working agent's corgi plays at random (wag, sniff, fetch).
       .replace(/⠿  [^│]*│/g, "⠿  (corgi) │")
       // Thinking dots advance with the clock.
@@ -549,10 +549,10 @@ async function main() {
   const runDaemon = pick("--daemon");
   const usage = () => {
     console.error(
-      "usage: probe.ts run <current|path> [--daemon path] <script>|-e '...'\n" +
-        "       probe.ts compare --left path --right path [--left-daemon path] [--right-daemon path] <script>|-e '...'\n" +
-        "       probe.ts suite --left path --right path [--left-daemon path] [--right-daemon path] [names...]\n" +
-        "current selects PROBE_BINARY or dist/corgi; paths are relative to the calling directory",
+      "usage: ui_driver.ts run <current|path> [--daemon path] <script>|-e '...'\n" +
+        "       ui_driver.ts compare --left path --right path [--left-daemon path] [--right-daemon path] <script>|-e '...'\n" +
+        "       ui_driver.ts suite --left path --right path [--left-daemon path] [--right-daemon path] [names...]\n" +
+        "current selects UI_DRIVER_BINARY or dist/corgi; paths are relative to the calling directory",
     );
     process.exit(2);
   };
@@ -593,7 +593,7 @@ async function main() {
       console.log(
         `── ${a?.kind ?? b?.kind} ${a?.name ?? b?.name}: ${same ? "SAME" : "DIFFERENT"}  (left ${left}, right ${right})`,
       );
-      if (!same || process.env.PROBE_ALL) console.log(sideBySide(a?.text ?? "(none)", b?.text ?? "(none)", width));
+      if (!same || process.env.UI_DRIVER_ALL) console.log(sideBySide(a?.text ?? "(none)", b?.text ?? "(none)", width));
     }
     if (leftResult.error) console.log(`${left} ERROR: ${leftResult.error}`);
     if (rightResult.error) console.log(`${right} ERROR: ${rightResult.error}`);
@@ -602,15 +602,15 @@ async function main() {
     return;
   }
   if (mode === "suite") {
-    // Every scenario under tools/scenarios, compared; names filter.
-    const dir = join(import.meta.dir, "scenarios");
+    // Every scenario under tools/ui_scenarios, compared; names filter.
+    const dir = join(import.meta.dir, "ui_scenarios");
     const { readdirSync } = await import("node:fs");
     const names = readdirSync(dir)
-      .filter(f => f.endsWith(".probe"))
-      .map(f => f.slice(0, -6))
+      .filter(f => f.endsWith(".scenario"))
+      .map(f => f.slice(0, -".scenario".length))
       .filter(name => argv.length === 0 || argv.includes(name));
     const compare = async (name: string) => {
-      const source = readFileSync(join(dir, `${name}.probe`), "utf8");
+      const source = readFileSync(join(dir, `${name}.scenario`), "utf8");
       const failure = (e: unknown) => ({ records: [] as Record_[], error: String(e), log: "" });
       const [leftResult, rightResult] = await Promise.all([
         runScript(left, source, leftServer).catch(failure),
@@ -632,7 +632,7 @@ async function main() {
       };
     };
     // A few at a time: under heavy load the two viewers' timing drifts apart.
-    const jobs = Number(process.env.PROBE_JOBS ?? 4);
+    const jobs = Number(process.env.UI_DRIVER_JOBS ?? 4);
     const results: { name: string; ok: boolean; detail: string }[] = [];
     let next = 0;
     await Promise.all(

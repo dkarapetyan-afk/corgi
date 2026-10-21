@@ -75,7 +75,7 @@ once that process is gone.
 
 Normal teardown requests shutdown and verifies process exit. A surviving
 daemon or a process reaped by the watchdog fails the test. Cleanup failures
-retain the runtime directory and log for diagnosis. The UI probe uses the
+retain the runtime directory and log for diagnosis. The UI driver uses the
 same protection. Persistent `go.ts --temp` environments still have their
 documented independent lifetime.
 

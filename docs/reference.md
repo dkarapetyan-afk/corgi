@@ -219,4 +219,4 @@ For a bug report, include `corgi --version`, OS, terminal, whether SSH/tmux is
 involved, and the shortest reproduction. The runtime's `server.log` sits beside
 its socket (normally `/tmp/corgi-UID/server.log`). Logs and recovery files can
 contain conversation and terminal contents; inspect excerpts before sharing.
-Use the [sandbox and probe workflow](../HACKING.md) for reproducible UI cases.
+Use the [sandbox and UI driver workflow](../HACKING.md) for reproducible UI cases.

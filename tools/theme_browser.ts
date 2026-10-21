@@ -6,18 +6,18 @@
  *   bun tools/theme_browser.ts [--match REGEX] [--limit N] [--out FILE] [--html FILE]
  *   bun tools/theme_browser.ts --from FILE --html FILE
  *
- * Each scene and Corgi theme runs in its own probe session; the session
+ * Each scene and Corgi theme runs in its own UI driver session; the session
  * switches terminal themes the way Ghostty does (answers the viewer's color
  * queries, reports a color scheme change) and records the styled screen.
  * Writes JSON with the frames, each theme's colors and the derived tokens,
  * and with --html the browser page (theme_browser.html filled with them).
- * --from rebuilds the page from earlier JSON. Runs the binary in PROBE_BINARY
+ * --from rebuilds the page from earlier JSON. Runs the binary in UI_DRIVER_BINARY
  * (default dist/corgi).
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { BINARY, Session, begin, parseScript } from "./probe";
+import { BINARY, Session, begin, parseScript } from "./ui_driver";
 import * as ghostty from "./ghostty_themes";
 import * as palette from "../src/palette";
 import { ORDINARY_PROVIDER } from "../tests/provider_sim";
