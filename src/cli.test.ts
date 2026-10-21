@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { realpathSync } from "node:fs";
-import { asksHelp, help, parse, usage } from "./cli";
+import { asksHelp, help, layout, list, parse, read, usage, words } from "./cli";
 
 test("help is asked for only before --", () => {
   expect(asksHelp(["move", "3", "--help"])).toBe(true);
@@ -55,13 +55,14 @@ test("command lines are rejected before connecting", async () => {
     [["focus", "3"]],
     [["current"], "NoCallerPane"],
     [["list", "extra"]],
-    [["list", "--text", "--text"]],
+    [["list", "--json", "--json"]],
+    [["list", "--text"]],
   ];
   for (const [words, error = "Usage", caller = 0] of cases) await expect(parse(words, caller)).rejects.toThrow(error);
 });
 test("command lines parse to the request the daemon receives", async () => {
   const cases: [string[], any, number?][] = [
-    [["list", "--text"], { action: "list", text_mode: true }],
+    [["list", "--json"], { action: "list", json: true }],
     [["workspace", "list"], { action: "list" }],
     [["current"], { action: "current" }, 5],
     [["focus", "3", "--viewer", "9"], { action: "focus", target: 3, viewer: 9 }],
@@ -151,17 +152,102 @@ test("command lines parse to the request the daemon receives", async () => {
     expect(await parse(words, caller)).toEqual({
       target: 0,
       current: false,
-      text_mode: false,
+      json: false,
       viewer: null,
       command: null,
       ...want,
     });
-  expect(await parse(["pane", "read", "current", "--lines", "10", "--text"], 5)).toEqual({
+  expect(await parse(["pane", "read", "current", "--lines", "10", "--json"], 5)).toEqual({
     action: "pane.read",
     target: 5,
     current: true,
-    text_mode: true,
+    json: true,
     viewer: null,
     command: { "pane.read": { target: 5, lines: 10 } },
   });
+});
+test("a tab's layout names each split's sides", () => {
+  const nodes = [
+    { split: { axis: "horizontal", first: 1, second: 2, ratio: 500 } },
+    { pane: 9 },
+    { split: { axis: "vertical", first: 3, second: 4, ratio: 500 } },
+    { pane: 12 },
+    { pane: 13 },
+    null,
+  ];
+  expect(layout(nodes, 0)).toBe("9 left of (12 above 13)");
+  expect(layout(nodes, 2)).toBe("12 above 13");
+  expect(layout(nodes, 5)).toBe("");
+});
+test("list outlines workspaces, tabs, panes and viewers", () => {
+  const idle = { provider: null, state: "unknown", attention: "none", name: "", activity: "", recent_activity: "" };
+  const reply = {
+    ok: true,
+    result: {
+      conversations: [{ id: 1 }],
+      workspaces: [
+        {
+          id: 2,
+          name: "Corgi",
+          cwd: "/src",
+          model: {
+            nodes: [{ split: { axis: "horizontal", first: 1, second: 2 } }, { pane: 9 }, { pane: 10 }, { pane: 15 }],
+            tabs: [
+              { id: 20, root: 0, title: "" },
+              { id: 21, root: 3, title: "Logs" },
+            ],
+          },
+        },
+      ],
+      panes: [
+        { id: 9, name: "", cwd: "/src", exited: false, agent: idle },
+        { id: 10, name: "", cwd: "/tmp", exited: false, agent: idle },
+        {
+          id: 15,
+          name: "tail",
+          cwd: "/src",
+          exited: true,
+          agent: {
+            ...idle,
+            provider: "claude",
+            state: "blocked",
+            attention: "needs_input",
+            recent_activity: "used: Bash",
+          },
+        },
+      ],
+    },
+    viewers: [{ id: 1, workspace: 2, pane: 9, watched: true }],
+  };
+  expect(list(reply)).toBe(
+    [
+      'workspace 2 "Corgi" /src',
+      "  tab 20: 9 left of 10",
+      "    pane 9",
+      "    pane 10 /tmp",
+      '  tab 21 "Logs"',
+      '    pane 15 "tail" exited claude blocked, needs input (used: Bash)',
+      "viewer 1: workspace 2, pane 9",
+      "",
+    ].join("\n"),
+  );
+});
+test("other replies say what changed", () => {
+  const result = { pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [] };
+  expect(words({ ok: true, result: { ...result, pane: 31, tab: 12, workspace: 2 } })).toBe(
+    "pane 31 (tab 12, workspace 2)\n",
+  );
+  expect(words({ ok: true, result: { ...result, closed_panes: [3, 4] } })).toBe("closed pane 3, 4\n");
+  expect(words({ ok: true, result })).toBe("ok\n");
+  expect(words({ ok: true, viewer: 1, queued: true })).toBe("queued for viewer 1\n");
+});
+test("pane read says when earlier lines exist", () => {
+  expect(read("a\nb\nc", 2)).toBe("[corgi: last 2 lines shown; --lines N reads more]\nb\nc\n");
+  expect(read("b\nc", 2)).toBe("b\nc\n");
+  expect(read("", 2)).toBe("");
+});
+test("agent mode trims a read's line ends, rules and blank runs", () => {
+  const rule = "─".repeat(80);
+  expect(read(`${rule}\n❯ hi   \n\n\n\n${rule}`, 10)).toBe(`${rule}\n❯ hi   \n\n\n\n${rule}\n`);
+  expect(read(`${rule}\n❯ hi   \n\n\n\n${rule}`, 10, true)).toBe("───\n❯ hi\n\n───\n");
 });

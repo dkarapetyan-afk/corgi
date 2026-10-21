@@ -155,14 +155,14 @@ repository; binary and oversized files show a notice instead of a diff.
 
 ## Script Corgi
 
-Commands return JSON; `--text` makes supported output readable. Take IDs from
-`corgi list`. `current` means the pane running the command, not UI focus.
+Commands print text; `--json` prints the daemon's reply as JSON instead. Take
+IDs from `corgi list`. `current` means the pane running the command, not UI focus.
 
 ```sh
-corgi list --text
+corgi list
 corgi tab new --workspace 1 --name Tests --command 'bun test src'
 corgi pane split current --right
-corgi pane read 3 --lines 100 --text
+corgi pane read 3 --lines 100
 corgi pane send 3 --stdin --enter < /path/to/prompt.txt
 corgi focus 3 --viewer 1
 ```
@@ -171,6 +171,12 @@ corgi focus 3 --viewer 1
 `tab close` terminate their target processes without prompting. Layout changes
 do not focus a viewer; `focus` requires an explicit `--viewer` from `list`.
 Commands do not implicitly start a missing runtime.
+
+When a coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or one
+that sets `AI_AGENT`) runs these commands through a pipe, Corgi compacts what
+the agent reads: `--help` lists only these commands, and `pane read` trims line
+ends, shortens rules and collapses blank runs. `--agent` and `--no-agent` force
+it either way, as does `CORGI_AGENT_MODE=1` or `0`.
 
 Use `corgi --help` and each command's `--help` for syntax, or `corgi --skill`
 for the [bundled scripting guide](../assets/corgi-skill.md).

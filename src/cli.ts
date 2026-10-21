@@ -7,7 +7,7 @@ import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
 const groups = new Set(["tab", "pane", "workspace", "current", "list", "focus", "--skill"]);
 const nested = new Set(["tab", "pane", "workspace"]);
-const flags = new Set(["text", "clear", "stdin", "enter", "new-tab", "left", "right", "up", "down"]);
+const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "left", "right", "up", "down"]);
 const options = new Set([
   ...flags,
   "viewer",
@@ -170,7 +170,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     start++;
   }
   const args = new Args(words.slice(start)),
-    text_mode = args.flag("text");
+    json = args.flag("json");
   const viewer =
     action === "focus"
       ? id(args.required("viewer"))
@@ -279,9 +279,81 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (action === "current" && !caller) throw Error("NoCallerPane");
   const created = (command as Record<string, any> | null)?.["pane.create"];
   if (created?.workspace === 0 && !caller) throw Error("MissingWorkspace");
-  return { action, target, current, text_mode, viewer, command };
+  return { action, target, current, json, viewer, command };
 }
-export async function run(path: string, args: string[]): Promise<void> {
+/** A tab's split tree from the layout's node array, in words: `3 left of (4
+ * above 5)`. */
+export function layout(nodes: any[], index: number, nested = false): string {
+  const node = nodes[index];
+  if (!node) return "";
+  if ("pane" in node) return String(node.pane);
+  const first = layout(nodes, node.split.first, true),
+    second = layout(nodes, node.split.second, true);
+  if (!first || !second) return first || second;
+  const text = `${first} ${node.split.axis === "horizontal" ? "left of" : "above"} ${second}`;
+  return nested ? `(${text})` : text;
+}
+/** The pane IDs of a tab's split tree, left to right and top to bottom. */
+function panes(nodes: any[], index: number): number[] {
+  const node = nodes[index];
+  if (!node) return [];
+  if ("pane" in node) return [node.pane];
+  return [...panes(nodes, node.split.first), ...panes(nodes, node.split.second)];
+}
+const quote = (name: string) => (name ? " " + JSON.stringify(name) : "");
+/** `corgi list` as an outline: workspaces, their tabs and panes, then viewers.
+ * A pane shows its cwd only where it differs from its workspace's. */
+export function list(reply: any): string {
+  const out: string[] = [],
+    byId = new Map<number, any>((reply.result?.panes ?? []).map((p: any) => [p.id, p]));
+  for (const w of reply.result?.workspaces ?? []) {
+    out.push(`workspace ${w.id}${quote(w.name)} ${w.cwd}`);
+    for (const t of w.model?.tabs ?? []) {
+      const ids = panes(w.model.nodes, t.root);
+      out.push(`  tab ${t.id}${quote(t.title)}${ids.length > 1 ? ": " + layout(w.model.nodes, t.root) : ""}`);
+      for (const id of ids) {
+        const p = byId.get(id);
+        if (p) out.push(`    pane ${id}${quote(p.name)}${p.cwd && p.cwd !== w.cwd ? " " + p.cwd : ""}${pane(p)}`);
+      }
+    }
+  }
+  for (const v of reply.viewers ?? []) out.push(`viewer ${v.id}: workspace ${v.workspace}, pane ${v.pane}`);
+  return out.join("\n") + "\n";
+}
+function pane(p: any): string {
+  const a = p.agent,
+    exited = p.exited ? " exited" : "";
+  if (!a?.provider) return exited;
+  const attention = a.attention && a.attention !== "none" ? ", " + a.attention.replace("_", " ") : "",
+    activity = a.activity || a.recent_activity;
+  return `${exited} ${a.provider} ${a.state}${attention}${quote(a.name)}${activity ? ` (${activity})` : ""}`;
+}
+/** A reply other than `list` and `pane read`, in words. */
+export function words(reply: any): string {
+  if ("queued" in reply) return `queued for viewer ${reply.viewer}\n`;
+  const r = reply.result ?? {};
+  if (r.closed_panes?.length) return `closed pane ${r.closed_panes.join(", ")}\n`;
+  if (r.pane) return `pane ${r.pane} (tab ${r.tab}, workspace ${r.workspace})\n`;
+  return "ok\n";
+}
+/** `pane read` text for a reader that asked for `lines` lines, given up to one
+ * more: the extra line only says that earlier output exists. Agent mode trims
+ * line ends, shortens rules and keeps one blank line in a row. */
+export function read(text: string, lines: number, agent = false): string {
+  let all = text.split("\n");
+  const more = all.length > lines;
+  if (more) all = all.slice(-lines);
+  if (agent)
+    all = all
+      .map(line => line.trimEnd().replace(/[─━═]{4,}/g, m => m.slice(0, 3)))
+      .filter((line, i, kept) => line || kept[i - 1] !== "");
+  const shown = all.join("\n"),
+    header = more ? `[corgi: last ${lines} lines shown; --lines N reads more]\n` : "";
+  return header + shown + (shown ? "\n" : "");
+}
+/** Runs a control command and prints its reply in words, or with `--json` as
+ * the daemon sent it. */
+export async function run(path: string, args: string[], agent = false): Promise<void> {
   const group = args[0];
   if (group === "--skill") {
     if (args.length !== 1) throw Error("Usage");
@@ -295,6 +367,9 @@ export async function run(path: string, args: string[]): Promise<void> {
   const caller = Number(process.env.CORGI_PANE) || 0,
     inv = await parse(args, caller),
     conn = new Connection(path);
+  const reading = inv.json ? null : inv.command?.["pane.read"],
+    lines = reading?.lines;
+  if (reading) reading.lines = Math.min(lines + 1, 10000);
   try {
     if ((inv.current && group === "tab") || (inv.action === "tab.new" && caller)) {
       const { result } = await conn.call("session.locate", { pane: caller });
@@ -313,16 +388,22 @@ export async function run(path: string, args: string[]): Promise<void> {
           : inv.action === "workspace.switch"
             ? await conn.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
             : await conn.call("focus", { pane: inv.target, viewer: inv.viewer });
-    if (inv.text_mode && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
-      process.stdout.write(reply.result.text);
-    else process.stdout.write(stringify(reply, inv.text_mode ? 2 : undefined) + "\n");
+    if (inv.json) process.stdout.write(stringify(reply) + "\n");
+    else if (reading && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
+      process.stdout.write(read(reply.result.text, lines, agent));
+    else process.stdout.write(inv.action === "list" ? list(reply) : words(reply));
   } finally {
     conn.close();
   }
 }
-/** Writes a failed command line's JSON error; a usage error lists the command's help lines. */
+/** Writes a failed command line's error, as JSON when it asked for `--json`;
+ * a usage error lists the command's help lines. */
 export function failure(code: string, status = 1, args: string[] = []): void {
-  const lines = code === "Usage" ? usage(help, args).map(line => line.trim()) : [];
-  process.stderr.write(stringify({ ok: false, err: code, ...(lines.length ? { usage: lines } : {}) }) + "\n");
+  const lines = code === "Usage" ? usage(help, args).map(line => line.trim()) : [],
+    end = args.indexOf("--");
+  if ((end === -1 ? args : args.slice(0, end)).includes("--json"))
+    process.stderr.write(stringify({ ok: false, err: code, ...(lines.length ? { usage: lines } : {}) }) + "\n");
+  else if (lines.length) process.stderr.write(`corgi: usage:\n${lines.map(line => "  " + line).join("\n")}\n`);
+  else process.stderr.write(`corgi: ${code}\n`);
   process.exitCode = status;
 }

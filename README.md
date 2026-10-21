@@ -43,16 +43,16 @@ their settings. Codex asks you to trust the hooks once, in `/hooks`.
 
 ## Scripting
 
-`corgi` controls the running session from any shell. Commands print JSON
-(`--text` for readable output), take IDs from `corgi list`, and accept `current`
-for the pane they run in.
+`corgi` controls the running session from any shell. Commands print text
+(`--json` for JSON), take IDs from `corgi list`, and accept `current` for the
+pane they run in.
 
 ```sh
-corgi list --text
+corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
 corgi pane send 3 'run the tests' --enter
-corgi pane read 3 --lines 50 --text
+corgi pane read 3 --lines 50
 ```
 
 `corgi --help` lists every command. Agents in a pane can run `corgi --skill` to

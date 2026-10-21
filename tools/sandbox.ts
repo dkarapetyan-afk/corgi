@@ -157,7 +157,7 @@ export class Sandbox {
   }
   /** Runs the sandbox's Corgi CLI and returns its result. */
   corgi(args: string[], check = true): any {
-    const out = this.run([this.exe, ...args], this.dir, undefined, check);
+    const out = this.run([this.exe, ...args, "--json"], this.dir, undefined, check);
     try {
       return JSON.parse(out).result;
     } catch {

@@ -31,4 +31,5 @@ Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.
 
 
 CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.
+Commands print text; --json prints the daemon's reply as JSON instead.
 

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import * as os from "./os";
 import * as rpc from "./rpc";
 import * as cli from "./cli";
+import * as agent_mode from "./agent_mode";
 import * as json from "./json";
 import * as errors from "./errors";
 import helpText from "../assets/help.txt" with { type: "text" };
@@ -116,10 +117,58 @@ function quietExecveWarning(): void {
     for (const listener of listeners) listener.call(process, warning);
   });
 }
-async function print<K extends protocol.Op>(path: string, op: K, ...args: protocol.Arguments<K>): Promise<void> {
-  process.stdout.write(json.stringify(await rpc.request(path, op, ...args)) + "\n");
+/** What the daemon's reply to `op` says, in words. */
+export function say(op: protocol.Op, reply: any): string {
+  switch (op) {
+    case "ping":
+      return `running, pid ${reply.pid}\n`;
+    case "recovery.save":
+      return `saved ${reply.path}\n`;
+    case "server.reload":
+      return "reloaded\n";
+    case "action":
+      return `queued for viewer ${reply.viewer}\n`;
+    case "native.start":
+      return `native session ${reply.session} (${reply.provider})\n`;
+    case "native.list":
+      return reply.sessions.length ? reply.sessions.map(nativeSession).join("") : "no native sessions\n";
+    case "native.events":
+      return (
+        [
+          ...reply.events.map((event: any) => `${event.seq} ${event.line}`),
+          ...reply.pending_requests.map((line: string) => `pending ${line}`),
+          `next ${reply.next_seq}`,
+        ].join("\n") + "\n"
+      );
+    default:
+      return "ok\n";
+  }
+}
+function nativeSession(s: any): string {
+  const attention = s.attention && s.attention !== "none" ? ", " + s.attention.replace("_", " ") : "",
+    pending = s.pending_requests ? `, ${s.pending_requests} pending request${s.pending_requests === 1 ? "" : "s"}` : "";
+  return `session ${s.id} ${s.provider} ${s.state}${attention}${pending}, pid ${s.pid}\n`;
+}
+/** Commands that print the daemon's reply: in words, or as JSON with `--json`. */
+const replies = ["ping", "shutdown", "checkpoint", "reload", "action", "onboard", "native", "dev"];
+/** Whether a command line asks for JSON: `--json` before any `--`. */
+function asksJson(args: string[]): boolean {
+  const end = args.indexOf("--");
+  return (end === -1 ? args : args.slice(0, end)).includes("--json");
 }
 export async function run(args = process.argv.slice(2)): Promise<void> {
+  const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
+  // Agent mode covers the control CLI and help; a provider alias keeps its own flags.
+  const choice = agent_mode.flags(args),
+    controls = !alias && (cli.handles(choice.args) || ["help", "--help", "-h"].includes(choice.args[0]));
+  if (controls) args = choice.args;
+  const agent = controls && agent_mode.enabled(choice.flag, process.env, process.stdout.isTTY === true);
+  const asJson = replies.includes(args[0]) && asksJson(args);
+  if (asJson) args = args.filter(arg => arg !== "--json");
+  const print = async <K extends protocol.Op>(path: string, op: K, ...rest: protocol.Arguments<K>) => {
+    const reply = await rpc.request(path, op, ...rest);
+    process.stdout.write(asJson ? json.stringify(reply) + "\n" : say(op, reply));
+  };
   const command = args[0] ?? "attach",
     path = os.socketPath();
   quietExecveWarning();
@@ -132,14 +181,13 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       console.error("crash reports are off:", error);
     }
   if (await updates.internal(args, executable)) return;
-  const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
   if (alias) {
     const integration = await import("./integration");
     await integration.launch(alias, args, executable);
   }
   if (cli.handles(args)) {
     try {
-      await cli.run(path, args);
+      await cli.run(path, args, agent);
     } catch (error) {
       cli.failure(error instanceof Error ? error.message : String(error), 2, args);
     }
@@ -148,14 +196,11 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
   // `agent` hands the rest of its line to the agent; `integration` prints its own help.
   const own =
     command === "agent" ? args.slice(0, 2) : command === "integration" || command.startsWith("__") ? [] : args;
-  if (cli.asksHelp(own)) {
-    process.stdout.write(help + cli.help);
+  if (cli.asksHelp(own) || command === "help") {
+    process.stdout.write(agent ? cli.help.trimEnd() + agent_mode.helpNote : help + cli.help);
     return;
   }
   switch (command) {
-    case "help":
-      process.stdout.write(help + cli.help);
-      return;
     case "--version":
       process.stdout.write(`corgi ${config.releaseVersion} (${config.releaseCommit})\n`);
       return;
@@ -232,13 +277,14 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "ping":
       await print(path, "ping");
       return;
-    case "shutdown":
-      await print(path, "shutdown");
+    case "shutdown": {
+      const reply = await rpc.request(path, "shutdown");
       for (let i = 0; i < 500; i++) {
-        if (!(await ping(path))) return;
+        if (!(await ping(path))) return void process.stdout.write(asJson ? json.stringify(reply) + "\n" : "stopped\n");
         await Bun.sleep(10);
       }
       throw Error("ShutdownTimedOut");
+    }
     case "checkpoint":
       await print(path, "recovery.save");
       return;
@@ -362,6 +408,10 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
 /** What corgi prints when the command line `args` failed with `error`. */
 export function failure(args: string[], error: unknown): string {
   const name = errors.name(error) ?? String(error);
+  if (replies.includes(args[0]) && asksJson(args)) {
+    const lines = name === "Usage" ? cli.usage(help, args).map(line => line.trim()) : [];
+    return json.stringify({ ok: false, err: name, ...(lines.length ? { usage: lines } : {}) }) + "\n";
+  }
   switch (name) {
     case "Usage": {
       const lines = cli.usage(help, args);

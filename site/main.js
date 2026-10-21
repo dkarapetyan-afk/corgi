@@ -2503,6 +2503,24 @@ function retab(S, tabs) {
 }
 const closePane = (S, id) => retab(S, S.tabs.M.map((root) => { const kept = dropLeaf(root, id); return kept && { ...kept, title: root.title, tab: root.tab }; }).filter(Boolean));
 const locate = (S, id) => ({ pane: S.ids[id], tab: S.tabs.M.find((root) => holds(root, id)).tab, workspace: MOON });
+// A tab's splits as `corgi list` words them: `5 left of (7 above 8)`.
+const layoutText = (S, node, nested) => {
+  if (node.id) return String(S.ids[node.id]);
+  const text = `${layoutText(S, node.a, true)} ${node.dir === "right" ? "left of" : "above"} ${layoutText(S, node.b, true)}`;
+  return nested ? `(${text})` : text;
+};
+// `corgi list` for moonlander: its tabs and panes, the panes it started with
+// being Claude, which works once a send asks it something.
+function listText(S) {
+  const out = ['workspace 2 "moonlander" ~/moonlander'];
+  for (const root of S.tabs.M) {
+    const ids = leafIds(root).filter((k) => S.ids[k]);
+    if (!ids.length) continue;
+    out.push(`  tab ${root.tab}${root.title ? ` "${root.title}"` : ""}${ids.length > 1 ? `: ${layoutText(S, root)}` : ""}`);
+    for (const k of ids) out.push(`    pane ${S.ids[k]}${S.term[k] ? "" : ` claude ${S.asked[k] ? "working" : "idle"}`}`);
+  }
+  return out.join("\n");
+}
 function paneArg(S, from, arg) {
   if (arg == null) throw Error("Usage");
   if (arg === "current") { if (!from) throw Error("NoCallerPane"); return from; }
@@ -2541,13 +2559,26 @@ function interrupt(S, p, id) {
   p.rows = [...p.rows, p.program ? [["^C", A.text]] : [...(p.ps ?? prompt("~/moonlander")), [p.typed + "^C", A.text]]];
   Object.assign(p, { program: null, typed: "", scroll: 0 });
 }
+// Whether a corgi command line asks for JSON: `--json` before any `--`.
+const wantsJson = (args) => args.slice(0, args.includes("--") ? args.indexOf("--") : args.length).includes("--json");
 // What `corgi ARGS` prints, run from the pane `from` (null outside Corgi).
 function corgi(s, from, args) {
-  const S = s.S, [group, verb] = args, ok = (result) => [[[JSON.stringify({ ok: true, result: { pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [], ...result } }), JSON_OUT]]];
+  const S = s.S, [group, verb] = args;
   const lines = (text) => text.trimEnd().split("\n").map((line) => [[line, A.text]]);
+  const ok = (result) => {
+    const r = { pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [], ...result };
+    if (wantsJson(args)) return [[[JSON.stringify({ ok: true, result: r }), JSON_OUT]]];
+    return lines(r.closed_panes.length ? `closed pane ${r.closed_panes.join(", ")}` : r.pane ? `pane ${r.pane} (tab ${r.tab}, workspace ${r.workspace})` : "ok");
+  };
   if (group === "--skill") return lines(CLI_SKILL);
   if (!group || group === "help" || args.includes("--help") || args.includes("-h") || (["pane", "tab", "workspace"].includes(group) && args.length === 1)) return lines(CLI_HELP);
   if (group === "current") { if (!from) throw Error("NoCallerPane"); return ok(locate(S, from)); }
+  if (group === "list" || (group === "workspace" && verb === "list")) {
+    if (args.slice(group === "list" ? 1 : 2).some((a) => a !== "--json")) throw Error("Usage");
+    if (!wantsJson(args)) return lines(listText(S));
+    const panes = S.tabs.M.flatMap((root) => leafIds(root).filter((k) => S.ids[k]).map((k) => locate(S, k)));
+    return [[[JSON.stringify({ ok: true, result: { workspaces: [{ id: MOON, name: "moonlander", cwd: "~/moonlander" }], panes }, viewers: [] }), JSON_OUT]]];
+  }
   const { pos, opt } = cliArgs(args.slice(2));
   switch (`${group} ${verb}`) {
     case "pane split": {
@@ -2569,8 +2600,9 @@ function corgi(s, from, args) {
       if (pos.length !== 1) throw Error("Usage");
       if (!/^\d+$/.test(count)) throw Error("InvalidCharacter");
       if (!Number(count) || Number(count) > 10000) throw Error("Usage");
-      const text = paneText(s, from, id).trimEnd().split("\n").slice(-Number(count)).join("\n");
-      return opt.text ? lines(text) : ok({ ...locate(S, id), text });
+      const all = paneText(s, from, id).trimEnd().split("\n"), text = all.slice(-Number(count)).join("\n");
+      if (opt.json) return ok({ ...locate(S, id), text });
+      return lines((all.length > Number(count) ? `[corgi: last ${count} lines shown; --lines N reads more]\n` : "") + text);
     }
     case "pane send": {
       const id = paneArg(S, from, pos[0]), p = S.term[id];
@@ -2611,8 +2643,8 @@ function corgi(s, from, args) {
       return ok({ closed_panes: closed });
     }
   }
-  if (["list", "workspace", "focus", "pane move", "pane swap", "pane resize", "tab move", "tab merge"].some((c) => `${group} ${verb}`.startsWith(c)))
-    return [[["corgi: this page knows pane split, read, send, keys, close and tab new, rename, close", A.text]]];
+  if (["workspace", "focus", "pane move", "pane swap", "pane resize", "tab move", "tab merge"].some((c) => `${group} ${verb}`.startsWith(c)))
+    return [[["corgi: this page knows list, pane split, read, send, keys, close and tab new, rename, close", A.text]]];
   throw Error("Usage");
 }
 // The few filters a pipe can end in, or null for one it doesn't know.
@@ -2648,7 +2680,9 @@ function runLine(s, p, from, line) {
   try { out = corgi(s, from, args); }
   catch (e) {
     const help = e.message === "Usage" ? usage(args) : [];
-    err = [[[JSON.stringify({ ok: false, err: e.message, ...(help.length ? { usage: help } : {}) }), JSON_OUT]]];
+    err = wantsJson(args)
+      ? [[[JSON.stringify({ ok: false, err: e.message, ...(help.length ? { usage: help } : {}) }), JSON_OUT]]]
+      : help.length ? [[["corgi: usage:", A.text]], ...help.map((line) => [["  " + line, A.text]])] : [[[`corgi: ${e.message}`, A.text]]];
   }
   for (const stage of pipes) {
     const next = filter(out.map((row) => plain([row])), stage);
@@ -2691,7 +2725,7 @@ function termKey(s, p, from, e) {
 // over when it comes back; clicking the terminal hands it to the visitor.
 const CLI_SCRIPT = [
   'corgi pane split 5 --right --command "bun test --watch"',
-  "corgi pane read 7 --text | grep fail",
+  "corgi pane read 7 | grep fail",
   'corgi pane send 5 "fix the failing test" --enter',
   'corgi pane split 7 --down --command "bun run dev"',
 ];

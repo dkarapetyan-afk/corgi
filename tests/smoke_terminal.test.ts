@@ -695,7 +695,7 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     writeExecutable(join(binDir, "codex"), FAKE);
     delete this.env.CORGI_CODEX_BIN;
     this.env.PATH = binDir + ":" + (this.env.PATH ?? "");
-    const ident = JSON.parse(await this.run_cli("native", "start", "codex")).session;
+    const ident = JSON.parse(await this.run_cli("native", "start", "codex", "--json")).session;
     await this.until(async () =>
       (await this.rpc({ op: "native.list" })).sessions.some((s: any) => s.id === ident && s.ready),
     );

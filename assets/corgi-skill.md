@@ -15,14 +15,22 @@ without making changes. Never run bare `corgi` for discovery: it attaches the UI
 The installed binary is the authority for syntax. The runtime must already be
 running; new agent commands never start, upgrade, or restart it implicitly.
 
-`corgi list` returns JSON: `.result.workspaces[].tabs[]` holds names and split
-trees; `.result.panes[]` holds IDs, location, cwd, PID, and agent observations;
-`.viewers[]` identifies attached viewers. `--text` pretty-prints discovery JSON.
+`corgi list` outlines each workspace's tabs and their panes, with each pane's
+agent and state, then the attached viewers:
+
+```
+workspace 2 "Corgi" /home/me/corgi
+  tab 20 "Backend": 31 left of (42 above 43)
+    pane 31 claude working "Fix the parser" (used: Bash)
+```
+
+Commands print text. Add `--json` for the daemon's full reply, such as the whole
+`list` snapshot, for `jq`.
 
 Use IDs from results, never tab positions or example IDs. IDs are scoped to the
 runtime selected by `CORGI_SOCKET`. Pane IDs survive moves between workspaces.
 `current` resolves the calling pane through `CORGI_PANE`, never a viewer's focus.
-`corgi current` returns its current `.result.pane`, `.tab`, and `.workspace`.
+`corgi current` prints the calling pane's pane, tab and workspace IDs.
 Outside a managed pane, use explicit IDs and `--workspace` for tab creation.
 
 ## Arrange terminals
@@ -51,7 +59,7 @@ share the resized region. An absent matching split is an error.
 Tab merge moves the entire source split tree beside the target pane, preserving
 its internal geometry. The source tab disappears. Moving the last pane out also
 removes its empty tab. Moves preserve processes, terminal output, and pane IDs.
-Creating a tab or split returns `.result.pane`, `.result.tab`, `.result.workspace`.
+Creating a tab or split prints the new pane with its tab and workspace.
 New terminals inherit the caller/target cwd, falling back to the destination
 workspace folder; `--cwd` overrides it. `--command SHELL_COMMAND` launches a command
 in a new tab or split. Existing terminals keep their cwd.
@@ -64,7 +72,7 @@ a selected tab requires the viewer to choose a surviving location.
 ## Read and send
 
 ```sh
-corgi pane read 31 --lines 100 --text
+corgi pane read 31 --lines 100
 corgi pane send 31 'literal text'
 corgi pane send 31 'command or prompt' --enter
 corgi pane send 31 --stdin --enter < /path/to/prompt.txt
@@ -72,9 +80,11 @@ corgi pane keys 31 ctrl+c
 corgi pane keys 31 esc
 ```
 
-Read returns `.result.text`, containing recent active-screen text, including available scrollback, with
-soft wraps joined. Alternate-screen application history may not be available.
-Default read output is JSON with `.text`; `--text` emits just that text.
+Read prints recent active-screen text, including available scrollback, with
+soft wraps joined, headed by a `[corgi: …]` line when earlier lines exist.
+Alternate-screen application history may not be available. For an agent it
+trims line ends, shortens rules and collapses blank runs; pass `--no-agent` to
+read the text as the screen shows it.
 Send honors bracketed paste and optionally appends encoded Enter. Keys honor the
 terminal's keyboard protocol; all keys are validated before any bytes are sent.
 Use `--` before text beginning with `--`. Input delivery is not proof an agent
@@ -94,7 +104,7 @@ Existing `corgi workspace` commands manage workspace metadata; use its help.
 Do not stop/restart the runtime to obtain a missing command. Ask the user about
 updating when the server does not support this CLI.
 
-Success is JSON on stdout. Errors are JSON on stderr with `ok:false` and `err`
-(a `Usage` error adds the command's `usage` lines); usage errors exit 2,
-runtime errors exit 1. No automatic retries of mutations.
+Errors go to stderr as `corgi: NAME`, or as JSON with `ok:false` and `err`
+under `--json`; a usage error lists the command's usage lines. Usage errors
+exit 2, runtime errors exit 1. No automatic retries of mutations.
 A broken connection can occur after a successful mutation: rediscover first.

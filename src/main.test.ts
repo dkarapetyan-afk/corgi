@@ -1,5 +1,5 @@
 import { test, expect, spyOn } from "bun:test";
-import { actionNames, failure, providerAlias, paneId, run } from "./main";
+import { actionNames, failure, providerAlias, paneId, run, say } from "./main";
 import { specs } from "./action";
 import * as rpc from "./rpc";
 import { readFileSync, realpathSync } from "node:fs";
@@ -50,7 +50,12 @@ test("--help prints help instead of running the command", async () => {
   const request = spyOn(rpc, "request").mockResolvedValue({ ok: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
-    for (const args of [["shutdown", "--help"], ["reload", "-h"], ["-h"], ["agent", "--help"]]) {
+    for (const args of [
+      ["shutdown", "--help"],
+      ["reload", "-h"],
+      ["--no-agent", "-h"],
+      ["agent", "--help"],
+    ]) {
       output.mockClear();
       await run(args);
       expect(String(output.mock.calls[0]?.[0])).toContain("corgi shutdown");
@@ -60,6 +65,55 @@ test("--help prints help instead of running the command", async () => {
     request.mockRestore();
     output.mockRestore();
   }
+});
+test("agent mode's help lists only the control commands", async () => {
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    await run(["--agent", "--help"]);
+    const text = String(output.mock.calls[0]?.[0]);
+    expect(text).toContain("corgi pane read");
+    expect(text).not.toContain("corgi shutdown");
+    expect(text).toEndWith(
+      "corgi --skill\n\nAgent mode is on: `corgi --no-agent --help` also lists the viewer's commands.\n",
+    );
+  } finally {
+    output.mockRestore();
+  }
+});
+test("daemon replies print in words", () => {
+  expect(say("ping", { ok: true, pid: 42 })).toBe("running, pid 42\n");
+  expect(say("recovery.save", { ok: true, path: "/state/r1" })).toBe("saved /state/r1\n");
+  expect(say("action", { ok: true, viewer: 3, queued: true })).toBe("queued for viewer 3\n");
+  expect(say("native.list", { ok: true, sessions: [] })).toBe("no native sessions\n");
+  expect(
+    say("native.list", {
+      ok: true,
+      sessions: [{ id: 2, pid: 9, provider: "codex", state: "blocked", attention: "needs_input", pending_requests: 1 }],
+    }),
+  ).toBe("session 2 codex blocked, needs input, 1 pending request, pid 9\n");
+  expect(
+    say("native.events", {
+      ok: true,
+      events: [{ seq: 4, line: '{"id":1}' }],
+      pending_requests: ['{"id":2}'],
+      next_seq: 5,
+    }),
+  ).toBe('4 {"id":1}\npending {"id":2}\nnext 5\n');
+  expect(say("native.stop", { ok: true })).toBe("ok\n");
+});
+test("--json prints a daemon reply as it came", async () => {
+  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, pid: 42 });
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    await run(["ping"]);
+    await run(["ping", "--json"]);
+    expect(output.mock.calls.map(call => String(call[0]))).toEqual(["running, pid 42\n", '{"ok":true,"pid":42}\n']);
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+  }
+  expect(failure(["ping", "--json"], Error("ConnectionRefused"))).toBe('{"ok":false,"err":"ConnectionRefused"}\n');
+  expect(failure(["ping"], Error("ConnectionRefused"))).toBe("corgi: ConnectionRefused\n");
 });
 test("usage errors show the command's help lines", () => {
   expect(failure(["open"], Error("Usage"))).toBe(

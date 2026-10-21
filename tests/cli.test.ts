@@ -8,7 +8,10 @@ class AgentCli extends Runtime {
     const env = { ...this.env };
     delete env.CORGI_PANE;
     if (caller !== undefined) env.CORGI_PANE = String(caller);
-    const p = await run([EXE, ...args.map(String)], {
+    const words = args.map(String),
+      end = words.includes("--") ? words.indexOf("--") : words.length;
+    words.splice(end, 0, "--json");
+    const p = await run([EXE, ...words], {
       env,
       input: stdin,
       check: false,
@@ -125,6 +128,8 @@ class AgentCli extends Runtime {
       stdin: "printf 'cli_marker_123\\n'",
     });
     await this.until(async () => (await this.cli(["pane", "read", one.pane])).result.text.includes("cli_marker_123"));
+    this.assertIn("cli_marker_123", await this.run_cli("pane", "read", String(one.pane)));
+    this.assertIn(`    pane ${one.pane}`, await this.run_cli("list"));
     await this.cli(["pane", "keys", one.pane, "ctrl+c"]);
     await this.cli(["pane", "keys", one.pane, "enter", "invalid-key"], {
       error: "InvalidKey",
