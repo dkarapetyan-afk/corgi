@@ -24,10 +24,26 @@ See [HACKING.md](HACKING.md) for development workflows and architecture.
   viewer in a PTY and records its screens. See `tools/probe.ts`.
 - **Landing page:** `bun run landingpage:dev` serves `site/` and reloads on
   save; `landingpage:build` writes one self-contained `site/dist/index.html`
-  and `landingpage:start` serves it. `bun tools/site_frames.ts` re-records the
-  page's screens into `site/frames.json` with Corgi's renderer (`--check`
-  compares). The page imports Corgi's animation code, so keep
-  `src/corgi_animation.ts` browser-safe.
+  (and `moonlander.html`), `landingpage:start` serves it, and
+  `landingpage:publish` builds it and deploys it to corgi.computer with
+  wrangler, as a Worker on `/` and `/moonlander` (`site/wrangler.jsonc`);
+  other paths pass through to the release bucket. `bun tools/site_frames.ts`
+  re-records the page's screens into `site/frames.json` with Corgi's renderer
+  (`--check` compares). The page imports Corgi's animation code, so keep
+  `src/corgi_animation.ts` browser-safe. It also runs the review panel, the
+  resource card, the command menu and the worktree overview, with
+  `site/browser/` standing in for git, files, the resource sampler, ports,
+  launch commands, zlib, the native widths (package.json's `"browser"`
+  field), `process.platform` and `Buffer`; a new Node or native import under
+  `src/review/`, `src/resource_tooltip.ts`, `src/shortcut_help.ts`,
+  `src/worktree_tooltip.ts` or what it imports (the sidebar among them)
+  needs a stand-in there too.
+  The hero's first frame is prerendered from `site/main.js` on builds and
+  dev saves; `site/.generated/` is disposable. Keep its mobile breakpoint
+  and column count in `site/hero_config.ts`.
+  Wrangler's local `dev` server is incompatible with Bun (its runtime
+  dispatcher fails on reload); run that diagnostic with Node. The site
+  build and publish commands use Bun.
 
 ## Layout
 

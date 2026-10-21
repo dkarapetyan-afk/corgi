@@ -2,16 +2,33 @@
 // tools/site_frames.ts as [text, style] runs per row; styles are
 // [fg, bg, bold, underline, underline color]. The corgis and spinners over
 // them move by corgi's own animation code.
+import "./browser/process";
+import "./browser/buffer";
+import * as heroConfig from "./hero_config";
 import DATA from "./frames.json";
 import * as terminal from "./terminal";
 import * as corgiAnimation from "../src/corgi_animation";
 import * as corgiFrames from "../src/corgi_frames";
 import * as corgiBadge from "../src/assets/corgi_badge";
 import * as palette from "../src/palette";
+import * as panel from "../src/review/panel";
+import * as resourceTooltip from "../src/resource_tooltip";
+import * as shortcutHelp from "../src/shortcut_help";
+import * as worktreeTooltip from "../src/worktree_tooltip";
+import * as worktreeRemoval from "../src/worktree_removal";
+import * as worktrees from "../src/worktrees";
+import * as bindings from "../src/bindings";
+import { Rect } from "../src/layout";
+import { Writer } from "../src/text";
+import { cpuText, memoryText } from "../src/trackers/resources";
+import CLI_HELP from "../assets/cli-help.txt" with { type: "text" };
+import CLI_SKILL from "../assets/corgi-skill.md" with { type: "text" };
 
 const WAG = corgiFrames.wag;
 const BADGE = `data:image/png;base64,${corgiBadge.png_base64}`;
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const GAME_LABEL = "Game ↗", GAME_URL = "http://localhost:3000/";
+const GAME_TARGETS = [GAME_LABEL, GAME_URL, GAME_URL.slice(0, -1)].map((text) => Array.from(text));
 
 // ---------------------------------------------------------------- colors
 const HEX = { ...Object.fromEntries(Object.entries(palette.colors).map(([token, rgb]) => [token, "#" + rgb.map((n) => n.toString(16).padStart(2, "0")).join("")])), pane: "#121418" };
@@ -42,7 +59,7 @@ const ARM = { l: ["calc(50% + .5px) 1px", "left center"], r: ["calc(50% + .5px) 
 const BOX = { "─": "lr", "│": "ud", "┌": "rd", "┐": "ld", "└": "ur", "┘": "ul", "├": "udr", "┤": "udl", "┬": "lrd", "┴": "lru", "┼": "udlr" };
 const BRAILLE_DOTS = [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [0, 3], [1, 3]];
 function shape(ch) {
-  if (ch === "▌") return { img: G, size: "50% 100%", pos: "left" };
+  if (ch === "▌" || ch === "▐") return { img: G, size: "50% 100%", pos: ch === "▌" ? "left" : "right" };
   const cp = ch.codePointAt(0);
   // Lower eighths, ▁ through █, fill from the cell's bottom edge.
   if (cp >= 0x2581 && cp <= 0x2588) return { img: G, size: `100% ${(cp - 0x2580) * 12.5}%`, pos: "bottom" };
@@ -74,7 +91,7 @@ function tidySidebar(g) {
     const at = r === 0 ? text.indexOf("[ + ]") : -1;
     if (at >= 0) for (let c = at; c < row.length && row[c][0] !== "│"; c++) row[c] = [" ", row[at - 1][1]];
     // With the buttons gone, a narrow sidebar's header has room for its name.
-    const cut = r === 0 ? text.indexOf("workspac…") : -1;
+    const cut = r === 0 ? text.search(/\bw[a-z]*…/) : -1;
     if (cut >= 0) Array.from("workspaces").forEach((ch, k) => (row[cut + k] = [ch, row[cut][1]]));
     for (const m of text.matchAll(/⚒\d+/g)) for (let c = m.index; c < m.index + m[0].length; c++) row[c] = [" ", row[m.index - 1][1]];
   });
@@ -130,10 +147,12 @@ function animate(g, now, dreamKey = 0) {
 // ---------------------------------------------------------------- screens
 class Screen {
   constructor(el, cols, rows, { side = Infinity, badge = false } = {}) {
-    this.spans = []; this.keys = []; this.rowEls = [];
+    this.spans = []; this.keys = []; this.rowEls = []; this.links = [];
+    this.initial = [...el.querySelectorAll(":scope > .hero-initial")];
     for (let r = 0; r < rows; r++) {
       const row = el.appendChild(document.createElement("div"));
       row.className = "r";
+      row.hidden = this.initial.length > 0;
       const spans = [];
       for (let c = 0; c < cols; c++) {
         const s = row.appendChild(document.createElement("span"));
@@ -144,7 +163,9 @@ class Screen {
     }
     if (badge) {
       const img = el.appendChild(document.createElement("img"));
-      img.className = "badge"; img.src = BADGE; img.alt = ""; img.style.left = `${BADGE_X}ch`;
+      img.className = "badge"; img.src = BADGE; img.alt = ""; img.style.left = `calc(${BADGE_X} * var(--cell))`;
+      img.hidden = this.initial.length > 0;
+      this.badge = img;
     }
   }
   /// Show only the first `n` rows.
@@ -154,21 +175,53 @@ class Screen {
     this.rowEls.forEach((row, i) => (row.hidden = i >= n));
   }
   paint(g) {
-    this.spans.forEach((row, r) => row.forEach((span, c) => {
-      const [ch, s] = g[r]?.[c] ?? [" ", PLAIN];
-      const key = ch + "\u0000" + s;
-      if (this.keys[r][c] === key) return;
-      this.keys[r][c] = key;
-      const L = look(s), box = shape(ch);
-      span.className = L.cls + (span.dataset.p ? " p" : "");
-      span.textContent = box ? " " : ch;
-      span.style.color = L.color;
-      span.style.backgroundColor = L.bg;
-      span.style.setProperty("--ulc", L.ulc);
-      span.style.backgroundImage = box ? box.img : "";
-      span.style.backgroundSize = box ? box.size : "";
-      span.style.backgroundPosition = box ? box.pos : "";
-    }));
+    this.spans.forEach((row, r) => {
+      let changed = false;
+      row.forEach((span, c) => {
+        const [ch, s] = g[r]?.[c] ?? [" ", PLAIN];
+        const key = ch + "\u0000" + s;
+        if (this.keys[r][c] === key) return;
+        changed = true;
+        this.keys[r][c] = key;
+        const L = look(s), box = shape(ch);
+        span.className = L.cls + (span.dataset.p ? " p" : "");
+        span.textContent = box ? " " : ch;
+        span.style.color = L.color;
+        span.style.backgroundColor = L.bg;
+        span.style.setProperty("--ulc", L.ulc);
+        span.style.backgroundImage = box ? box.img : "";
+        span.style.backgroundSize = box ? box.size : "";
+        span.style.backgroundPosition = box ? box.pos : "";
+      });
+      if (changed) this.gameLinks(g[r] ?? [], r);
+    });
+    if (this.initial.length) {
+      this.initial.forEach((frame) => frame.remove());
+      this.initial = [];
+      this.rowEls.forEach((row, r) => row.hidden = this.shown != null && r >= this.shown);
+      if (this.badge) this.badge.hidden = false;
+    }
+  }
+  // Links follow the cells that survived cropping and popovers.
+  gameLinks(cells, r) {
+    const spans = [];
+    for (let c = 0; c < this.spans[r].length; c++) {
+      const text = GAME_TARGETS.find((text) => c + text.length <= this.spans[r].length && text.every((ch, i) => cells[c + i]?.[0] === ch));
+      if (text) spans.push([c, text.length]);
+    }
+    const key = JSON.stringify(spans);
+    if (this.links[r]?.key === key) return;
+    this.links[r]?.anchors.forEach((a) => a.remove());
+    const anchors = spans.map(([col, width]) => {
+      const a = document.createElement("a");
+      a.className = "game-link"; a.href = "/moonlander"; a.target = "_blank"; a.rel = "noopener";
+      a.title = GAME_URL; a.setAttribute("aria-label", "Play Moonlander (opens in a new tab)");
+      Object.assign(a.style, { left: `calc(${col} * var(--cell))`, width: `calc(${width} * var(--cell))` });
+      a.addEventListener("click", (e) => e.stopPropagation());
+      a.addEventListener("keydown", (e) => e.stopPropagation());
+      return this.rowEls[r].appendChild(a);
+    });
+    this.links[r] = { key, anchors };
   }
 }
 const visible = new Set();
@@ -293,10 +346,18 @@ function noManage(g) {
   for (let c = start; c <= at + "Manage agents".length; c++) top[c] = ["─", top[1][1]];
   return g;
 }
+// Nor a YOLO toggle: the recorder leaves out its column, and its hint goes.
+function noYolo(g) {
+  const foot = g[PICK_HEIGHT - 2], text = foot.map(([ch]) => ch).join(""), hint = "   y  YOLO";
+  const at = text.indexOf(hint), lead = text.indexOf("new tab") + "new tab".length;
+  if (at < 0 || lead < "new tab".length) return g;
+  g[PICK_HEIGHT - 2] = [...foot.slice(0, lead), ...Array.from({ length: hint.length }, () => [" ", foot[1][1]]), ...foot.slice(lead, at), ...foot.slice(at + hint.length)];
+  return g;
+}
 // Rows: Codex, Claude Code, Codex on a second account, New terminal.
 // Every mode is the same height, so the page never moves.
 const PICK_AGENTS = 4, PICK_HEIGHT = 18, FIELD_ROW = 7;
-const PICK = Array.from({ length: PICK_AGENTS }, (_, i) => noManage(crop(F["launcher" + i], POP_AT.top, POP_AT.left, PICK_HEIGHT, POP.width)));
+const PICK = Array.from({ length: PICK_AGENTS }, (_, i) => noYolo(noManage(crop(F["launcher" + i], POP_AT.top, POP_AT.left, PICK_HEIGHT, POP.width))));
 const PICK_LIST = noManage(crop(F.search3, POP_AT.top, POP_AT.left, PICK_HEIGHT, POP.width));
 // No scope switching here: the search line and the footer lose "tab".
 function noScope(g) {
@@ -520,6 +581,16 @@ function move(delta) {
   if (L.mode === "list" && delta < 0 && i === from) return Object.assign(L, { mode: "agents", agent: PICK_AGENTS - 1 });
   L.key = L.mode === "search" ? rows[i]?.i ?? null : i;
 }
+// The keycaps, as corgi reads them: a digit or t opens its row, a the
+// selected agent, j and k move.
+function keycap(key) {
+  const row = key === "t" ? PICK_AGENTS - 1 : /^\d$/.test(key) && Number(key) < PICK_AGENTS - 1 ? Number(key) : null;
+  if (row !== null) { Object.assign(L, { mode: "agents", agent: row }); openSelected(); }
+  else if (key === "a" && L.mode === "agents") openSelected();
+  else if (key === "j" || key === "k") move(key === "j" ? 1 : -1);
+  else return false;
+  return true;
+}
 const redraw = () => drawLauncher(performance.now());
 launcherStage.addEventListener("keyup", redraw);
 launcherStage.addEventListener("keydown", (e) => {
@@ -534,7 +605,24 @@ launcherStage.addEventListener("keydown", (e) => {
     if (L.query) { L.query = queryInput.value = ""; L.key = null; L.scroll = 0; } else backToList();
     e.preventDefault();
   }
+  else if (L.mode !== "search" && !e.metaKey && !e.ctrlKey && !e.altKey && keycap(e.key)) e.preventDefault();
 });
+// Hovering a stage hands it the keyboard; leaving hands it back, unless a
+// click took it up.
+function lendKeys(stage) {
+  let lent = null;
+  stage.addEventListener("pointerenter", (e) => {
+    if (e.pointerType !== "mouse" || stage.contains(document.activeElement)) return;
+    lent = document.activeElement;
+    stage.focus({ preventScroll: true });
+  });
+  stage.addEventListener("pointerdown", () => (lent = null));
+  stage.addEventListener("pointerleave", () => {
+    if (lent && document.activeElement === stage) { stage.blur(); lent.focus?.({ preventScroll: true }); }
+    lent = null;
+  });
+}
+lendKeys(launcherStage);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.target === queryInput || e.metaKey || e.ctrlKey || L.mode === "search" || L.mode === "opened" || !visible.has(launcherStage)) return;
   e.preventDefault();
@@ -758,14 +846,13 @@ launcherPhoneEl.addEventListener("click", (e) => {
   else if (hit.entry != null) L.key = hit.entry;
   openSelected();
 });
-// Below 600 pixels the picker takes the phone's layout. Each resize waits a
-// frame, so the layout it changes doesn't loop back into the observer.
+// Below 600 pixels the picker takes the phone's layout; the stylesheet swaps
+// the screens. Each resize waits a frame, so the layout it changes doesn't
+// loop back into the observer.
 new ResizeObserver(() => requestAnimationFrame(() => {
   const phone = launcherStage.closest(".band").clientWidth < 600;
   if (phone === L.phone) return;
   L.phone = phone;
-  launcherEl.hidden = phone;
-  launcherPhoneEl.hidden = !phone;
   redraw();
 })).observe(launcherStage.closest(".band"));
 
@@ -818,25 +905,34 @@ function cardNow(ws, i) {
   if (W.phone) return early ? [PEARLY_CARD, PEARLY_BOX] : [PCARDS[ws][i][read], PCARD_BOX[ws][i]];
   return early ? [EARLY_CARD, EARLY_BOX] : [CARDS[ws][i][read], CARD_BOX[ws][i]];
 }
-// Each workspace's resource card, a sample a second; the sidebar's figures
-// follow the same samples.
-const RES_SAMPLES = 12;
-const RES = { C: [], M: [] };
-for (const ws of ["C", "M"]) for (let f = 0; f < RES_SAMPLES; f++) RES[ws].push(F[`res_${ws}_${f}`]);
+// Each workspace's resource card, drawn by corgi's own code from a sample a
+// second the recorder kept; the sidebar's figures follow the same samples.
+const RES_SAMPLES = DATA.resources.length;
 const RES_ROW = { C: WS_ROWS.C[2], M: WS_ROWS.M[2] };
-const RES_BOX = Object.fromEntries(Object.entries(RES).map(([ws, [g]]) => {
-  const box = { top: -1, bottom: 0, left: 0, right: 0, offset: CARD_LEFT };
-  g.forEach((row, r) => row.forEach(([ch], c) => {
-    if (ch === "┌" && box.top < 0) Object.assign(box, { top: r, left: c + CARD_LEFT });
-    if (ch === "┘") Object.assign(box, { bottom: r, right: c + CARD_LEFT });
-  }));
-  return [ws, box];
-}));
+const RES_WS = { C: [1, "corgi"], M: [2, "moonlander"] };
+const resWork = (ws, f) => DATA.resources[f].workspaces.find((w) => w.id === RES_WS[ws][0]);
 // Each sample's totals as the sidebar prints them: [CPU, memory].
-const RES_TOTALS = DATA.resTotals;
+const RES_TOTALS = Object.fromEntries(Object.keys(RES_WS).map((ws) => [ws, DATA.resources.map((_, f) => {
+  const w = resWork(ws, f);
+  return [cpuText(w.cpu), memoryText(BigInt(w.memory))];
+})]));
+// The card in `rect` at sample f, its rows in `state`'s order, which holds
+// while `held`, as corgi holds it under the pointer.
+const RES_CELLS = new Map();
+function resCells(ws, f, state, rect, held) {
+  state.update(resWork(ws, f), held);
+  const key = [ws, f, rect.w, rect.h, state.sort, state.order.map((k) => k.pid)].join(":");
+  if (!RES_CELLS.has(key)) {
+    const out = new Writer();
+    resourceTooltip.draw(out, new Rect(0, 0, rect.w, rect.h), RES_WS[ws][1], DATA.resources[f], state);
+    RES_CELLS.set(key, terminal.grid(out.buffered(), rect.w, rect.h).map((row) => row.map(([ch, ...look]) => [ch, style(...look)])));
+  }
+  return RES_CELLS.get(key);
+}
+const paste = (g, cells, rect) => cells.forEach((row, r) => row.forEach((cell, c) => (g[rect.y + r][rect.x + c] = cell)));
 // corgi places the card at the sidebar's edge, inside the window.
-const resLeft = (ws) => Math.max(0, Math.min(W.width, W.cols - (RES_BOX[ws].right - RES_BOX[ws].left + 1) - 1));
-const resRect = (ws) => { const box = RES_BOX[ws], left = resLeft(ws); return { ...box, left, right: left + box.right - box.left }; };
+const watchRes = new resourceTooltip.State();
+const resRect = (ws) => resourceTooltip.geometry(W.cols, WATCH_ROWS_N, W.width, RES_ROW[ws]);
 const GIT_BOX = boxOf(F.git), PGIT_BOX = boxOf(F.pgit, 0);
 // Cards and the commit tooltip sit two cells right of the pointer, so they
 // move with the sidebar's edge, clamped to the window. A phone's stay where
@@ -929,6 +1025,16 @@ function workRows(key, t, w) {
       ...claudeBottom(w)];
   }
 }
+// The flicker fix's session, told short, once its turn is over.
+const flickerFixed = (w) => [
+  ...ask("fix the sidebar flicker"), [],
+  ...tool("Read", "sidebar.zig", "Read 2104 lines"),
+  ...say("`drawAgent` draws rows"), [["  twice. Fixing that.", A.text]],
+  ...tool("Update", "sidebar.zig", "6 added, 4 removed"),
+  ...tool("Bash", "zig build test", "48 passed"),
+  ...say("Fixed: rows draw"), [["  once now.", A.text]], [],
+  [["✻ Worked for 72s", A.hint]], [],
+  ...claudeBottom(w)];
 // The same sessions told short enough for a phone's 28-column pane.
 function phoneRows(key, t, w) {
   const spin = SPIN_CLAUDE[Math.floor(t / 120) % SPIN_CLAUDE.length];
@@ -1032,8 +1138,9 @@ const W = {
 // Frames by name; a phone's carry a "p".
 const frameOf = (name) => F[(W.phone ? "p" : "") + name];
 // moonlander's dev server, linked by name on its row; with the pointer on it,
-// corgi shows the URL in the window's corner.
+// corgi shows the URL in the window's corner. A click opens the game itself.
 const LINK_ROW = WS_ROWS.M[0];
+const openGame = () => window.open("/moonlander", "_blank");
 const CHIP = (() => {
   const [row] = F[`wl${WIDTHS[0]}_C`], end = row.findIndex(([, s]) => STYLES[s][1] !== "selected");
   return row.slice(0, end);
@@ -1169,7 +1276,7 @@ function drawWatch(t) {
     if (bg === "bg") g[r][c] = [ch, style(fg, HOVER_BG, bold, ul, ulc)];
   }
   if (W.link) CHIP.forEach((cell, c) => (g[WATCH_ROWS_N - 1][c] = cell));
-  if (W.res) overlay(g, RES[W.res][sample], RES_BOX[W.res], W.width, resLeft(W.res));
+  if (W.res) { const rect = resRect(W.res); paste(g, resCells(W.res, sample, watchRes, rect, false), rect); }
   else if (W.card != null) overlay(g, ...cardNow(W.ws, W.card), W.width);
   else if (W.gitHover && W.git !== "none") overlay(g, W.phone ? F.pgit : F.git, W.phone ? PGIT_BOX : GIT_BOX, W.width);
   watchScreen.paint(g);
@@ -1208,7 +1315,7 @@ watchEl.addEventListener("mousemove", (e) => {
   const at = watchCell(e), i = agentAt(at);
   W.wsHover = workspaceAt(at);
   // The resource card stays open while the pointer is on it.
-  if (W.res && within(at, resRect(W.res)) && !resAt(at)) return drawWatch(W.t);
+  if (W.res && resRect(W.res).contains(at.col, at.row) && !resAt(at)) return drawWatch(W.t);
   W.link = linkAt(at);
   if (W.link) { Object.assign(W, { hover: null, card: null, res: null, gitHover: false }); watchEl.style.cursor = "pointer"; return drawWatch(W.t); }
   W.res = resAt(at);
@@ -1272,13 +1379,15 @@ document.addEventListener("mousemove", (e) => {
 });
 document.addEventListener("mouseup", () => { W.dragging = false; });
 // A phone's tap: with a card or tooltip open it only dismisses that (a tap
-// on "Push ↑2" pushes); otherwise an agent opens its card, focused and read,
-// and the rest act as clicks do. The tour resumes 6 s after the last tap.
+// on "Push ↑2" pushes, and one on the link opens it); otherwise an agent opens
+// its card, focused and read, and the rest act as clicks do. The tour resumes
+// 6 s after the last tap.
 function tapWatch(at) {
   const now = performance.now();
   Object.assign(W, { taken: true, inside: false, resumeAt: now + 6000 });
   watchEl.classList.add("taken");
   if (W.gitHover && W.git === "ahead" && gitHit(at)) return Object.assign(W, { git: "pushing", gitAt: now, gitHover: false });
+  if (W.link && linkAt(at)) { W.link = false; return openGame(); }
   if (W.card != null || W.gitHover || W.link) return Object.assign(W, { card: null, hover: null, gitHover: false, link: false });
   if (linkAt(at)) return (W.link = true);
   if (newAt(at)) return summonPicker();
@@ -1293,12 +1402,12 @@ function tapWatch(at) {
   const i = agentAt(at);
   if (i >= 0) { focusAgent(i); Object.assign(W, { card: i, hover: i }); }
 }
-// Clicks: Push, "unread →", a workspace, or an agent.
+// Clicks: the link, Push, "unread →", a workspace, or an agent.
 watchEl.addEventListener("click", (e) => {
   const at = watchCell(e);
   if (W.phone) { tapWatch(at); return drawWatch(W.t); }
-  // The link would open in a browser; here it only shows where it goes.
-  if (edgeAt(at) || linkAt(at) || (W.res && within(at, resRect(W.res)) && !resAt(at))) return;
+  if (linkAt(at)) return openGame();
+  if (edgeAt(at) || (W.res && resRect(W.res).contains(at.col, at.row) && !resAt(at))) return;
   if (newAt(at)) return summonPicker();
   if (gitHit(at)) {
     Object.assign(W, { git: "pushing", gitAt: performance.now() });
@@ -1375,29 +1484,171 @@ function phoneOverview(f) {
   OV_PHONE.set(f, g);
   return g;
 }
-const overviewSection = document.getElementById("overview"), overviewStage = document.getElementById("overview-stage");
+const overviewSection = document.getElementById("overview");
 let overviewPhoneOn = false;
 function drawOverview(t) {
   const g = OV_CARD[Math.floor(t / OV_STEP) % OV_CARD.length];
   if (overviewPhoneOn) { if (g !== overviewShown) overviewPhone.paint(phoneOverview((overviewShown = g))); return; }
   if (g !== overviewShown) overviewScreen.paint((overviewShown = g));
 }
-// Below 600 pixels the card takes the phone's layout, edge to edge.
+// Below 600 pixels the card takes the phone's layout, edge to edge; the
+// stylesheet swaps the screens.
 new ResizeObserver(() => requestAnimationFrame(() => {
   const phone = overviewSection.clientWidth < 600;
   if (phone === overviewPhoneOn) return;
   overviewPhoneOn = phone;
-  overviewEl.hidden = phone;
-  overviewPhoneEl.hidden = !phone;
-  overviewStage.classList.toggle("phone", phone);
   overviewShown = null;
 })).observe(overviewSection);
+
+// ---------------------------------------------------------------- keyboard and mouse
+// Corgi's command menu as Ctrl-B opens it, drawn by its own code: every
+// shortcut, each one a button too. A key, read as corgi reads it once the
+// prefix is down, or a click lights what it would run. t or a click on the
+// footer's corgi throws it a ball; the wheel, or a finger on a phone,
+// scrolls what doesn't fit.
+const keysStage = document.getElementById("keys-stage");
+const keysHelp = Object.assign(new shortcutHelp.State(), { command_mode: true });
+const K = { preset: "corgi", lit: null, litAt: -Infinity, painted: false };
+const LIT_FOR = 500;
+const keysScreens = [["v-keys", 112, 36], ["v-keys-phone", 48, 30]].map(([id, cols, rows]) => {
+  const el = document.getElementById(id);
+  return { el, cols, rows, screen: new Screen(el, cols, rows) };
+});
+// The one the stylesheet shows.
+const keysNow = () => keysScreens.find((k) => k.el.offsetParent) ?? keysScreens[0];
+const actionKey = (a) => `${a.name}:${a.value ?? ""}`;
+// What each cell answers to: an action, "close" on the Esc button, "play" on
+// the corgi.
+const KEY_CELLS = new Map();
+function keyCells({ cols, rows }) {
+  const id = [K.preset, cols, rows, keysHelp.scroll].join(":");
+  if (KEY_CELLS.has(id)) return KEY_CELLS.get(id);
+  const b = shortcutHelp.bounds(cols, rows), esc = { r: b.y + b.h - 2, c0: b.x + b.w - 16, c1: b.x + b.w - 5 };
+  const cells = Array.from({ length: rows }, (_, y) => Array.from({ length: cols }, (_, x) => {
+    const hit = keysHelp.hit(cols, rows, x, y, K.preset);
+    if (hit.name === "action") return actionKey(hit.action);
+    if (hit.name === "close") return y === esc.r && x >= esc.c0 && x <= esc.c1 ? "close" : null;
+    return hit.name === "play" ? "play" : null;
+  }));
+  KEY_CELLS.set(id, cells);
+  return cells;
+}
+function drawKeys() {
+  if (K.painted && !visible.has(keysStage)) return;
+  K.painted = true;
+  const k = keysNow(), { cols, rows } = k;
+  const g = terminal.grid(keysHelp.frame(cols, rows, K.preset, "ctrl_b", Date.now()), cols, rows).map((row) => row.map(([ch, ...look]) => [ch, style(...look)]));
+  // What a key or a click ran stays lit a moment, its label through its key;
+  // Ctrl-B lights the prefix's keycap.
+  if (K.lit && performance.now() - K.litAt < LIT_FOR) {
+    const b = shortcutHelp.bounds(cols, rows), cells = keyCells(k);
+    for (let r = 0; r < rows; r++) {
+      const c0 = K.lit === "prefix" ? (r === b.y + 3 ? b.x + 11 : -1) : cells[r].indexOf(K.lit);
+      const c1 = K.lit === "prefix" ? b.x + 20 : cells[r].lastIndexOf(K.lit);
+      for (let c = Math.max(0, c0); c0 >= 0 && c <= c1; c++) {
+        const [fg, bg, bold, ul, ulc] = STYLES[g[r][c][1]];
+        g[r][c] = [g[r][c][0], style(fg, bg === "line" ? "faint" : "selected", bold, ul, ulc)];
+      }
+    }
+  }
+  k.screen.paint(g);
+}
+function lightKeys(what) {
+  Object.assign(K, { lit: what, litAt: performance.now() });
+  drawKeys();
+  setTimeout(drawKeys, LIT_FOR + 20);
+}
+// The action a key runs once the prefix is down: a prefixed binding, else a
+// direct one such as F1. Ctrl and a letter is its control byte.
+const NAMED_KEYS = { ArrowLeft: 57350, ArrowRight: 57351, ArrowUp: 57352, ArrowDown: 57353, Tab: 9, Enter: 13 };
+function keyAction(e) {
+  const mods = { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey, super: e.metaKey };
+  const either = (key, m) => bindings.lookup(K.preset, true, key, m) ?? bindings.lookup(K.preset, false, key, m);
+  const named = NAMED_KEYS[e.key] ?? (/^F([1-9]|1[0-2])$/.test(e.key) ? 57363 + Number(e.key.slice(1)) : null);
+  if (named != null) return either(named, mods);
+  if (Array.from(e.key).length !== 1) return null;
+  if (e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey && /^[a-z]$/i.test(e.key)) return either(e.key.toLowerCase().charCodeAt(0) - 96, {});
+  if (e.ctrlKey || e.metaKey || e.altKey) return bindings.chord(K.preset, true, { codepoint: e.key.codePointAt(0), mods });
+  return bindings.lookup(K.preset, true, e.key.codePointAt(0), {});
+}
+// As in corgi: Ctrl-N and Ctrl-P scroll and t plays ahead of any binding;
+// keys that bind nothing page through it.
+const SCROLL_KEYS = { ArrowUp: [false, 1], ArrowDown: [true, 1], PageUp: [false, "page"], PageDown: [true, "page"], Home: [false, Infinity], End: [true, Infinity] };
+keysStage.addEventListener("keydown", (e) => {
+  const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+  const handled = () => { e.preventDefault(); e.stopPropagation(); };
+  if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "n" || e.key === "p")) { keysHelp.move(e.key === "n", 1); handled(); return drawKeys(); }
+  if (plain && e.key === "t") { keysHelp.play(Date.now()); return handled(); }
+  if (plain && e.key === "Escape") { lightKeys("close"); return handled(); }
+  const act = keyAction(e);
+  if (act) { lightKeys(actionKey(act)); return handled(); }
+  const scroll = plain && SCROLL_KEYS[e.key];
+  if (!scroll || !keysHelp.max_scroll) return;
+  keysHelp.move(scroll[0], scroll[1] === "page" ? keysHelp.page_rows : scroll[1]);
+  handled();
+  drawKeys();
+});
+lendKeys(keysStage);
+const keysCell = (e, k) => { const box = k.el.getBoundingClientRect(); return { x: Math.floor((e.clientX - box.left) / (box.width / k.cols)), y: Math.floor((e.clientY - box.top) / (box.height / k.rows)) }; };
+// Whether the menu can scroll the way `down` says.
+const keysCanScroll = (down) => (down ? keysHelp.scroll < keysHelp.max_scroll : keysHelp.scroll > 0);
+for (const k of keysScreens) {
+  k.el.addEventListener("mousemove", (e) => {
+    const { x, y } = keysCell(e, k);
+    k.el.style.cursor = keysHelp.pointsAt(k.cols, k.rows, x, y, K.preset) ? "pointer" : "";
+  });
+  k.el.addEventListener("click", (e) => {
+    const { x, y } = keysCell(e, k), what = keyCells(k)[y]?.[x];
+    if (what === "play") keysHelp.play(Date.now());
+    else if (what) lightKeys(what);
+  });
+  // Three rows a notch, as in corgi; the page scrolls on once it can't.
+  let wheel = 0;
+  k.el.addEventListener("wheel", (e) => {
+    if (!keysCanScroll(e.deltaY > 0)) return;
+    e.preventDefault();
+    wheel += e.deltaMode ? e.deltaY * 40 : e.deltaY;
+    for (; Math.abs(wheel) >= 40; wheel -= Math.sign(wheel) * 40) keysHelp.move(wheel > 0, 3);
+    drawKeys();
+  }, { passive: false });
+  let touchY = null;
+  k.el.addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; }, { passive: true });
+  k.el.addEventListener("touchmove", (e) => {
+    if (touchY == null) return;
+    const dy = touchY - e.touches[0].clientY;
+    if (!keysCanScroll(dy > 0)) return;
+    e.preventDefault();
+    const row = k.el.getBoundingClientRect().height / k.rows, n = Math.trunc(dy / row);
+    if (!n) return;
+    keysHelp.move(n > 0, Math.abs(n));
+    touchY -= n * row;
+    drawKeys();
+  }, { passive: false });
+}
+// The presets corgi offers, as tabs over the menu.
+const presetButtons = [...document.querySelectorAll("#keys-presets button")];
+presetButtons.forEach((button) => button.addEventListener("click", () => {
+  Object.assign(K, { preset: button.dataset.preset, lit: null });
+  presetButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+  drawKeys();
+}));
+// Ctrl-B anywhere brings the menu up and hands it the keyboard, unless
+// something on the page took the key first (the review panel's own prefix).
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.key.toLowerCase() !== "b") return;
+  e.preventDefault();
+  const box = keysStage.getBoundingClientRect(), shown = box.top >= 0 && box.bottom <= innerHeight;
+  if (!shown) keysStage.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+  keysStage.focus({ preventScroll: true });
+  setTimeout(() => lightKeys("prefix"), shown || still ? 0 : 450);
+});
 
 // [watched element, draw, loop length, resting time]
 const LOOPS = [
   [launcherStage, drawLauncher, 1e9, 0],
   [watchEl, drawWatch, 1e9, 3600],
   [document.getElementById("overview-stage"), drawOverview, OV_STEP * OV_CARD.length, 0],
+  [keysStage, drawKeys, 1e9, 0],
 ];
 LOOPS.forEach(([el]) => watch.observe(el));
 
@@ -1444,70 +1695,6 @@ function drawSprite(now) {
   });
 }
 
-// ---------------------------------------------------------------- love heart
-// A warm band reads along the line, gold turning rose, and the <3 it reaches
-// becomes a heart that swells to red three times. The line reads again after
-// a pause; hovering or tapping it cuts the pause short.
-const LOVE = Array.from("A love letter to the modern terminal. <3"), HEART = LOVE.indexOf("<");
-const loveLine = document.getElementById("love");
-loveLine.textContent = "";
-const loveCells = rowOf(loveLine, LOVE.length), loveShown = [];
-const LOVE_TICK = 50, BAND_SPEED = 1.5, BAND_TRAIL = 9, LOVE_PAUSE = 5000;
-const ARRIVE = Math.ceil(HEART / BAND_SPEED) * LOVE_TICK;
-// The heart's red level, 0 at a rosy gray and 1 at hot: three rises, easing
-// back between them, the last one held. A later pass starts at red.
-const LOW = mix("muted", "hot", 0.35), RISE = 300, FALL = 500, HOLD = 300;
-function swells(fromRed) {
-  const keys = [[0, fromRed ? 1 : 0]];
-  let at = 0;
-  for (let n = 0; n < 3; n++) {
-    if (n || fromRed) keys.push([(at += FALL), 0]);
-    keys.push([(at += RISE), 1]);
-  }
-  return keys;
-}
-const SWELLS = [swells(false), swells(true)];
-function swell(keys, s) {
-  for (let i = 1; i < keys.length; i++) {
-    const [t0, v0] = keys[i - 1], [t1, v1] = keys[i];
-    if (s < t1) { const x = Math.max(0, (s - t0) / (t1 - t0)); return v0 + (v1 - v0) * x * x * (3 - 2 * x); }
-  }
-  return keys.at(-1)[1];
-}
-// The first pass shows ♡ for a tick before the heart fills.
-const loveEnd = (pass) => ARRIVE + (pass ? 0 : LOVE_TICK) + SWELLS[pass ? 1 : 0].at(-1)[0] + HOLD;
-function loveFrame(t, pass) {
-  const cells = LOVE.map((ch) => [ch, ""]);
-  const heart = (ch, color) => { cells[HEART] = [ch, color]; cells[HEART + 1] = [" ", ""]; };
-  if (pass) heart("♥\uFE0E", HEX.hot);
-  if (t < 0) return cells;
-  const head = (t / LOVE_TICK) * BAND_SPEED;
-  for (let i = 0; i < HEART; i++) {
-    const d = head - i;
-    if (d >= 0 && d < BAND_TRAIL) cells[i][1] = mix("muted", mix("warm", "hot", i / HEART), 0.9 * (1 - d / BAND_TRAIL));
-  }
-  if (t < ARRIVE) return cells;
-  if (!pass && t < ARRIVE + LOVE_TICK) heart("♡\uFE0E", LOW);
-  else heart("♥\uFE0E", mix(LOW, "hot", swell(SWELLS[pass ? 1 : 0], t - ARRIVE - (pass ? 0 : LOVE_TICK))));
-  return cells;
-}
-const love = { start: performance.now() + 1000, pass: 0 };
-function drawLove(now) {
-  let t = now - love.start;
-  if (t >= loveEnd(love.pass)) { love.pass++; love.start = now + LOVE_PAUSE; t = -1; }
-  const cells = still ? loveFrame(-1, 1) : loveFrame(Math.floor(t / LOVE_TICK) * LOVE_TICK, love.pass);
-  loveCells.forEach((s, i) => {
-    const [ch, color] = cells[i];
-    if (loveShown[i] === ch + color) return;
-    loveShown[i] = ch + color;
-    s.textContent = ch;
-    s.style.color = color;
-  });
-}
-const readNow = () => { const now = performance.now(); if (now < love.start) love.start = now; };
-loveLine.addEventListener("pointerenter", readNow);
-loveLine.addEventListener("click", readNow);
-
 // ---------------------------------------------------------------- footer corgi
 const sleeperCells = rowOf(document.getElementById("sleeper"), 16);
 // Corgi's sleeper, dreaming as a lone sidebar sleeper does.
@@ -1525,7 +1712,6 @@ function drawSleeper(now) {
 const started = new Map();
 function frame(now) {
   drawSprite(now);
-  drawLove(now);
   for (const [el, draw, period, rest] of LOOPS) {
     if (still) { draw(rest); continue; }
     if (visible.has(el) && !started.has(el)) started.set(el, now);
@@ -1562,8 +1748,8 @@ copyBtn.addEventListener("click", () => {
 
 // ---------------------------------------------------------------- sessions
 // A corgi session in split panes, built from keeps watch's frames. The hero
-// plays one the visitor can poke at, and nothing in it moves on its own. Each
-// feature below shows a slice of another, its point ringed.
+// opens one from a shell prompt for the visitor to poke at. Each feature
+// below shows a slice of another, its point ringed.
 (() => {
 const COLS = WATCH_COLS, ROWS = WATCH_ROWS_N, SW = 34;
 const rowText = (g, r) => g[r].map(([ch]) => ch).join("");
@@ -1571,14 +1757,17 @@ const now = () => performance.now();
 
 // ---- layouts
 const right = (a, b, ratio = 0.52) => ({ dir: "right", ratio, a, b }), down = (a, b, ratio = 0.5) => ({ dir: "down", ratio, a, b });
-const pane = (id) => ({ id });
+const pane = (id) => ({ id }), named = (title, root) => ({ ...root, title });
 // corgi's tabs: Claude and Codex side by side, Release notes beside the
 // refactor, then the finished agent. moonlander splits into Claude, a
 // finished Claude and a shell.
 const TABS = {
-  C: [right(pane("C0"), pane("C1")), right(pane("C2"), pane("C3")), pane("C4")],
-  M: [right(pane("M0"), down(pane("M1"), pane("sh"), 0.42))],
+  C: [named("fixes", right(pane("C0"), pane("C1"))), named("release", right(pane("C2"), pane("C3"))), named("keybindings", pane("C4"))],
+  M: [named("game", right(pane("M0"), down(pane("M1"), pane("sh"), 0.42)))],
 };
+// As corgi draws a tab: its title centered, a cell either side, ten at least.
+const tabTitle = (root, i) => root.title ?? `${i + 1}`;
+const tabWidth = (root, i) => Math.max(10, 2 + Math.min(tabTitle(root, i).length, 16));
 function leaves(node, x, y, w, h, out = []) {
   if (node.id) { out.push({ id: node.id, x, y, w, h }); return out; }
   if (node.dir === "right") {
@@ -1591,15 +1780,39 @@ function leaves(node, x, y, w, h, out = []) {
   return out;
 }
 const agentOf = (id) => (id === "sh" ? -1 : Number(id.slice(1)));
-const LINK_TEXT = "Game ↗";
+const LINK_TEXT = GAME_LABEL;
 const groundOf = (g, r, c) => STYLES[g[r][c][1]][1];
 const TAB_ON = style("strong", "selected", true), TAB_OFF = style("faint", "bg"), TAB_ADD = style("strong", "surface", true);
 const EDGE_ON = style("accent", null, true), EDGE = style("line");
-const PATH = style("#9fd39a"), URL = style("#a9b1f5"), VITE = style("accent", null, true), CURSOR = style(null, "text");
+const PATH = style("#9fd39a"), URL = style("#a9b1f5"), CURSOR = style(null, "text");
 const GLYPH = { ud: "│", lr: "─", dr: "┌", dl: "┐", ur: "└", ul: "┘", udr: "├", udl: "┤", dlr: "┬", ulr: "┴", udlr: "┼" };
 const prompt = (dir) => [[dir, PATH], [" $ ", A.hint]];
+// What the hackable band's panes run, kept to a glance: moonlander's tests,
+// failing until its agent fixes them, and its dev server.
+const PASS = style("accent"), FAIL = style("hot");
+const TEST_RUN = [[["bun test v1.3.1", A.strong]], [], [["✗ ", FAIL], ["landing > doesn't bounce", A.text]], [], [[" 11 pass", PASS]], [[" 1 fail", FAIL]]];
+const TEST_PASS = [[["bun test v1.3.1", A.strong]], [], [[" 12 pass", PASS]], [[" 0 fail", A.text]]];
+// How long a quiet agent takes over what it was asked.
+const FIX_AFTER = 3000;
+const DEV_RUN = [[["$ bun --hot server.ts", A.out]], [], [["  ➜  Local:   ", A.text], ["http://localhost:3000/", URL]]];
+const plain = (rows) => rows.map((row) => (row.runs ?? row).map(([text]) => text).join("")).join("\n");
+// Rows soft-wrapped at `w` cells, as a terminal reflows them.
+function wrap(rows, w) {
+  return rows.flatMap((row) => {
+    const out = [[]];
+    let n = 0;
+    for (const [text, s] of row) for (const ch of text) {
+      if (n === w) { out.push([]); n = 0; }
+      const line = out.at(-1), last = line.at(-1);
+      if (last?.[1] === s) last[0] += ch;
+      else line.push([ch, s]);
+      n++;
+    }
+    return out;
+  });
+}
 const sample = (t) => Math.floor(t / 1000) % RES_SAMPLES;
-const resLeftAt = (ws) => Math.max(0, Math.min(SW, COLS - (RES_BOX[ws].right - RES_BOX[ws].left + 1) - 1));
+const resRectAt = (ws, rows) => resourceTooltip.geometry(COLS, rows, SW, RES_ROW[ws]);
 function find(g, text, { r0 = 0, r1 = g.length - 1, c0 = 0, c1 = g[0].length - 1 } = {}) {
   for (let r = r0; r <= r1; r++) {
     const at = rowText(g, r).slice(c0, c1 + 1).indexOf(text);
@@ -1608,60 +1821,314 @@ function find(g, text, { r0 = 0, r1 = g.length - 1, c0 = 0, c1 = g[0].length - 1
   return null;
 }
 const agentRows = (i) => ({ r0: WATCH_ROWS[i], r1: WATCH_ROWS[i] + 1, c0: 1, c1: SW - 3 });
+const WT_ROWS = F.wt34.length;
+// A popover recorded over a whole window: its box, and the line to it from
+// the badge that opened it.
+function popover(g, f) {
+  const top = f.findIndex((row) => row.some(([ch]) => ch === "╭")), bottom = f.findLastIndex((row) => row.some(([ch]) => ch === "╯"));
+  const left = f[top].findIndex(([ch]) => ch === "╭"), right = f[bottom].findLastIndex(([ch]) => ch === "╯");
+  for (let r = top; r <= bottom; r++) {
+    for (let c = left; c <= right; c++) g[r][c] = f[r][c];
+    for (let c = SW - 2; c < left; c++) if (/[╶─]/.test(f[r][c][0])) g[r][c] = f[r][c];
+  }
+}
+
+// ---- the review panel: Corgi's own, at the window's right edge, on the
+// flicker fix's checkout as git answered the recorder (site/browser/git.ts).
+// Corgi's default width, beside a narrow sidebar, leaving the agent's pane
+// less than Corgi would. Its keys overlay stays shut.
+const REVIEW_W = 80;
+function reviewPanel() {
+  const p = new panel.Panel();
+  p.open = true;
+  p.keysHelp = false;
+  p.follow({ pane: 0, cwd: "~/corgi", name: "Fix sidebar flicker" });
+  // All files, newest edit first, with the new row.zig folded to its
+  // heading so the fix in sidebar.zig shows under it.
+  p.refresh().then(() => ["o", "x"].forEach((text) => p.key({ text })));
+  return p;
+}
+function drawReview(g, p, focused, rows) {
+  const out = new Writer(), x = COLS - REVIEW_W;
+  p.draw(out, x, 0, REVIEW_W, rows, focused);
+  terminal.grid(out.buffered(), COLS, rows).forEach((row, r) => {
+    for (let c = x; c < COLS; c++) { const [ch, ...look] = row[c]; g[r][c] = [ch, style(...look)]; }
+  });
+}
+// As Corgi's viewer passes them on: a press in the panel gives it the
+// keyboard and one elsewhere takes it back; the wheel scrolls it while it
+// has the keyboard; Ctrl-B e opens, focuses or closes it.
+const REVIEW_KEYS = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", PageUp: "page_up", PageDown: "page_down", Home: "home", End: "end", Enter: "enter", Escape: "escape", Backspace: "backspace" };
+const REVIEW_CTRL = { d: "half_down", u: "half_up", j: "newline", h: "backspace" };
+function reviewKey(e) {
+  if (e.metaKey || e.altKey) return null;
+  if (e.ctrlKey) return REVIEW_CTRL[e.key] ? { named: REVIEW_CTRL[e.key] } : null;
+  if (e.key === "Tab") return { named: e.shiftKey ? "shift_tab" : "tab" };
+  if (e.key === "Enter" && e.shiftKey) return { named: "newline" };
+  if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) return { named: e.key === "ArrowUp" ? "shift_up" : "shift_down" };
+  if (REVIEW_KEYS[e.key]) return { named: REVIEW_KEYS[e.key] };
+  return Array.from(e.key).length === 1 ? { text: e.key } : null;
+}
+function reviewEffect(s, effect) {
+  const S = s.S;
+  switch (effect.kind) {
+    case "send": (S.pasted[S.focus[S.ws]] ??= []).push(effect.text); S.reviewKeys = false; return;
+    case "copy": try { navigator.clipboard.writeText(effect.text).catch(() => {}); } catch {} return;
+    case "hide": s.review.hide(); Object.assign(S, { review: false, reviewKeys: false }); return;
+    case "leave": S.reviewKeys = false;
+  }
+}
+function toggleReview(s) {
+  const S = s.S;
+  if (!S.review) { s.review.open = true; void s.review.refresh(); Object.assign(S, { review: true, reviewKeys: true }); }
+  else if (!S.reviewKeys) S.reviewKeys = true;
+  else reviewEffect(s, { kind: "hide" });
+}
+function reviewInput(el, current, [r0, c0, rows, cols]) {
+  const cellAt = (e) => { const b = el.getBoundingClientRect(); return { col: c0 + Math.floor((e.clientX - b.left) / (b.width / cols)), row: r0 + Math.floor((e.clientY - b.top) / (b.height / rows)) }; };
+  const inPanel = (s, { col }) => s.S.review && col >= COLS - REVIEW_W;
+  let pressed = false, prefix = false, wheel = 0;
+  el.addEventListener("mousedown", (e) => {
+    const s = current(), at = cellAt(e);
+    s.S.reviewKeys = inPanel(s, at);
+    if (!s.S.reviewKeys) return;
+    e.preventDefault();
+    el.focus({ preventScroll: true });
+    s.S.active = pressed = true;
+    s.review.mouse("press", at.col, at.row);
+    reviewEffect(s, s.review.takeEffect());
+  });
+  el.addEventListener("mousemove", (e) => {
+    const s = current(), at = cellAt(e);
+    if (pressed) s.review.mouse("drag", at.col, at.row);
+    else if (inPanel(s, at)) s.review.mouse("move", at.col, at.row);
+    // The rule under the file list drags its height.
+    el.style.cursor = s.review.splitting || (inPanel(s, at) && at.col > COLS - REVIEW_W && at.row === s.review.splitRow) ? "ns-resize" : "";
+  });
+  addEventListener("mouseup", (e) => {
+    if (!pressed) return;
+    pressed = false;
+    const at = cellAt(e);
+    current().review.mouse("release", at.col, at.row);
+  });
+  // A notch of a wheel, or a trackpad's worth of one.
+  el.addEventListener("wheel", (e) => {
+    const s = current(), at = cellAt(e);
+    if (!s.S.reviewKeys || !s.S.active || !inPanel(s, at)) return;
+    e.preventDefault();
+    wheel += e.deltaMode ? e.deltaY * 40 : e.deltaY;
+    for (; Math.abs(wheel) >= 40; wheel -= Math.sign(wheel) * 40) s.review.mouse(wheel > 0 ? "wheel_down" : "wheel_up", at.col, at.row);
+  }, { passive: false });
+  el.addEventListener("keydown", (e) => {
+    const s = current();
+    s.S.active = true;
+    if (prefix) { prefix = false; if (e.key !== "e") return; e.preventDefault(); return toggleReview(s); }
+    if (e.ctrlKey && e.key === "b") { prefix = true; return e.preventDefault(); }
+    const k = s.S.reviewKeys ? reviewKey(e) : null;
+    if (!k) return;
+    e.preventDefault();
+    reviewEffect(s, s.review.key(k));
+  });
+  el.addEventListener("focus", () => { current().S.active = true; });
+  el.addEventListener("blur", () => { current().S.active = false; });
+}
+
+// ---- the worktree overview: Corgi's own, over a workspace's worktrees as
+// the recorder kept them, their times moved up to now, beside a sidebar `sw`
+// wide. Holding ⌫ removes one of corgi's as Corgi does, with no Git to wait
+// for: it leaves the list, and the sidebar shows the frame recorded without
+// it and its agent.
+function overview(name, sw) {
+  const data = DATA.worktrees[name], shift = Date.now() - data.at, at = (ms) => (ms == null ? null : ms + shift);
+  const snapshot = { ...data.snapshot, entries: data.snapshot.entries.map((e) => ({ ...e,
+    comparison: e.comparison && { ahead: BigInt(e.comparison.ahead), behind: BigInt(e.comparison.behind) },
+    created: at(e.created), edited: at(e.edited) })) };
+  return openTrees({ data, sw, card: Object.assign(new worktreeTooltip.State(), { anchor: data.badges[0].y }), snapshot, gone: 0 });
+}
+// As the badge opens it, pinned; closing clears all this.
+function openTrees(o) {
+  Object.assign(o.card, { workspace: 1, pinned: true, briefs: new Map(o.data.briefs.map((b) => [b.path, b])), agents: new Map(o.data.agents) });
+  return Object.assign(o, { open: true });
+}
+const treesBadge = (o) => { const b = o.data.badges[o.gone]; return b && new Rect(b.x, b.y, b.w, b.h); };
+function treesRect(o, rows, now = Date.now()) {
+  const shown = worktreeTooltip.listing(o.snapshot, o.card, now);
+  return worktreeTooltip.geometry(COLS, rows, o.sw, treesBadge(o)?.y ?? o.card.anchor, shown.entries.length, shown.closed, o.card.lines());
+}
+// The card and the line from its badge; what they leave unwritten shows through.
+function drawTrees(g, o, rows) {
+  const now = Date.now(), out = new Writer();
+  if (o.card.removal.phase !== "idle") o.card.removal.advance(now);
+  const rect = treesRect(o, rows, now);
+  if (!rect) return;
+  worktreeTooltip.draw(out, rect, o.data.name, o.data.cwd, o.snapshot, o.card, treesBadge(o), now);
+  terminal.grid(out.buffered(), COLS, rows).forEach((row, r) => row.forEach(([ch, ...look], c) => {
+    if (look[1] !== null) g[r][c] = [ch, style(...look)];
+  }));
+}
+// A press of ⌫ or Delete, or a repeat while it's held, as Corgi's
+// worktree-remove. Once the hold completes, Corgi would close the agents and
+// have Git remove it; here it's gone at once.
+function removeTree(S) {
+  const o = S.trees, card = o.card, entries = worktrees.linked(o.snapshot), index = card.index(entries), checkout = entries[index];
+  if (!checkout) return;
+  card.select(checkout.path);
+  const agents = o.snapshot.agents.filter((a) => a.path === checkout.path).length, now = Date.now();
+  if (!card.removal.press(now, worktreeRemoval.target(1, checkout, index, agents), card.removalEffect())) return;
+  o.gone |= 1 << o.data.snapshot.entries.filter((e) => !e.primary).findIndex((e) => e.path === checkout.path);
+  o.snapshot = { ...o.snapshot, entries: o.snapshot.entries.filter((e) => e.path !== checkout.path), agents: o.snapshot.agents.filter((a) => a.path !== checkout.path) };
+  S.side = `wt34_${o.gone}`;
+  card.removal.settle(now, null);
+  card.select((entries[index + 1] ?? entries[index - 1])?.path ?? null);
+}
+// Its keys while the screen has the page's focus: ↑↓ (or j k) browse, ⌫
+// held removes, Esc closes. The pointer picks the row it's on, and the
+// badge opens it again. `held` runs once a hold is under way.
+const TREE_MOVES = { ArrowDown: 1, ArrowUp: -1, j: 1, k: -1 };
+function treesInput(el, current, [r0, c0, rows, cols], held) {
+  const cellAt = (e) => { const b = el.getBoundingClientRect(); return { col: c0 + Math.floor((e.clientX - b.left) / (b.width / cols)), row: r0 + Math.floor((e.clientY - b.top) / (b.height / rows)) }; };
+  const aim = (e) => {
+    const o = current().S.trees, at = cellAt(e), badge = treesBadge(o), rect = o.open && treesRect(o, rows);
+    const onBadge = !!badge && badge.contains(at.col, at.row);
+    return { o, onBadge, path: rect && rect.contains(at.col, at.row) ? o.card.hit(o.snapshot, rect, at.col, at.row) : null };
+  };
+  el.addEventListener("keydown", (e) => {
+    const S = current().S, o = S.trees;
+    if (!o.open || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "Escape") { o.card.clear(); o.open = false; }
+    else if (TREE_MOVES[e.key]) o.card.move(o.snapshot, TREE_MOVES[e.key]);
+    else if (e.key === "Backspace" || e.key === "Delete") { removeTree(S); held(); }
+    else return;
+    e.preventDefault();
+  });
+  el.addEventListener("mousemove", (e) => {
+    if (!e.movementX && !e.movementY) return;
+    const { o, onBadge, path } = aim(e);
+    if (onBadge && !o.open) openTrees(o);
+    if (path) o.card.select(path);
+    el.style.cursor = onBadge || path ? "pointer" : "";
+  });
+  el.addEventListener("click", (e) => {
+    const { o, onBadge, path } = aim(e);
+    if (onBadge && !o.open) openTrees(o);
+    if (path) o.card.select(path);
+  });
+}
 
 // ---- a session: its state, and the frame it draws
 const SIDE = new Map();
+// Time taken to the second, as the sidebar's elapsed prints it.
+function elapsed(ms) {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`;
+}
 function session(init = {}) {
   const S = {
     ws: "C", tabs: TABS, tab: { C: 0, M: 0 }, focus: { C: "C0", M: "M0" }, read: new Set(),
     typed: "", history: [], server: false, link: 0, linkAt: -1e9,
-    hover: null, card: null, res: null, wsHover: null, linkHover: false,
-    git: "ahead", gitAt: 0, gitHover: false, approvedAt: null, tagged: false, clear: null, newButton: true,
+    hover: null, card: null, res: null, resHeld: false, wsHover: null, linkHover: false,
+    git: "ahead", gitAt: 0, gitHover: false, approvedAt: null, tagged: false, clear: null, newButton: true, solo: false,
+    // Refactor the viewer compacting, its herd walking in from herdAt.
+    compacting: false, herdAt: null,
+    // A recorded sidebar and window height in place of the agent list's, a
+    // recorded popover over it all, and the review panel open, with the
+    // keyboard or not; keys reach it while the screen has the page's focus.
+    // Notes it sent wait in a pane's prompt.
+    side: null, rows: ROWS, cols: COLS, single: false, over: null, review: false, reviewKeys: false, active: false, pasted: {},
+    // With `trees`, the worktree overview of the workspace it names, open.
+    trees: null,
+    // The hackable band's terminals by pane: scrollback, the line being
+    // typed, and the program holding it, if any. With `quiet`, agents show
+    // only what `corgi pane send` asked them, kept in `asked`.
+    term: null, quiet: false, asked: {}, fixed: false,
+    // With `idle`, the flicker fix's agent has finished, its pane still.
+    idle: false,
     ...init,
   };
+  Object.assign(S, { read: new Set(S.read), tab: { ...S.tab }, focus: { ...S.focus }, term: S.term && structuredClone(S.term) });
+  // The sidebar is as wide as its recording, and the rest lays out around it.
+  const SW = (S.side ? F[S.side] : F.w34_C00)[0].length;
+  S.trees &&= overview(S.trees, SW);
+  const review = S.review ? reviewPanel() : null;
+  // The resource card's table order and sort.
+  const resCard = new resourceTooltip.State();
   const unread = () => (S.read.has(4) ? 0 : 1) + (S.tagged && !S.read.has(2) ? 1 : 0);
   function sidebar() {
     const ws = S.ws, ahead = S.git === "none" ? 0 : 1, fi = agentOf(S.focus[ws]), un = Math.min(1, unread());
-    const key = [ws, ahead, un, fi, [...S.read].sort().join(","), S.clear, S.newButton].join(":");
+    // Release notes, once tagged and read, is clear too.
+    const clear = [S.clear, S.tagged && S.read.has(2) ? 2 : null].filter((i) => i != null);
+    const key = [ws, ahead, un, fi, [...S.read].sort().join(","), clear, S.newButton, S.approvedAt != null, S.side, S.rows, S.compacting].join(":");
     if (SIDE.has(key)) return SIDE.get(key);
-    const g = blank(ROWS, COLS);
+    const g = blank(S.rows, COLS);
+    if (S.side) F[S.side].forEach((row, r) => row.slice(0, SW).forEach((cell, c) => (g[r][c] = cell)));
+    else agentList(g, ws, un, ahead, fi, clear);
+    tidySidebar(g);
+    const head = g.findIndex((_, r) => rowText(g, r).includes("agents:")), text = rowText(g, head);
+    const from = text.indexOf("agents") + 6, to = S.newButton ? text.indexOf(" New") : text.indexOf("│");
+    for (let c = from; c < to; c++) g[head][c] = [" ", g[head][0][1]];
+    SIDE.set(key, g);
+    return g;
+  }
+  function agentList(g, ws, un, ahead, fi, clear) {
     F[`w34_${ws}${un}${ahead}`].forEach((row, r) => row.forEach((cell, c) => (g[r][c] = cell)));
     const rest = F[`w34_e${ws}00`];
     rest.forEach((row, r) => row.forEach((cell, c) => (g[AGENT_TOP + r][c] = cell)));
     for (let i = 0; i < AGENTS[ws]; i++) {
       const read = ws === "C" && S.read.has(i) ? 1 : 0, focus = i === fi ? 1 : 0;
-      const frame = F[ws === "C" && i === COMPACTOR ? `w34_eC${focus}0p` : `w34_e${ws}${focus}${read}`] ?? rest;
+      const frame = F[ws === "C" && i === COMPACTOR && !S.compacting ? `w34_eC${focus}0p` : `w34_e${ws}${focus}${read}`] ?? rest;
       for (const y of [WATCH_ROWS[i], WATCH_ROWS[i] + 1]) frame[y - AGENT_TOP].forEach((cell, c) => (g[y][c] = cell));
     }
     // A clear agent takes the read Ghostty keybindings' rows, under its own
     // name and keeping its separator.
-    if (ws === "C" && S.clear != null) {
-      const i = S.clear, read = F[`w34_eC${i === fi ? 1 : 0}1`], [top, under] = [WATCH_ROWS[i], WATCH_ROWS[i] + 1];
+    if (ws === "C") for (const i of clear) {
+      const read = F[`w34_eC${i === fi ? 1 : 0}1`], [top, under] = [WATCH_ROWS[i], WATCH_ROWS[i] + 1];
       read[WATCH_ROWS[4] - AGENT_TOP].forEach((cell, c) => (g[top][c] = cell));
       read[WATCH_ROWS[4] + 1 - AGENT_TOP].forEach((cell, c) => (g[under][c] = [cell[0], keepRule(cell[1], g[under][c])]));
       const name = rowText(F[`w34_eC${i === fi ? 1 : 0}0`], top - AGENT_TOP).slice(BAR + 4).trimEnd();
       put(g, top, BAR + 4, name.padEnd(SW - 3 - BAR - 4));
     }
-    tidySidebar(g);
-    const head = AGENT_TOP - 2, text = rowText(g, head), from = text.indexOf("agents") + 6, to = S.newButton ? text.indexOf(" New") : text.indexOf("│");
-    for (let c = from; c < to; c++) g[head][c] = [" ", g[head][0][1]];
-    SIDE.set(key, g);
-    return g;
+    // Once allowed, Release notes needs no one, so the ● count goes.
+    if (S.approvedAt != null) {
+      const text = rowText(g, 3), at = text.indexOf("●1 "), end = text.indexOf("  ", at);
+      if (at >= 0) { const gone = g[3].splice(at, 3); g[3].splice(end - 3, 0, ...gone.map(([, s]) => [" ", s])); }
+    }
   }
   const linkCol = () => rowText(sidebar(), LINK_ROW).indexOf(LINK_TEXT);
   function layout() {
+    const room = S.cols - SW - (S.review ? REVIEW_W : 0), rows = S.rows;
     const tabs = S.tabs[S.ws], root = tabs[S.tab[S.ws]] ?? tabs[0];
-    return root.id ? leaves(root, SW, 1, COLS - SW, ROWS - 1) : leaves(root, SW + 1, 2, COLS - SW - 2, ROWS - 3);
+    if (S.single) {
+      const panes = leaves(root, 0, 0, room, rows - 1), focused = S.focus[S.ws];
+      return leaves(pane(panes.some((p) => p.id === focused) ? focused : panes[0].id), SW, 1, room, rows - 1);
+    }
+    // A slice shows only the left pane, so there the focused agent takes it.
+    if (S.solo) {
+      const id = S.focus[S.ws], next = S.ws + ((agentOf(id) + 1) % AGENTS[S.ws]);
+      return leaves(right(pane(id), pane(next)), SW + 1, 2, room - 2, rows - 3);
+    }
+    return root.id ? leaves(root, SW, 1, room, rows - 1) : leaves(root, SW + 1, 2, room - 2, rows - 3);
   }
 
   // ---- panes
   function shellRows(t, focused) {
     const rows = [...S.history];
-    if (S.server) rows.push([...prompt("~/moonlander"), ["bun run dev", A.text]], [["$ vite", A.out]], [],
-      [["  VITE", VITE], [" v7.1  ready in 212 ms", A.out]], [],
-      [["  ➜  Local:   ", A.text], ["http://localhost:3000/", URL]], [["  ➜  press h + enter to show help", A.out]]);
+    if (S.server) rows.push([...prompt("~/moonlander"), ["bun run dev", A.text]], [["$ bun --hot server.ts", A.out]], [],
+      [["  Starting moonlander game…", A.text]], [],
+      [["  ➜  Local:   ", A.text], ["http://localhost:3000/", URL]]);
     else rows.push([...prompt("~/moonlander"), [S.typed, A.text], [focused && Math.floor(t / 530) % 2 === 0 ? " " : "", CURSOR]]);
     return rows;
+  }
+  function termRows(id, t, w, focused) {
+    const p = S.term[id];
+    return wrap(p.program ? p.rows : [...p.rows, [...prompt("~/moonlander"), [p.typed, A.text], [focused && Math.floor(t / 530) % 2 === 0 ? " " : "", CURSOR]]], w);
+  }
+  // A quiet agent: what it was asked, then working on it, then done.
+  function askedRows(id, t) {
+    const a = S.asked[id];
+    if (!a) return [];
+    const took = Math.max(0, Math.floor((t - a.at) / 1000)), spin = SPIN_CLAUDE[Math.floor(t / 120) % SPIN_CLAUDE.length];
+    const done = t - a.at >= FIX_AFTER ? [...say(/fix|test/i.test(a.text) ? "Fixed: the lander no longer bounces." : "Done."), [], [[`✻ Worked for ${FIX_AFTER / 1000}s`, A.hint]]] : [[[spin + " Fixing… ", ORANGE], [`(${took}s)`, A.hint]]];
+    return [...ask(a.text), [], ...done, []];
   }
   // Release notes, once its tag is allowed.
   function tagRows(t, w) {
@@ -1674,17 +2141,26 @@ function session(init = {}) {
       ...claudeBottom(w)];
   }
   function paneRows(id, t, w, focused) {
+    if (id === "blank") return [];
+    if (S.term?.[id]) return termRows(id, t, w, focused);
     if (id === "sh") return shellRows(t, focused);
+    if (S.quiet) return [...askedRows(id, t), ...claudeBottom(w)];
+    if (S.idle && id === "C0") return flickerFixed(w);
     if (id === "C2" && S.approvedAt != null) return tagRows(t, w);
     // keeps watch's sessions; its hidden band won't read this.
-    W.compacting = false;
+    W.compacting = S.compacting;
     // The shorter telling keeps watch wrote for phones reads at a glance.
-    return closeBox(phoneRows(id, t, w), w);
+    const rows = closeBox(phoneRows(id, t, w), w), sent = S.pasted[id] ?? [];
+    // Pasted notes wait in Claude's prompt, as Claude Code shows a paste.
+    const at = sent.length ? rows.findLastIndex((row) => row[0]?.[0] === "❯ ") : -1;
+    if (at >= 0) rows[at] = [rows[at][0], ...sent.map((text, n) => [`[Pasted text #${n + 1} +${text.split("\n").length - 1} lines] `, A.text])];
+    return rows;
   }
   function drawPane(g, l, t) {
     const focused = l.id === S.focus[S.ws], rows = paneRows(l.id, t, l.w - 2, focused);
-    // A shell fills from the top; an agent's input sits at the bottom.
-    const top = l.id === "sh" ? l.y + Math.min(0, l.h - rows.length) : l.y + l.h - rows.length;
+    // A shell fills from the top, scrolled back as far as its wheel took it;
+    // an agent's input sits at the bottom.
+    const top = l.id === "sh" || S.term?.[l.id] ? l.y + Math.min(0, l.h - rows.length) + (S.term?.[l.id]?.scroll ?? 0) : l.y + l.h - rows.length;
     rows.forEach((row, n) => {
       const r = top + n;
       if (r < l.y || r >= l.y + l.h) return;
@@ -1695,10 +2171,14 @@ function session(init = {}) {
     });
   }
   function drawPanes(g, t) {
-    for (let r = 0; r < ROWS; r++) put(g, r, SW, " ".repeat(COLS - SW), R.pane);
+    for (let r = 0; r < S.rows; r++) put(g, r, SW, " ".repeat(COLS - SW), R.pane);
     let c = SW;
-    S.tabs[S.ws].forEach((_, i) => { c = put(g, 0, c, `    ${i + 1}     `, i === S.tab[S.ws] ? TAB_ON : TAB_OFF); });
-    put(g, 0, c, " + ", TAB_ADD);
+    S.tabs[S.ws].forEach((root, i) => {
+      if (S.single && i !== S.tab[S.ws]) return;
+      const text = tabTitle(root, i), w = tabWidth(root, i), pad = Math.floor((w - text.length) / 2);
+      c = put(g, 0, c, " ".repeat(pad) + text.padEnd(w - pad), i === S.tab[S.ws] ? TAB_ON : TAB_OFF);
+    });
+    if (!S.single) put(g, 0, c, " + ", TAB_ADD);
     const ls = layout();
     if (ls.length > 1) {
       // Every pane's outline; the focused one's in the accent.
@@ -1719,7 +2199,7 @@ function session(init = {}) {
 
   // ---- a frame
   function cardFor(ws, i) {
-    const early = ws === "C" && i === COMPACTOR, read = ws === "C" && S.read.has(i) ? 1 : 0;
+    const early = ws === "C" && i === COMPACTOR && !S.compacting, read = ws === "C" && S.read.has(i) ? 1 : 0;
     return early ? [EARLY_CARD, EARLY_BOX] : [CARDS[ws][i][read], CARD_BOX[ws][i]];
   }
   function gitLabel(t) {
@@ -1732,6 +2212,11 @@ function session(init = {}) {
     const at = now();
     if (S.git === "pushing" && at - S.gitAt > 1800) Object.assign(S, { git: "pushed", gitAt: at });
     if (S.git === "pushed" && at - S.gitAt > 1500) Object.assign(S, { git: "none", gitHover: false });
+    // An agent done with a fix turns the tests that watch it green.
+    if (!S.fixed && Object.values(S.asked).some((a) => at - a.at >= FIX_AFTER)) {
+      S.fixed = true;
+      for (const p of Object.values(S.term ?? {})) if (p.program === "bun test --watch") p.rows = TEST_PASS;
+    }
     const g = animate(sidebar(), t);
     // Resources sample once a second, as in keeps watch.
     for (const ws of ["C", "M"]) {
@@ -1739,12 +2224,12 @@ function session(init = {}) {
       if (cpu) put(g, row, cpu.index, RES_TOTALS[ws][sample(t)][0].padEnd(cpu[0].length));
       if (mem) put(g, row, mem.index, RES_TOTALS[ws][sample(t)][1].padEnd(mem[0].length));
     }
-    // moonlander's link shows once its dev server is up, a letter at a time.
-    const lc = linkCol(), shown = Math.min(LINK_TEXT.length, S.server ? Math.floor((at - S.linkAt) / 70) : 0);
+    // Every demo links to the game; starting its shell server animates it.
+    const lc = linkCol(), shown = Math.min(LINK_TEXT.length, Math.max(0, Math.floor((at - S.linkAt) / 70)));
     if (lc >= 0) for (let k = shown; k < LINK_TEXT.length; k++) g[LINK_ROW][lc + k] = [" ", style("muted", groundOf(g, LINK_ROW, lc - 1))];
     S.link = shown;
     // Release notes once allowed: working, then finished and unread.
-    if (S.ws === "C" && S.approvedAt != null) {
+    if (S.ws === "C" && S.approvedAt != null && !(S.tagged && S.read.has(2))) {
       const [r0, r1] = [WATCH_ROWS[2], WATCH_ROWS[2] + 1], bg = groundOf(g, r0, 2);
       if (S.tagged) {
         put(g, r0, BAR + 1, "●", style("accent", bg, true)); put(g, r0, BAR + 4, "Release notes", style("strong", bg, true));
@@ -1753,6 +2238,18 @@ function session(init = {}) {
         put(g, r0, BAR + 1, "▶", style("accent", bg, true));
         put(g, r1, BAR + 1, `${corgiAnimation.spinner(false, t)}  Pushing the tag`.padEnd(SW - 3 - BAR), style("text", bg));
         put(g, r1, BAR + 1, corgiAnimation.spinner(false, t), style(bg === "selected" ? "muted" : "faint", bg));
+      }
+    }
+    // Compacting piles its dots and herds its letters once, as in keeps watch.
+    // Once the corgi has curled up, the compaction's time so far sits at the right.
+    if (S.ws === "C" && S.compacting && !S.side) {
+      const row = WATCH_ROWS[COMPACTOR] + 1, width = SW - 6, ground = STYLES[g[row][4][1]][1] ?? "bg";
+      const step = still ? 40 : S.herdAt == null ? 0 : Math.floor((at - S.herdAt) / 110);
+      put(g, row, BAR + 1, corgiAnimation.spinner(true, t));
+      terminal.row(corgiAnimation.writeHerd(width, step), width).forEach(([ch, fg], c) => put(g, row, BAR + 4 + c, ch, keepRule(style(fg ?? "text", ground), g[row][BAR + 4 + c])));
+      if (S.herdAt != null && corgiAnimation.herdScene(width, step).finished) {
+        const took = elapsed(at - S.herdAt), c = BAR + 4 + width - took.length;
+        put(g, row, c, took, keepRule(style(ground === "selected" ? "muted" : "faint", ground), g[row][c]));
       }
     }
     if (unread() > 1) { const text = rowText(g, 3), u = text.indexOf("1 unread"); if (u >= 0) put(g, 3, u, "2"); }
@@ -1773,8 +2270,11 @@ function session(init = {}) {
       if (bg === "bg") g[r][c] = [ch, style(fg, HOVER_BG, bold, ul, ulc)];
     }
     drawPanes(g, t);
-    if (S.linkHover) CHIP.forEach((cell, c) => (g[ROWS - 1][c] = cell));
-    if (S.res) overlay(g, RES[S.res][sample(t)], RES_BOX[S.res], SW, resLeftAt(S.res));
+    if (S.review) drawReview(g, review, S.reviewKeys && S.active, S.rows);
+    if (S.over) popover(g, F[S.over]);
+    if (S.trees?.open) drawTrees(g, S.trees, S.rows);
+    if (S.linkHover) CHIP.forEach((cell, c) => (g[S.rows - 1][c] = cell));
+    if (S.res) { const rect = resRectAt(S.res, S.rows); paste(g, resCells(S.res, sample(t), resCard, rect, S.resHeld), rect); }
     else if (S.card != null) { const [frame, box] = cardFor(S.ws, S.card); overlay(g, frame, box, SW, box.left); }
     else if (S.gitHover && S.git !== "none") overlay(g, F.git, GIT_BOX, SW, GIT_BOX.left);
     return g;
@@ -1786,57 +2286,116 @@ function session(init = {}) {
     S.focus[S.ws] = id;
     if (S.ws === "C") S.read.add(i);
   }
-  return { S, compose, layout, linkCol, focusAgent, unread, cardFor };
+  // What a cell holds, or null.
+  const side = ({ col }) => col < SW - 1;
+  const hit = {
+    link: ({ row, col }) => { const lc = linkCol(); return row === LINK_ROW && S.link >= LINK_TEXT.length && col >= lc && col < lc + LINK_TEXT.length ? true : null; },
+    git: ({ row, col }) => (row === 2 && S.git === "ahead" && col >= SW - 2 - (S.gitHover ? 8 : 2) && col < SW - 2 ? true : null),
+    unread: ({ row, col }) => { const u = row === 3 && side({ col }) ? find(sidebar(), "unread →", { r0: 3, r1: 3 }) : null; return u && col >= u.c0 - 2 && col <= u.c1 ? true : null; },
+    agent: (at) => { const i = side(at) ? WATCH_ROWS.slice(0, AGENTS[S.ws]).findIndex((y) => at.row === y || at.row === y + 1) : -1; return i >= 0 ? i : null; },
+    res: (at) => (side(at) ? (at.row === RES_ROW.C ? "C" : at.row === RES_ROW.M ? "M" : null) : null),
+    ws: (at) => (side(at) ? (WS_ROWS.C.includes(at.row) ? "C" : WS_ROWS.M.includes(at.row) ? "M" : null) : null),
+    tab: ({ row, col }) => { let c = SW; const i = row === 0 ? S.tabs[S.ws].findIndex((root, n) => (!S.single || n === S.tab[S.ws]) && col >= c && col < (c += tabWidth(root, n))) : -1; return i >= 0 ? i : null; },
+    pane: ({ row, col }) => layout().find((l) => row >= l.y - 1 && row <= l.y + l.h && col >= l.x - 1 && col <= l.x + l.w)?.id ?? null,
+  };
+  return { S, compose, layout, linkCol, focusAgent, unread, cardFor, hit, review, resCard, paneRows };
+}
+
+// ---- pointing at a screen that shows `crop` [row, column, rows, columns] of
+// a session. `touch` names what answers; `cards` is "hover" for an agent's
+// card while the pointer is on it, or "keep" to leave the last one, or the
+// resource card, open.
+const POINTS = ["link", "git", "unread", "agent", "ws", "tab", "pane"];
+function point(el, current, area, { touch, cards = null, touched = () => {} }) {
+  const can = new Set(touch.split(" "));
+  const cellAt = (e) => {
+    const [r0, c0, rows, cols] = typeof area === "function" ? area() : area, b = el.getBoundingClientRect();
+    return { col: c0 + Math.floor((e.clientX - b.left) / (b.width / cols)), row: r0 + Math.floor((e.clientY - b.top) / (b.height / rows)) };
+  };
+  const first = (hit, at) => { for (const kind of POINTS) { const v = can.has(kind) ? hit[kind](at) : null; if (v != null) return { kind, v }; } return null; };
+  // A pointer that only rests where the page scrolled opens nothing.
+  el.addEventListener("mousemove", (e) => {
+    if (!e.movementX && !e.movementY) return;
+    const { S, hit, cardFor } = current(), at = cellAt(e), i = can.has("agent") ? hit.agent(at) : null;
+    if (can.has("ws")) S.wsHover = hit.ws(at);
+    if (can.has("link")) S.linkHover = !!hit.link(at);
+    if (can.has("res")) {
+      // On the card its rows hold still, and a heading sorts them.
+      const card = S.res && resRectAt(S.res, S.rows);
+      S.resHeld = !!card && card.contains(at.col, at.row) && !hit.res(at);
+      if (S.resHeld) return void (el.style.cursor = resourceTooltip.sortAt(card, at.col, at.row) ? "pointer" : "");
+      const res = S.linkHover ? null : hit.res(at);
+      if (res || cards !== "keep") S.res = res;
+    }
+    if (can.has("git")) S.gitHover = !!hit.git(at) || (S.gitHover && S.git !== "none" && within(at, GIT_BOX));
+    if (cards === "hover" && S.card != null && within(at, cardFor(S.ws, S.card)[1])) return;
+    if (i != null || cards !== "keep") S.hover = !S.linkHover && !S.res ? i : null;
+    if (cards) S.card = S.hover;
+    const h = first(hit, at);
+    el.style.cursor = (can.has("res") && hit.res(at)) || (h && h.kind !== "pane") ? "pointer" : "";
+  });
+  el.addEventListener("mouseleave", () => Object.assign(current().S, { resHeld: false, wsHover: null, linkHover: false, gitHover: false }, cards === "keep" ? {} : { res: null, hover: null, card: null }));
+  el.addEventListener("click", (e) => {
+    const s = current(), at = cellAt(e), h = first(s.hit, at);
+    if (s.S.res) return s.resCard.click(resRectAt(s.S.res, s.S.rows), at.col, at.row);
+    if (!h) return;
+    touched();
+    act(s, h, cards);
+  });
+}
+function act(s, { kind, v }, cards = null) {
+  const S = s.S;
+  switch (kind) {
+    case "link": return openGame();
+    case "git": return Object.assign(S, { git: "pushing", gitAt: now() });
+    case "unread": S.ws = "C"; s.focusAgent(S.tagged && !S.read.has(2) ? 2 : 4); return Object.assign(S, { card: null });
+    case "agent": s.focusAgent(v); return Object.assign(S, cards === "keep" ? { card: v, hover: v } : { card: null, hover: null });
+    case "ws": return Object.assign(S, { ws: v, hover: null, card: null });
+    case "tab": S.tab[S.ws] = v; S.focus[S.ws] = s.layout()[0].id; return;
+    case "pane": S.focus[S.ws] = v;
+  }
 }
 
 // ---- the hero: corgi's own workspace, Claude and Codex side by side
 const simEl = document.getElementById("v-sim");
 const hero = session(), H = hero.S;
 const heroScreen = new Screen(simEl, COLS, ROWS, { badge: true });
-const cellAt = (e) => { const b = simEl.getBoundingClientRect(); return { col: Math.floor((e.clientX - b.left) / (b.width / COLS)), row: Math.floor((e.clientY - b.top) / (b.height / ROWS)) }; };
-const side = ({ col }) => col < SW - 1;
-const agentAt = (at) => (side(at) ? WATCH_ROWS.slice(0, AGENTS[H.ws]).findIndex((y) => at.row === y || at.row === y + 1) : -1);
-const linkAt = ({ row, col }) => { const lc = hero.linkCol(); return row === LINK_ROW && H.link >= LINK_TEXT.length && col >= lc && col < lc + LINK_TEXT.length; };
-const gitAt = ({ row, col }) => row === 2 && H.git === "ahead" && col >= SW - 2 - (H.gitHover ? 8 : 2) && col < SW - 2;
-const resAt = (at) => (side(at) ? (at.row === RES_ROW.C ? "C" : at.row === RES_ROW.M ? "M" : null) : null);
-const wsAt = (at) => (side(at) ? (WS_ROWS.C.includes(at.row) ? "C" : WS_ROWS.M.includes(at.row) ? "M" : null) : null);
-const unreadAt = ({ row, col }) => { if (row !== 3 || col >= SW - 1) return false; const t = find(hero.compose(0), "unread →", { r0: 3, r1: 3 }); return !!t && col >= t.c0 - 2 && col <= t.c1; };
-const tabAt = ({ row, col }) => (row === 0 && col >= SW ? Math.floor((col - SW) / 10) : -1);
-const paneAt = ({ row, col }) => hero.layout().find((l) => row >= l.y - 1 && row <= l.y + l.h && col >= l.x - 1 && col <= l.x + l.w)?.id;
-simEl.addEventListener("mouseleave", () => Object.assign(H, { hover: null, card: null, res: null, wsHover: null, linkHover: false, gitHover: false }));
-// A pointer that only rests where the page scrolled opens nothing.
-simEl.addEventListener("mousemove", (e) => {
-  if (!e.movementX && !e.movementY) return;
-  const at = cellAt(e), i = agentAt(at);
-  H.wsHover = wsAt(at);
-  if (H.res && within(at, { ...RES_BOX[H.res], left: resLeftAt(H.res), right: resLeftAt(H.res) + RES_BOX[H.res].right - RES_BOX[H.res].left }) && !resAt(at)) return;
-  H.linkHover = linkAt(at);
-  H.res = H.linkHover ? null : resAt(at);
-  H.gitHover = gitAt(at) || (H.gitHover && H.git !== "none" && within(at, GIT_BOX));
-  const card = H.card == null ? null : hero.cardFor(H.ws, H.card)[1];
-  if (card && within(at, card)) return;
-  H.hover = !H.linkHover && !H.res && i >= 0 ? i : null;
-  H.card = H.hover;
-  simEl.style.cursor = H.linkHover || H.res || i >= 0 || gitAt(at) || wsAt(at) || tabAt(at) >= 0 || unreadAt(at) ? "pointer" : "";
-});
-simEl.addEventListener("click", (e) => {
-  const at = cellAt(e);
-  simEl.focus({ preventScroll: true });
-  if (linkAt(at) || H.res) return;
-  if (gitAt(at)) return Object.assign(H, { git: "pushing", gitAt: now() });
-  if (unreadAt(at)) { H.ws = "C"; hero.focusAgent(H.tagged && !H.read.has(2) ? 2 : 4); return Object.assign(H, { card: null }); }
-  const i = agentAt(at);
-  if (i >= 0) { hero.focusAgent(i); return Object.assign(H, { card: null, hover: null }); }
-  const ws = wsAt(at);
-  if (ws) return Object.assign(H, { ws, hover: null, card: null });
-  const tab = tabAt(at);
-  if (tab >= 0 && tab < H.tabs[H.ws].length) { H.tab[H.ws] = tab; H.focus[H.ws] = hero.layout()[0].id; return; }
-  const id = paneAt(at);
-  if (id) H.focus[H.ws] = id;
-});
+let heroFrom = null, heroReady = still;
+function drawHero(t) {
+  const ms = heroFrom == null ? 0 : t - heroFrom;
+  heroReady ||= ms >= 1400;
+  simEl.classList.toggle("launching", !heroReady);
+  simEl.tabIndex = heroReady ? 0 : -1;
+  simEl.setAttribute("aria-label", !heroReady
+    ? "A terminal types $ corgi, then opens the Corgi environment."
+    : H.single
+      ? "A corgi session: tap an agent to show its pane, or open the Moonlander game."
+      : "A corgi session: Claude and Codex side by side. Hover the agents, click to switch, or type in moonlander's shell.");
+  if (heroReady) heroScreen.paint(crop(hero.compose(t), 0, 0, ROWS, H.cols));
+  else {
+    const g = blank(ROWS, H.cols);
+    const typed = Math.max(0, Math.min(5, Math.floor((ms - 100) / 140)));
+    put(g, 1, 2, "~/dev", T.faint);
+    let c = put(g, 2, 2, "$ ", T.faint);
+    c = put(g, 2, c, "corgi".slice(0, typed), T.strong);
+    put(g, 2, c, " ", T.cursor);
+    heroScreen.paint(g);
+  }
+  heroScreen.badge.hidden = !heroReady;
+}
+point(simEl, () => hero, () => [0, 0, ROWS, H.cols], { touch: "link git unread agent res ws tab pane", cards: "hover" });
+function fitHero() {
+  const single = simEl.closest(".band").clientWidth < heroConfig.mobile.breakpoint;
+  Object.assign(H, { single, cols: single ? heroConfig.mobile.cols : COLS, hover: null, card: null, res: null, resHeld: false, linkHover: false, gitHover: false });
+  simEl.style.setProperty("--cols", H.cols);
+  drawHero(now());
+}
+new ResizeObserver(fitHero).observe(simEl.closest(".band"));
+fitHero();
+simEl.addEventListener("click", () => simEl.focus({ preventScroll: true }));
 // Typing reaches moonlander's shell when it has focus: `bun run dev` starts the server.
 simEl.addEventListener("keydown", (e) => {
-  if (H.focus[H.ws] !== "sh" || H.ws !== "M" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!heroReady || H.focus[H.ws] !== "sh" || H.ws !== "M" || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "Enter") {
     const cmd = H.typed.trim();
     if (cmd === "bun run dev" && !H.server) Object.assign(H, { server: true, linkAt: now() + 500, typed: "" });
@@ -1846,31 +2405,434 @@ simEl.addEventListener("keydown", (e) => {
   else return;
   e.preventDefault();
 });
-const heroBand = simEl.closest(".band");
 let heroSeen = false;
-function fitHero() {
-  const room = heroBand.clientWidth - 26;
-  simEl.style.setProperty("--fs", `${Math.min(14, Math.max(5, room / (COLS * 0.6)))}px`);
+new IntersectionObserver(([entry]) => {
+  heroSeen = entry.isIntersecting;
+  if (heroSeen && heroFrom == null) heroFrom = now();
+}).observe(simEl);
+
+// Two viewers attach independently; closing one leaves the work running.
+const runningEl = document.getElementById("running-desktop");
+const runningWindow = document.getElementById("running-window-agent");
+const runningStatus = document.getElementById("running-status");
+const runningViews = [
+  { name: "agent", at: 500, view: session({ single: true, cols: 76 }) },
+  { name: "server", at: 2200, view: session({ single: true, cols: 76, ws: "M", focus: { C: "C0", M: "sh" }, server: true, linkAt: -1e9 }) },
+].map((v) => ({ ...v, screen: new Screen(document.getElementById(`v-running-${v.name}`), 76, ROWS, { badge: true }) }));
+let runningSeen = false, runningFrom = null;
+function drawRunning(t) {
+  const ms = still ? 6000 : runningFrom == null ? 0 : Math.min(15000, t - runningFrom);
+  const detached = ms >= 8000 && ms < 10500;
+  runningWindow.classList.toggle("detached", detached);
+  runningWindow.setAttribute("aria-hidden", String(detached));
+  runningStatus.textContent = detached ? "window closed · agents + dev server still running" : ms >= 12000 ? "reconnected · same environment, independent views" : "agents + dev server · running in the background";
+  for (const v of runningViews) {
+    const start = v.name === "agent" && ms >= 10500 ? 10500 : v.at;
+    const typed = Math.max(0, Math.min(5, Math.floor((ms - start) / 130)));
+    if (ms >= start + 1100) v.screen.paint(crop(v.view.compose(still ? 6000 : t), 0, 0, ROWS, 76));
+    else {
+      const g = blank(ROWS, 76);
+      put(g, 1, 2, "~/dev", T.faint);
+      let c = put(g, 2, 2, "$ ", T.faint);
+      c = put(g, 2, c, "corgi".slice(0, typed), T.strong);
+      put(g, 2, c, " ", T.cursor);
+      v.screen.paint(g);
+    }
+  }
 }
-new ResizeObserver(() => requestAnimationFrame(fitHero)).observe(heroBand);
-document.fonts?.ready.then(fitHero);
-new IntersectionObserver(([entry]) => { heroSeen = entry.isIntersecting; }).observe(simEl);
-fitHero();
+new IntersectionObserver(([entry]) => {
+  runningSeen = entry.isIntersecting;
+  if (runningSeen && runningFrom == null) runningFrom = now();
+}, { threshold: 0.25 }).observe(runningEl);
+document.getElementById("running-replay").addEventListener("click", () => { runningFrom = now(); drawRunning(runningFrom); });
+drawRunning(now());
 
 // ---- features: a slice of a session, what it's about ringed, and rings that
 // go together wired. Rings are on the whole session's cells; the slice is
 // `crop` [row, column, rows, columns]; `wires` pairs rings by index; `lit`
-// is more that stays undimmed, unringed.
+// is more that stays undimmed, unringed; `edit` changes the whole session's
+// frame before it's sliced. `touch` and `cards` say what answers
+// the pointer, as for `point`; with `live`, the first touch lifts the dim.
+// A slice with no rings isn't dimmed, and one with the review panel open
+// passes it the pointer and keys. A slice goes back to how it started once
+// it's out of view.
+const cardRect = (s) => { const box = s.cardFor(s.S.ws, s.S.card)[1]; return { r0: box.top, r1: box.bottom, c0: box.left, c1: box.right }; };
+// The open card's Recent rows, down to the blank row under them.
+function recentRows(g, s) {
+  const box = cardRect(s), at = find(g, "Recent", box);
+  if (!at) return null;
+  let r1 = at.r0 + 1;
+  while (r1 + 1 < box.r1 && rowText(g, r1 + 1).slice(box.c0 + 1, box.c1).trim()) r1++;
+  return { r0: at.r0 + 1, r1, c0: box.c0 + 3, c1: box.c1 - 3 };
+}
+
+// ---- corgi's pane and tab commands on a session's own layout, answered as
+// src/cli.ts answers them. moonlander is workspace 2; its tabs and panes
+// carry their IDs. A command run outside Corgi has no calling pane.
+const MOON = 2;
+const CLI_OPTIONS = new Set(["command", "cwd", "name", "lines", "workspace", "viewer", "width", "height", "before", "after", "right-of", "left-of", "above", "below"]);
+const PIPE = Symbol("|"), JSON_OUT = style("muted");
+// A command line's words, quotes kept together, with each | apart.
+const words = (line) => [...line.matchAll(/"([^"]*)"|'([^']*)'|(\|)|([^\s|]+)/g)].map((m) => (m[3] ? PIPE : m[1] ?? m[2] ?? m[4]));
+function cliArgs(args) {
+  const pos = [], opt = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") { pos.push(...args.slice(i + 1)); break; }
+    if (!a.startsWith("--")) { pos.push(a); continue; }
+    if (!CLI_OPTIONS.has(a.slice(2))) { opt[a.slice(2)] = true; continue; }
+    if (i + 1 >= args.length) throw Error("Usage");
+    opt[a.slice(2)] = args[++i];
+  }
+  return { pos, opt };
+}
+// The help lines for the command `args` names, as src/cli.ts's usage().
+function usage(args) {
+  const end = args.findIndex((a) => a.startsWith("-")), names = end < 0 ? args : args.slice(0, end);
+  for (let n = names.length; n > 0; n--) {
+    const prefix = ["corgi", ...names.slice(0, n)].join(" ");
+    const lines = CLI_HELP.split("\n").map((l) => l.trim()).filter((l) => l.startsWith(prefix) && [undefined, " ", "|"].includes(l[prefix.length]));
+    if (lines.length) return lines;
+  }
+  return [];
+}
+const holds = (node, id) => (node.id ? node.id === id : holds(node.a, id) || holds(node.b, id));
+const leafIds = (node) => (node.id ? [node.id] : [...leafIds(node.a), ...leafIds(node.b)]);
+const swapLeaf = (node, id, make) => (node.id ? (node.id === id ? make(node) : node) : { ...node, a: swapLeaf(node.a, id, make), b: swapLeaf(node.b, id, make) });
+function dropLeaf(node, id) {
+  if (node.id) return node.id === id ? null : node;
+  const a = dropLeaf(node.a, id), b = dropLeaf(node.b, id);
+  return a && b ? { ...node, a, b } : a ?? b;
+}
+// moonlander's tabs replaced. The viewer keeps its tab, or takes the one
+// before it, and a focus that went falls to the tab's first pane.
+function retab(S, tabs) {
+  const shown = S.tabs.M[S.tab.M]?.tab, at = tabs.findIndex((root) => root.tab === shown);
+  S.tabs = { ...S.tabs, M: tabs.length ? tabs : [{ ...pane("blank"), tab: S.nextTab++ }] };
+  S.tab.M = at >= 0 ? at : Math.max(0, Math.min(S.tab.M, S.tabs.M.length) - 1);
+  if (!S.tabs.M.some((root) => holds(root, S.focus.M))) S.focus.M = leafIds(S.tabs.M[S.tab.M])[0];
+}
+const closePane = (S, id) => retab(S, S.tabs.M.map((root) => { const kept = dropLeaf(root, id); return kept && { ...kept, title: root.title, tab: root.tab }; }).filter(Boolean));
+const locate = (S, id) => ({ pane: S.ids[id], tab: S.tabs.M.find((root) => holds(root, id)).tab, workspace: MOON });
+function paneArg(S, from, arg) {
+  if (arg == null) throw Error("Usage");
+  if (arg === "current") { if (!from) throw Error("NoCallerPane"); return from; }
+  if (!/^\+?\d+$/.test(arg)) throw Error("InvalidCharacter");
+  const id = Object.keys(S.ids).find((k) => S.ids[k] === Number(arg) && S.tabs.M.some((root) => holds(root, k)));
+  if (!id) throw Error("NoPane");
+  return id;
+}
+function tabArg(S, from, arg) {
+  if (arg == null) throw Error("Usage");
+  if (arg === "current" && !from) throw Error("NoCallerPane");
+  if (arg !== "current" && !/^\+?\d+$/.test(arg)) throw Error("InvalidCharacter");
+  const root = S.tabs.M.find((root) => (arg === "current" ? holds(root, from) : root.tab === Number(arg)));
+  if (!root) throw Error("NoTab");
+  return root;
+}
+// A pane `--command` starts: what the command shows, until it exits and
+// takes the pane with it. One the page doesn't know shows a hint instead.
+const PROGRAMS = { "bun test --watch": TEST_RUN, "bun run dev": DEV_RUN };
+const programRows = (S, command) => (command === "bun test --watch" && S.fixed ? TEST_PASS : PROGRAMS[command]);
+function newPane(S, command) {
+  const id = `sh${S.next}`, run = command && programRows(S, command.trim());
+  S.ids = { ...S.ids, [id]: S.next++ };
+  S.term[id] = command ? { rows: run ?? [[["zsh: try bun test --watch", A.out]]], typed: "", program: command.trim(), exits: true } : { rows: [], typed: "" };
+  return id;
+}
+function paneText(s, from, id) {
+  const p = s.S.term[id];
+  if (!p) return plain(s.paneRows(id, now(), (s.layout().find((l) => l.id === id)?.w ?? 62) - 2, false));
+  return plain(p.program || id === from ? p.rows : [...p.rows, [...prompt("~/moonlander"), [p.typed, A.text]]]);
+}
+// Ctrl-C: a shell drops its line, a program stops, and a pane its command
+// started closes with it.
+function interrupt(S, p, id) {
+  if (p.program && p.exits) return closePane(S, id);
+  p.rows = [...p.rows, p.program ? [["^C", A.text]] : [...(p.ps ?? prompt("~/moonlander")), [p.typed + "^C", A.text]]];
+  Object.assign(p, { program: null, typed: "", scroll: 0 });
+}
+// What `corgi ARGS` prints, run from the pane `from` (null outside Corgi).
+function corgi(s, from, args) {
+  const S = s.S, [group, verb] = args, ok = (result) => [[[JSON.stringify({ ok: true, result: { pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [], ...result } }), JSON_OUT]]];
+  const lines = (text) => text.trimEnd().split("\n").map((line) => [[line, A.text]]);
+  if (group === "--skill") return lines(CLI_SKILL);
+  if (!group || group === "help" || args.includes("--help") || args.includes("-h") || (["pane", "tab", "workspace"].includes(group) && args.length === 1)) return lines(CLI_HELP);
+  if (group === "current") { if (!from) throw Error("NoCallerPane"); return ok(locate(S, from)); }
+  const { pos, opt } = cliArgs(args.slice(2));
+  switch (`${group} ${verb}`) {
+    case "pane split": {
+      const target = paneArg(S, from, pos[0]), side = ["right", "left", "up", "down"].filter((d) => opt[d]);
+      if (pos.length !== 1 || side.length !== 1) throw Error("Usage");
+      const id = newPane(S, opt.command), first = side[0] === "left" || side[0] === "up";
+      retab(S, S.tabs.M.map((root) => swapLeaf(root, target, ({ title, tab, ...leaf }) =>
+        ({ dir: side[0] === "left" || side[0] === "right" ? "right" : "down", ratio: 0.5, a: first ? pane(id) : leaf, b: first ? leaf : pane(id), title, tab }))));
+      return ok(locate(S, id));
+    }
+    case "pane close": {
+      const id = paneArg(S, from, pos[0]), n = S.ids[id];
+      if (pos.length !== 1) throw Error("Usage");
+      closePane(S, id);
+      return ok({ closed_panes: [n] });
+    }
+    case "pane read": {
+      const id = paneArg(S, from, pos[0]), count = opt.lines ?? "100";
+      if (pos.length !== 1) throw Error("Usage");
+      if (!/^\d+$/.test(count)) throw Error("InvalidCharacter");
+      if (!Number(count) || Number(count) > 10000) throw Error("Usage");
+      const text = paneText(s, from, id).trimEnd().split("\n").slice(-Number(count)).join("\n");
+      return opt.text ? lines(text) : ok({ ...locate(S, id), text });
+    }
+    case "pane send": {
+      const id = paneArg(S, from, pos[0]), p = S.term[id];
+      if (pos.length !== 2) throw Error("Usage");
+      // A shell at its prompt takes it as typed, and Enter runs it once the
+      // sender's command is done. A quiet agent starts on it.
+      if (p && !p.program) {
+        p.typed += pos[1];
+        if (opt.enter) setTimeout(() => !p.program && runLine(s, p, id, p.typed));
+      } else if (!p && S.quiet && opt.enter) S.asked[id] = { text: pos[1], at: now() };
+      return ok(locate(S, id));
+    }
+    case "pane keys": {
+      const id = paneArg(S, from, pos[0]), p = S.term[id];
+      if (pos.length < 2) throw Error("Usage");
+      if (p && pos.slice(1).includes("ctrl+c")) setTimeout(() => interrupt(S, p, id));
+      return ok(locate(S, id));
+    }
+    case "tab new": {
+      if (pos.length) throw Error("Usage");
+      if (!from && !opt.workspace) throw Error("MissingWorkspace");
+      if (opt.workspace && opt.workspace !== String(MOON)) throw Error(/^\+?\d+$/.test(opt.workspace) ? "NoWorkspace" : "InvalidCharacter");
+      const id = newPane(S, opt.command);
+      retab(S, [...S.tabs.M, { ...pane(id), title: opt.name, tab: S.nextTab++ }]);
+      return ok(locate(S, id));
+    }
+    case "tab rename": {
+      const root = tabArg(S, from, pos[0]);
+      if (opt.clear ? pos.length !== 1 : pos.length !== 2) throw Error("Usage");
+      const where = locate(S, leafIds(root)[0]);
+      retab(S, S.tabs.M.map((r) => (r === root ? { ...r, title: opt.clear ? undefined : pos[1] } : r)));
+      return ok(where);
+    }
+    case "tab close": {
+      const root = tabArg(S, from, pos[0]), closed = leafIds(root).map((id) => S.ids[id]);
+      if (pos.length !== 1) throw Error("Usage");
+      retab(S, S.tabs.M.filter((r) => r !== root));
+      return ok({ closed_panes: closed });
+    }
+  }
+  if (["list", "workspace", "focus", "pane move", "pane swap", "pane resize", "tab move", "tab merge"].some((c) => `${group} ${verb}`.startsWith(c)))
+    return [[["corgi: this page knows pane split, read, send, keys, close and tab new, rename, close", A.text]]];
+  throw Error("Usage");
+}
+// The few filters a pipe can end in, or null for one it doesn't know.
+function filter(lines, [cmd, ...args]) {
+  const count = (fallback) => Number(args[0] === "-n" ? args[1] : args[0]?.replace(/^-/, "")) || fallback;
+  switch (cmd) {
+    case "grep": { const invert = args[0] === "-v", pattern = args[invert ? 1 : 0] ?? ""; return lines.filter((l) => l.includes(pattern) !== invert); }
+    case "head": return lines.slice(0, count(10));
+    case "tail": return lines.slice(-count(10));
+    case "wc": return [String(lines.length).padStart(8)];
+    case "jq": {
+      const raw = args[0] === "-r", path = args[raw ? 1 : 0] ?? ".";
+      let v;
+      try { v = JSON.parse(lines.join("\n")); } catch { return ["jq: error: Cannot parse input as JSON"]; }
+      for (const k of path.split(".").filter(Boolean)) v = v?.[k] ?? null;
+      return (raw && typeof v === "string" ? v : JSON.stringify(v, null, 2)).split("\n");
+    }
+  }
+  return null;
+}
+// A line run at the prompt of the terminal `p`, the pane `from` or none.
+function runLine(s, p, from, line) {
+  Object.assign(p, { rows: [...p.rows, [...(p.ps ?? prompt("~/moonlander")), [line, A.text]]], typed: "", scroll: 0 });
+  const stages = [[]];
+  for (const word of words(line)) word === PIPE ? stages.push([]) : stages.at(-1).push(word);
+  const [[cmd, ...args], ...pipes] = stages;
+  if (!cmd) return;
+  if (cmd === "clear") return void (p.rows = []);
+  const program = programRows(s.S, line.trim());
+  if (program) return void Object.assign(p, { rows: [...p.rows, ...program], program: line.trim() });
+  if (cmd !== "corgi") return void (p.rows = [...p.rows, [["zsh: try corgi --help", A.out]]]);
+  let out = [], err = [];
+  try { out = corgi(s, from, args); }
+  catch (e) {
+    const help = e.message === "Usage" ? usage(args) : [];
+    err = [[[JSON.stringify({ ok: false, err: e.message, ...(help.length ? { usage: help } : {}) }), JSON_OUT]]];
+  }
+  for (const stage of pipes) {
+    const next = filter(out.map((row) => plain([row])), stage);
+    if (!next) { err = [...err, [[`zsh: command not found: ${stage[0] ?? ""}`, A.text]]]; out = []; break; }
+    out = next.map((text) => [[text, A.text]]);
+  }
+  p.rows = [...p.rows, ...err, ...out];
+}
+// Keys at a terminal's prompt; ↑ and ↓ walk back through what was run.
+function termKey(s, p, from, e) {
+  const S = s.S;
+  if (e.metaKey || e.altKey) return false;
+  if (e.ctrlKey) {
+    if (e.key === "c") interrupt(S, p, from);
+    else if (e.key === "l" && !p.program) p.rows = [];
+    else if (e.key === "u" && !p.program) p.typed = "";
+    else return false;
+    return true;
+  }
+  if (p.program) return false;
+  switch (e.key) {
+    case "Enter":
+      if (p.typed.trim()) S.recall = [...S.recall, p.typed];
+      S.back = 0;
+      runLine(s, p, from, p.typed);
+      return true;
+    case "Backspace": p.typed = p.typed.slice(0, -1); return true;
+    case "ArrowUp": case "ArrowDown":
+      S.back = Math.max(0, Math.min(S.recall.length, S.back + (e.key === "ArrowUp" ? 1 : -1)));
+      p.typed = S.back ? S.recall[S.recall.length - S.back] : "";
+      return true;
+  }
+  if (Array.from(e.key).length !== 1) return false;
+  Object.assign(p, { typed: p.typed + e.key, scroll: 0 });
+  return true;
+}
+
+// ---- hackable: a terminal outside Corgi types corgi commands, and Corgi
+// beside it answers. The script plays while the band is in view and starts
+// over when it comes back; clicking the terminal hands it to the visitor.
+const CLI_SCRIPT = [
+  'corgi pane split 5 --right --command "bun test --watch"',
+  "corgi pane read 7 --text | grep fail",
+  'corgi pane send 5 "fix the failing test" --enter',
+  'corgi pane split 7 --down --command "bun run dev"',
+];
+const CLI_INIT = {
+  ws: "M", focus: { C: "C0", M: "M0" }, quiet: true,
+  tabs: { ...TABS, M: [{ ...named("game", pane("M0")), tab: 1 }, { ...named("art", pane("M1")), tab: 2 }] },
+  term: {}, ids: { M0: 5, M1: 6 }, next: 7, nextTab: 3, recall: [], back: 0,
+};
+const TERM_COLS = 60, CLI_CROP = [0, SW, ROWS, COLS - SW];
+const cliBand = (() => {
+  const termEl = document.getElementById("v-cli-term"), corgiEl = document.getElementById("v-cli-corgi");
+  if (!termEl || !corgiEl) return null;
+  const termScreen = new Screen(termEl, TERM_COLS, ROWS), corgiScreen = new Screen(corgiEl, CLI_CROP[3], ROWS);
+  const B = { s: null, term: null, step: 0, at: 0, taken: false, shown: false };
+  function reset() {
+    Object.assign(B, { s: session(CLI_INIT), term: { rows: [], typed: "", ps: [["$ ", A.hint]] }, step: 0, at: now() + 700, taken: false });
+    if (!still) return;
+    for (const line of CLI_SCRIPT) runLine(B.s, B.term, null, line);
+    for (const a of Object.values(B.s.S.asked)) a.at = -Infinity;
+    B.step = CLI_SCRIPT.length;
+  }
+  // A line types at 40 characters a second, runs, and gives Corgi a moment
+  // to answer, longer while an agent fixes something; then the next.
+  function play(at) {
+    if (B.taken || still || at < B.at) return;
+    const line = CLI_SCRIPT[B.step];
+    if (line == null) return reset();
+    B.term.typed = line.slice(0, Math.floor((at - B.at) / 25));
+    if (at - B.at < line.length * 25 + 400) return;
+    B.s.S.recall = [...B.s.S.recall, line];
+    runLine(B.s, B.term, null, line);
+    B.step++;
+    B.at = at + (B.step === CLI_SCRIPT.length ? 9000 : line.includes(" send ") ? FIX_AFTER + 1500 : 1500);
+  }
+  function drawTerm(t) {
+    const p = B.term, h = ROWS - 2, on = !B.taken || (document.activeElement === termEl && Math.floor(t / 530) % 2 === 0);
+    const rows = wrap(p.program ? p.rows : [...p.rows, [...p.ps, [p.typed, A.text], [on ? " " : "", CURSOR]]], TERM_COLS - 2);
+    const top = Math.max(0, rows.length - h - (p.scroll ?? 0)), g = blank(ROWS, TERM_COLS);
+    rows.slice(top, top + h).forEach((row, n) => { let c = 1; for (const [text, s] of row) c = put(g, 1 + n, c, text, s); });
+    termScreen.paint(g);
+  }
+  reset();
+  // The visitor's own typing takes the terminal from the script.
+  termEl.addEventListener("focus", () => {
+    if (B.taken) return;
+    B.taken = true;
+    B.term.typed = "";
+  });
+  termEl.addEventListener("click", () => termEl.focus({ preventScroll: true }));
+  termEl.addEventListener("keydown", (e) => { if (termKey(B.s, B.term, null, e)) e.preventDefault(); });
+  termEl.addEventListener("paste", (e) => {
+    if (B.term.program) return;
+    e.preventDefault();
+    B.term.typed += e.clipboardData.getData("text").split("\n")[0];
+  });
+  let wheel = 0;
+  termEl.addEventListener("wheel", (e) => {
+    const p = B.term, most = Math.max(0, wrap(p.rows, TERM_COLS - 2).length + 1 - (ROWS - 2)), was = p.scroll ?? 0;
+    if (document.activeElement !== termEl || (e.deltaY < 0 ? was >= most : was <= 0)) return;
+    e.preventDefault();
+    wheel += e.deltaMode ? e.deltaY * 20 : e.deltaY;
+    const n = Math.trunc(wheel / 20);
+    wheel -= n * 20;
+    p.scroll = Math.max(0, Math.min(most, was - n));
+  }, { passive: false });
+  point(corgiEl, () => B.s, CLI_CROP, { touch: "tab pane" });
+  new IntersectionObserver(([entry]) => {
+    B.shown = entry.isIntersecting;
+    if (!B.shown) reset();
+    else if (!B.step && !B.taken) B.at = now() + 600;
+  }, { threshold: 0.3 }).observe(termEl.closest(".band"));
+  return {
+    draw(t) {
+      if (!B.shown) return;
+      play(now());
+      drawTerm(t);
+      corgiScreen.paint(crop(B.s.compose(t), ...CLI_CROP));
+    },
+  };
+})();
+
+// moonlander running its dev server, in the window beside its sidebar.
+const CLEVER = { ws: "M", side: "clever34", tabs: { ...TABS, M: [named("server", pane("sh"))] }, focus: { C: "C0", M: "sh" }, server: true };
+// moonlander's link, once corgi's rows go from over it.
+const cleverLink = (g) => find(g, LINK_TEXT, { r0: WS_ROWS.C[0], r1: WS_ROWS.C[0] });
 const FEATURES = {
-  agents: { init: { clear: 1, newButton: false }, crop: [11, 0, 12, 81], rings: () => [{ r0: AGENT_TOP - 2, r1: WATCH_ROWS[4] + 1, c0: 0, c1: SW - 2 }] },
-  steps: { init: { hover: 0, card: 0 }, crop: [10, 0, 13, 122], rings: (g) => { const at = find(g, "Recent"), box = CARD_BOX.C[0]; return [agentRows(0), at && { r0: at.r0 + 1, r1: at.r0 + 5, c0: box.left + 3, c1: box.right - 3 }]; }, wires: [[0, 1]],
-    lit: () => { const box = CARD_BOX.C[0]; return [{ r0: box.top, r1: box.bottom, c0: box.left, c1: box.right }]; } },
-  away: { init: { tagged: true, approvedAt: -1e9 }, crop: [1, 0, 22, 34], rings: (g) => [find(g, "unread →", { r0: 3, r1: 3 }), agentRows(2), agentRows(4)] },
-  push: { init: { gitHover: true }, crop: [0, 0, 10, 110], rings: (g) => [find(g, "Push ↑2", { r0: 2, r1: 2 })] },
-  systems: { init: { ws: "M", tabs: { ...TABS, M: [right(pane("sh"), pane("M0"), 0.5)] }, focus: { C: "C0", M: "sh" }, server: true }, crop: [1, 0, 9, 80], rings: (g) => [find(g, LINK_TEXT, { r0: LINK_ROW, r1: LINK_ROW }), find(g, "bun run dev", { c0: SW })] },
-  resources: { init: { res: "C" }, crop: [0, 0, 24, 118], rings: () => [{ r0: RES_ROW.C, r1: RES_ROW.C, c0: 1, c1: SW - 3 }] },
+  // Each agent's state, and the unread one waiting behind the workspace's pill.
+  agents: { init: { clear: 1, newButton: false, solo: true, compacting: true }, crop: [1, 0, 22, 81], touch: "unread agent ws", live: true,
+    rings: (g) => [find(g, "1 unread →", { r0: 3, r1: 3 }), agentRows(4)],
+    lit: () => [{ r0: AGENT_TOP - 2, r1: WATCH_ROWS[4] + 1, c0: 0, c1: SW - 2 }] },
+  steps: { init: { hover: 0, card: 0 }, crop: [7, 0, 16, 122], touch: "agent", cards: "keep", rings: (g, s) => [agentRows(s.S.card), recentRows(g, s)], wires: [[0, 1]], lit: (g, s) => [cardRect(s)] },
+  // The flicker fix's agent, alone in the sidebar and idle, and its changes
+  // in the review panel, which has the keyboard as Corgi gives it on opening.
+  reviews: { init: { side: "solo24", idle: true, review: true, reviewKeys: true, tabs: { ...TABS, C: [named("fixes", pane("C0")), ...TABS.C.slice(1)] } }, crop: [0, 0, 24, 124] },
+  // The worktree overview, live, with its brief of each worktree, over the
+  // sidebar. An empty pane under the card leaves it a clear row each side.
+  worktrees: { init: { side: "wt34", rows: WT_ROWS, trees: "corgi", tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, WT_ROWS, 124] },
+  // Smart Links: moonlander, alone in the sidebar, runs its dev server, and
+  // the server's page names the link on moonlander's row. A phone shows the
+  // link through to the server's URL.
+  clever: { init: CLEVER, crop: [0, 0, 15, 124], phone: [16, 56],
+    // corgi's rows go, and the rest of the sidebar moves up.
+    edit: (g) => g.forEach((row, r) => r >= WS_ROWS.C[0] && row.splice(0, SW - 1, ...g[Math.min(r + 3, g.length - 1)].slice(0, SW - 1))),
+    rings: (g) => [cleverLink(g), find(g, "➜  Local:   http://localhost:3000/", { c0: SW })],
+    wires: [[0, 1]],
+    // The window beside the sidebar, its tab bar too.
+    lit: (g, s) => [{ r0: 0, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
+  // The same window with moonlander's worktree overview open from its
+  // badge, a ring on the brief Corgi wrote of each worktree. A phone shows
+  // the badge on.
+  briefs: { init: { ...CLEVER, trees: "moonlander" }, crop: [0, 0, 18, 124], phone: [16, 56],
+    rings: (g, s) => s.S.trees.data.briefs.map((b) => find(g, b.label, { c0: SW })),
+    // The card, and its badge with the line between them.
+    lit: (g, s) => {
+      const o = s.S.trees, card = treesRect(o, s.S.rows), badge = treesBadge(o);
+      return [{ r0: card.y, r1: card.y + card.h - 1, c0: card.x, c1: card.x + card.w - 1 }, { r0: badge.y, r1: badge.y, c0: badge.x, c1: card.x }];
+    } },
+  // corgi's resource card, open beside its workspace's row over one empty
+  // pane. As in corgi, its rows hold still under the pointer, a click on a
+  // heading sorts by that column, and moonlander's row opens moonlander's.
+  resources: { init: { res: "C", tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, 24, 117], touch: "res", cards: "keep",
+    rings: (g, s) => {
+      const ws = s.S.res, card = resRectAt(ws, s.S.rows);
+      return [{ r0: RES_ROW[ws], r1: RES_ROW[ws], c0: 1, c1: SW - 3 }, { r0: card.y, r1: card.y + card.h - 1, c0: card.x, c1: card.x + card.w - 1 }];
+    },
+    wires: [[0, 1]] },
 };
 
+// How far a ring's line keeps off its cells, across and down, in em.
+const RING_PAD = [0.45, 0.08];
 const SVG = "http://www.w3.org/2000/svg";
 const el = (tag, cls, html = "") => Object.assign(document.createElement(tag), { className: cls, innerHTML: html });
 
@@ -1943,23 +2905,83 @@ class Feature {
     this.spec = spec; this.band = band; this.name = band.dataset.feature;
     this.session = session(spec.init);
     this.el = band.querySelector(".screen");
+    // The page holds the slice's size before this runs; keep it in step.
+    const held = ["--rows", "--cols"].map((v) => +this.el.style.getPropertyValue(v));
+    if (held[0] !== this.rows || held[1] !== this.cols) console.warn(`${this.name}: index.html holds ${held.join("×")}, the crop is ${this.rows}×${this.cols}`);
+    // With `phone` ([first column, columns]), a phone shows only those columns,
+    // larger: index.html holds their count as --phone-cols, which the
+    // stylesheet makes --cols there.
+    const phoneHeld = +this.el.style.getPropertyValue("--phone-cols") || undefined;
+    if (phoneHeld !== spec.phone?.[1]) console.warn(`${this.name}: index.html holds ${phoneHeld} phone columns, the phone crop has ${spec.phone?.[1]}`);
+    this.el.style.setProperty("--rows", this.rows);
     this.el.style.setProperty("--cols", this.cols);
-    this.screen = new Screen(this.el, this.cols, this.rows, { badge: this.r0 === 0 && this.c0 === 0 });
+    this.fit();
+    if (spec.phone) new ResizeObserver(() => this.fit()).observe(this.el.closest(".band"));
     this.stage = this.el.parentElement;
-    this.stage.classList.add("marked");
-    // All but what it's about dims, with a ring on each thing it's about.
-    const dim = document.createElementNS(SVG, "svg"), wire = document.createElementNS(SVG, "svg");
-    dim.classList.add("sim-dim"); wire.classList.add("sim-wire");
-    this.marks = { dim, wire, rings: [] };
     this.plan = null;
-    this.stage.append(dim, wire);
+    // All but what it's about dims, with a ring on each thing it's about.
+    if (spec.rings) {
+      this.stage.classList.add("marked");
+      const dim = document.createElementNS(SVG, "svg"), wire = document.createElementNS(SVG, "svg");
+      dim.classList.add("sim-dim"); wire.classList.add("sim-wire");
+      this.marks = { dim, wire, rings: [] };
+      this.stage.append(dim, wire);
+    }
+    this.live = false;
+    if (spec.touch) point(this.el, () => this.session, () => [this.r0, this.c0, this.rows, this.cols], { touch: spec.touch, cards: spec.cards, touched: () => this.touched() });
+    if (this.session.review) reviewInput(this.el, () => this.session, spec.crop);
+    // A ringed overview holds still.
+    if (this.session?.S.trees && !spec.rings) {
+      treesInput(this.el, () => this.session, spec.crop, () => this.play());
+      lendKeys(this.el);
+    }
+  }
+  // The crop the stylesheet sized the screen for: the phone's, or the whole.
+  fit() {
+    const phone = this.spec.phone && +getComputedStyle(this.el).getPropertyValue("--cols") === this.spec.phone[1];
+    const [c0, cols] = phone ? this.spec.phone : [this.spec.crop[1], this.spec.crop[3]];
+    if (this.screen && c0 === this.c0 && cols === this.cols) return;
+    [this.c0, this.cols] = [c0, cols];
+    this.el.querySelectorAll(":scope > .r, :scope > .badge").forEach((node) => node.remove());
+    this.screen = new Screen(this.el, cols, this.rows, { badge: this.r0 === 0 && c0 === 0 });
+    if (this.full) this.draw(now());
+  }
+  // Every animation frame while a removal plays, not the 50 ms tick.
+  play() {
+    if (this.playing) return;
+    this.playing = true;
+    const frame = () => {
+      this.draw(now());
+      if (this.session.S.trees.card.removal.phase !== "idle" && inView.has(this)) requestAnimationFrame(frame);
+      else this.playing = false;
+    };
+    requestAnimationFrame(frame);
+  }
+  touched() {
+    if (!this.spec.live) return;
+    this.live = true;
+    this.stage.classList.add("live");
+  }
+  reset() {
+    this.session = session(this.spec.init);
+    this.live = false;
+    this.stage.classList.remove("live");
   }
   draw(t) {
-    const full = this.session.compose(t);
+    const s = this.session;
+    // The herd, and the compaction's clock, wait until the whole slice is on screen.
+    if (s.S.compacting && s.S.herdAt == null) {
+      const box = this.el.getBoundingClientRect();
+      if (box.top >= 0 && box.bottom <= innerHeight) s.S.herdAt = now();
+    }
+    const full = s.compose(t);
+    this.spec.edit?.(full);
+    this.full = full;
     const g = crop(full, this.r0, this.c0, this.rows, this.cols);
     this.screen.paint(g);
+    if (this.live || !this.spec.rings) return;
     const local = (q) => ({ r0: q.r0 - this.r0, r1: q.r1 - this.r0, c0: q.c0 - this.c0, c1: q.c1 - this.c0 });
-    this.mark(g, this.spec.rings(full).filter(Boolean).map(local), (this.spec.lit?.(full) ?? []).map(local));
+    this.mark(g, this.spec.rings(full, s).filter(Boolean).map(local), (this.spec.lit?.(full, s) ?? []).map(local));
   }
   mark(g, targets, lit) {
     const stage = this.stage, box = stage.getBoundingClientRect(), term = this.el.getBoundingClientRect();
@@ -1967,11 +2989,22 @@ class Feature {
     const x = term.left - box.left - stage.clientLeft + stage.scrollLeft, y = term.top - box.top - stage.clientTop + stage.scrollTop;
     const e = this.marks;
     while (e.rings.length < targets.length) { const ring = el("div", "sim-ring"); e.rings.push(ring); stage.append(ring); }
-    const ringOf = (t) => ({ x: x + t.c0 * cw - 3, y: y + t.r0 * rh - 2, w: (t.c1 - t.c0 + 1) * cw + 6, h: (t.r1 - t.r0 + 1) * rh + 4 });
-    targets.forEach((t, k) => { const q = ringOf(t); Object.assign(e.rings[k].style, { left: `${q.x}px`, top: `${q.y}px`, width: `${q.w}px`, height: `${q.h}px` }); });
+    // A ring's line keeps a little off its cells, except where a side meets
+    // a line of corgi's own: then it runs on it, a border beside it or an
+    // agent's separator above it.
+    const em = parseFloat(getComputedStyle(this.el).fontSize), padX = RING_PAD[0] * em, padY = RING_PAD[1] * em, rule = 0.12 * em + 0.5;
+    const border = (c, t) => { for (let r = t.r0; r <= t.r1; r++) if (g[r]?.[c]?.[0] !== "│") return false; return true; };
+    const separator = (r, t) => { let n = 0; for (let c = t.c0; c <= t.c1; c++) if (STYLES[g[r]?.[c]?.[1]]?.[3]) n++; return n * 2 > t.c1 - t.c0 + 1; };
+    const ringOf = (t) => {
+      const left = border(t.c0 - 1, t) ? (t.c0 - 0.5) * cw : t.c0 * cw - padX, right = border(t.c1 + 1, t) ? (t.c1 + 1.5) * cw : (t.c1 + 1) * cw + padX;
+      const top = t.r0 * rh - (separator(t.r0 - 1, t) ? rule : padY), bottom = (t.r1 + 1) * rh + padY;
+      return { x: x + left, y: y + top, w: right - left, h: bottom - top };
+    };
+    // Each ring's box is its line's center line, the border astride it.
+    targets.forEach((t, k) => { const q = ringOf(t); Object.assign(e.rings[k].style, { left: `${q.x - 0.5}px`, top: `${q.y - 0.5}px`, width: `${q.w + 1}px`, height: `${q.h + 1}px` }); });
     // The dim: the whole slice, with a hole over each ring.
     const tw = this.cols * cw, th = this.rows * rh;
-    const holes = targets.map((t) => { const q = ringOf(t); return `<rect x="${q.x - x - 2}" y="${q.y - y - 2}" width="${q.w + 4}" height="${q.h + 4}" rx="5"/>`; }).join("")
+    const holes = targets.map((t) => { const q = ringOf(t); return `<rect x="${q.x - x - 0.5}" y="${q.y - y - 0.5}" width="${q.w + 1}" height="${q.h + 1}" rx="6"/>`; }).join("")
       + lit.map((t) => `<rect x="${t.c0 * cw}" y="${t.r0 * rh}" width="${(t.c1 - t.c0 + 1) * cw}" height="${(t.r1 - t.r0 + 1) * rh}"/>`).join("");
     if (e.dim.dataset.holes !== holes + tw) {
       e.dim.dataset.holes = holes + tw;
@@ -1990,22 +3023,23 @@ class Feature {
       });
       this.plan = { key, wires };
     }
-    const cx = (c) => x + (c + 0.5) * cw, cy = (r) => y + (r + 0.5) * rh;
-    let d = "", dots = "";
+    // Through cell centers on whole pixels, its ends on the rings' lines.
+    const cx = (c) => Math.round((c + 0.5) * cw) + 0.5, cy = (r) => Math.round((r + 0.5) * rh) + 0.5;
+    let d = "";
     this.plan.wires.forEach((wv, k) => {
       if (!wv) return;
       const [a, b] = this.spec.wires[k], from = ringOf(targets[a]), to = ringOf(targets[b]), first = wv.cells[0], last = wv.cells[wv.cells.length - 1];
-      const start = [[from.x + from.w + 1, cy(first.r)], [cx(first.c), from.y + from.h + 1], [from.x - 1, cy(first.r)], [cx(first.c), from.y - 1]][wv.out];
-      const end = [[to.x - 1, cy(last.r)], [cx(last.c), to.y - 1], [to.x + to.w + 1, cy(last.r)], [cx(last.c), to.y + to.h + 1]][wv.into];
-      const pts = [start, ...wv.cells.map((q) => [cx(q.c), cy(q.r)]), end].map(([px, py]) => [Math.round(px - x) + 0.5, Math.round(py - y) + 0.5]);
+      const [fx, fy, tx, ty] = [from.x - x, from.y - y, to.x - x, to.y - y];
+      const start = [[fx + from.w, cy(first.r)], [cx(first.c), fy + from.h], [fx, cy(first.r)], [cx(first.c), fy]][wv.out];
+      const end = [[tx, cy(last.r)], [cx(last.c), ty], [tx + to.w, cy(last.r)], [cx(last.c), ty + to.h]][wv.into];
+      const pts = [start, ...wv.cells.map((q) => [cx(q.c), cy(q.r)]), end];
       const knees = pts.filter((pt, i) => i === 0 || i === pts.length - 1 || !((pt[0] === pts[i - 1][0] && pt[0] === pts[i + 1][0]) || (pt[1] === pts[i - 1][1] && pt[1] === pts[i + 1][1])));
       d += "M" + knees.map((pt) => pt.join(" ")).join(" L");
-      dots += `<circle r="2.5" cx="${knees[0][0]}" cy="${knees[0][1]}"/>`;
     });
     if (e.wire.dataset.d !== d + tw) {
       e.wire.dataset.d = d + tw;
       Object.assign(e.wire.style, { left: `${x}px`, top: `${y}px`, width: `${tw}px`, height: `${th}px` });
-      e.wire.innerHTML = `<path d="${d}"/>${dots}`;
+      e.wire.innerHTML = `<path d="${d}"/>`;
     }
   }
 }
@@ -2014,14 +3048,189 @@ const inView = new Set();
 const seen = new IntersectionObserver((entries) => entries.forEach((entry) => {
   const f = features.find((x) => x.stage === entry.target);
   if (entry.isIntersecting) inView.add(f);
-  else inView.delete(f);
+  else { inView.delete(f); f.reset(); }
 }));
 features.forEach((f) => { seen.observe(f.stage); f.draw(0); });
 
+// F1 jumps to the next unread agent, as in corgi, in the agents slice,
+// scrolling it into view first.
+const away = features.find((f) => f.name === "agents"), f1 = document.getElementById("f1");
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "F1" || e.metaKey || e.ctrlKey || e.altKey || !away) return;
+  e.preventDefault();
+  const box = away.stage.getBoundingClientRect(), shown = box.top >= 0 && box.bottom <= innerHeight;
+  away.stage.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+  setTimeout(() => {
+    if (away.session.unread()) { act(away.session, { kind: "unread" }); away.touched(); }
+    f1.classList.remove("flash");
+    void f1.offsetWidth;
+    f1.classList.add("flash");
+  }, shown || still ? 0 : 450);
+});
+
+// Rows of runs at the bottom of a screen, a column in from its left edge.
+function bottomGrid(rows, cols, height) {
+  const g = blank(height, cols), top = height - rows.length;
+  rows.forEach((runs, n) => {
+    if (top + n < 0) return;
+    let c = 1;
+    for (const [text, s] of runs) c = put(g, top + n, c, ellipsis(text, cols - 1 - c), s);
+  });
+  return g;
+}
+
+// ---- keeping pace: one agent's pane twice, over a link that drops for
+// 20 s while the agent writes walls of output and finishes. Without pacing,
+// the output queued behind the drop replays, every screen of it: the link
+// drains `link` times as fast as live, and each row of output costs a share
+// of it, so the walls replay slowly and the pane settles `catchup` ms after
+// the link is back. Corgi shows the finished pane about when the link is.
+// Times are the story's; the page plays them `speed` times as fast and stops
+// at PACE_END, a moment after both are back.
+const PACE = { cols: 44, rows: 13, speed: 8, stall: [4000, 24000], catchup: 10000, link: 5, flush: 400 };
+const ADD = style("accent"), DEL = style("hot");
+const call = (at, verb, arg, out) => [[at, [["⏺ ", A.done], [verb, A.tool], [`(${arg})`, A.text]]], [at + 700, [["  ⎿  " + out, A.out]]]];
+// An edit as Claude Code shows it, its diff numbered, all at once.
+function edit(at, file, line, diff) {
+  const count = (op) => diff.filter(([o]) => o === op).length;
+  return [
+    [at, [["⏺ ", A.done], ["Update", A.tool], [`(${file})`, A.text]]],
+    [at, [[`  ⎿  ${count("+")} additions, ${count("-")} removals`, A.out]]],
+    ...diff.map(([op, code]) => [at, [[`  ${String(op === "-" ? line : line++).padStart(4)} ${op} ${code}`, op === "+" ? ADD : op === "-" ? DEL : A.out]]]),
+  ];
+}
+// While the link is down, the agent works through the gear in quick steps,
+// each with its output: walls for plain SSH to replay.
+const WALL_FILES = ["src/lander.ts", "src/gear.ts", "src/physics.ts", "src/hud.ts", "src/legs.ts", "test/landing.test.ts"];
+const WALL_CODE = [
+  "const sq = this.gear.squash();", "const f = K * sq - C * this.vy;", "this.vy += (f - G) * dt;", "this.y = Math.max(0, this.y);",
+  "if (sq > MAX) this.crash();", 'hud.gauge("gear", sq / MAX);', "expect(l.bounces).toBe(1);", "k = 0.4; c = 1.8; rest = 0.6;",
+  "for (const leg of this.legs) {", "  leg.step(dt, this.vy);", "}", 'emit("touchdown", this.vy);', "this.t += dt;",
+  "const rest = this.gear.rest;", "return Math.max(0, rest - y);", 'test("settles", () => {',
+];
+const WALL_SAYS = ["Each leg springs on its own now.", "The HUD shows the squash.", "Damping was too low; raising `c`.", "One more test for a hard drop."];
+function wall(from, to, step) {
+  const rows = [];
+  let seed = 7;
+  const pick = (n) => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 16) % n;
+  for (let at = from, i = 0; at < to; at += step, i++) {
+    if (i % 6 === 2) rows.push([at, say(WALL_SAYS[Math.floor(i / 6) % WALL_SAYS.length])[0]]);
+    else if (i % 6 === 5) rows.push(...call(at, "Bash", "bun test", `${44 + i} pass, ${pick(3)} fail`));
+    else {
+      const diff = Array.from({ length: 5 + pick(6) }, () => [["+", "+", "-", " "][pick(4)], "  " + WALL_CODE[pick(WALL_CODE.length)]]);
+      rows.push(...edit(at, WALL_FILES[pick(WALL_FILES.length)], 10 + pick(200), diff));
+    }
+  }
+  return rows;
+}
+const PACE_LOG = [
+  ...call(500, "Read", "src/physics.ts", "Read 412 lines"),
+  [1800, say("The gear has no spring: `k` is 0.")[0]],
+  ...call(3000, "Update", "src/physics.ts", "1 addition, 1 removal"),
+  ...wall(4400, 20000, 400),
+  ...call(20400, "Bash", "bun test", "64 pass, 0 fail"),
+  ...call(21200, "Bash", "git commit -am 'Spring the gear'", "1 commit"),
+  [22200, say("Done: it lands with one soft bounce now.")[0]],
+];
+// The agent finishes before the link is back.
+const PACE_DONE = PACE_LOG.at(-1)[0];
+// The link each row of output costs, so the replay of the rows written since
+// the drop ends `catchup` ms after the link is back.
+const PACE_ROW = (PACE.stall[0] - PACE.stall[1] + (PACE.link - 1) * PACE.catchup) / PACE_LOG.filter(([at]) => at > PACE.stall[0]).length;
+// How much link the story up to `d` takes, and how far plain SSH's replay
+// has got T into it, once the link is back.
+const paceCost = (d) => d + PACE_ROW * PACE_LOG.filter(([at]) => at <= d).length;
+function replayed(T) {
+  const [from, to] = PACE.stall, budget = paceCost(from) + PACE.link * (T - to);
+  let lo = from, hi = T;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (paceCost(mid) <= budget) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+const PLAIN_BACK = PACE.stall[1] + PACE.catchup, PACE_END = PLAIN_BACK + 4000;
+// When a side is back: Corgi a moment after the link, plain SSH once its
+// replay has caught up.
+const paceBack = (paced) => (paced ? PACE.stall[1] + PACE.flush : PLAIN_BACK);
+// What a side shows at T into the loop: frozen through the drop, then
+// replaying, or back at once.
+function paceShown(T, paced) {
+  const [from, to] = PACE.stall;
+  if (T < from || T >= paceBack(paced)) return T;
+  return T < to || paced ? from : replayed(T);
+}
+function paceGrid(d) {
+  const spin = SPIN_CLAUDE[Math.floor(d / 120 / PACE.speed) % SPIN_CLAUDE.length];
+  const status = d < PACE_DONE
+    ? [[spin + " Springing… ", ORANGE], [`(${Math.floor(27 + d / 1000)}s · ↓ ${(0.4 + d / 9000).toFixed(1)}k tokens)`, A.hint]]
+    : [[`✻ Worked for ${Math.floor(27 + PACE_DONE / 1000)}s`, A.hint]];
+  return bottomGrid([...ask("make the landing gear springy"), [], ...PACE_LOG.filter(([at]) => at <= d).map(([, row]) => row), [],
+    status, [], ...claudeBottom(PACE.cols - 2)], PACE.cols, PACE.rows);
+}
+const paceEl = document.getElementById("pace"), timebar = document.getElementById("timebar");
+const paceSides = [["plain", false], ["corgi", true]].map(([name, paced]) => {
+  const el = document.getElementById(`v-pace-${name}`);
+  return { el, paced, screen: new Screen(el, PACE.cols, PACE.rows) };
+});
+// Under them, a timeline of each side as Chrome draws one: usable, halted,
+// catching up, usable again, filled in up to the playhead.
+for (const [name, paced] of [["plain ssh", false], ["corgi", true]]) {
+  const [from, to] = PACE.stall, back = paceBack(paced), track = el("div", "tb-track"), fill = el("div", "tb-fill");
+  const secs = (ms) => `${Math.round(ms / 100) / 10} s`;
+  const spans = [["usable", 0, from, "usable", ""], ["halt", from, to, `link down · ${secs(to - from)}`, secs(to - from)], ["catchup", to, back, `catch-up · ${secs(back - to)}`, secs(back - to)], ["usable", back, PACE_END, "usable", ""]];
+  for (const [kind, a, b, long, short] of spans) {
+    const span = el("span", `tb-${kind}`);
+    Object.assign(span.dataset, { long, short });
+    Object.assign(span.style, { left: `${(100 * a) / PACE_END}%`, width: `${(100 * (b - a)) / PACE_END}%` });
+    fill.append(span);
+  }
+  track.append(fill);
+  timebar.append(el("span", "tb-name", name), track);
+}
+// Each label shows whole, short or not at all, as its span has room.
+new ResizeObserver(() => timebar.querySelectorAll(".tb-fill > span").forEach((span) => {
+  for (const label of [span.dataset.long, span.dataset.short, ""]) {
+    span.textContent = label;
+    if (span.scrollWidth <= span.clientWidth) break;
+  }
+})).observe(timebar);
+// It plays each time half of it comes into view, every animation frame,
+// and again `PACE_REST` ms after the end, or at once on a tap; a still page
+// shows the end.
+const PACE_REST = 3000;
+let paceFrom = null, pacePlaying = false, paceRest = 0;
+function paintPace(T) {
+  timebar.style.setProperty("--at", T / PACE_END);
+  for (const side of paceSides) side.screen.paint(paceGrid(paceShown(T, side.paced)));
+}
+function playPace() {
+  if (paceFrom == null) return void (pacePlaying = false);
+  const T = Math.min(PACE_END, (now() - paceFrom) * PACE.speed);
+  paintPace(T);
+  if (T < PACE_END) return void requestAnimationFrame(playPace);
+  pacePlaying = false;
+  paceRest = setTimeout(startPace, PACE_REST);
+}
+function startPace() {
+  clearTimeout(paceRest);
+  paceFrom = now();
+  if (!pacePlaying) { pacePlaying = true; requestAnimationFrame(playPace); }
+}
+new IntersectionObserver(([entry]) => {
+  if (entry.intersectionRatio >= 0.5 && paceFrom == null && !still) startPace();
+  else if (!entry.isIntersecting) { clearTimeout(paceRest); paceFrom = null; paintPace(still ? PACE_END : 0); }
+}, { threshold: [0, 0.5] }).observe(paceEl);
+paceEl.addEventListener("click", () => { if (!still) startPace(); });
+paintPace(still ? PACE_END : 0);
+
 function run() {
   const t = now();
-  if (heroSeen) heroScreen.paint(hero.compose(t));
+  if (heroSeen) drawHero(t);
+  if (runningSeen) drawRunning(t);
   for (const f of inView) f.draw(t);
+  cliBand?.draw(t);
 }
 run();
 setInterval(run, 50);

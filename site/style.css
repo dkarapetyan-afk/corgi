@@ -62,9 +62,7 @@ h2 s { color: var(--faint); font-weight: 400; text-decoration-thickness: 1px; }
 .sprite span.slant { color: var(--faint); }
 h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var(--strong); letter-spacing: -0.01em; }
 .lede { margin: 0; font-size: 19px; line-height: 1.45; color: var(--strong); }
-.love { display: flex; margin: 0; color: var(--muted); font-size: 13px; }
-.love span { flex: 0 0 1ch; width: 1ch; text-align: center; white-space: pre; }
-.get { margin-top: 10px; display: grid; justify-items: center; gap: 6px; max-width: 100%; }
+.get { --gap: 6px; --hang: 4px; margin-top: 10px; display: grid; justify-items: center; gap: var(--gap); max-width: 100%; }
 .cmd { position: relative; overflow: hidden; isolation: isolate; display: flex; align-items: center; gap: 2ch; min-width: 0; max-width: 100%; background: var(--surface); border-radius: 6px; padding: 8px 8px 8px 1.75ch; font-size: 16px; }
 /* A click sweeps a glint along the command and into the button. */
 .cmd::before { content: ""; position: absolute; z-index: -1; inset: 0 auto 0 0; width: 45%; background: linear-gradient(90deg, transparent, rgb(123 241 168 / .16), transparent); transform: translateX(-100%); pointer-events: none; }
@@ -81,13 +79,28 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 .btn.copied .label { visibility: hidden; }
 .btn.copied .done { opacity: 1; animation: check .15s ease-out; }
 @keyframes check { from { transform: scale(.75); } }
-.note { font-size: 13px; color: var(--faint); }
+/* The note centers under the command; the GitHub link is a little sign
+   hung on two strings under the box's right end. */
+.meta { justify-self: stretch; display: grid; grid-template-columns: 1fr auto 1fr; align-items: baseline; gap: 2ch; }
+.meta .note { grid-column: 2; }
+.note { font-size: 13px; color: var(--faint); text-wrap: balance; }
+.cmd { z-index: 1; }
+.gh { position: relative; grid-column: 3; justify-self: end; margin: calc(var(--hang) - var(--gap)) 8px 0 0; display: inline-block; padding: 3px 1ch; border-radius: 4px; background: var(--surface); color: var(--muted); font-size: 13px; text-decoration: none; }
+/* The strings run up under the box and end in an eyelet on the sign. */
+.gh::before, .gh::after { content: ""; position: absolute; bottom: calc(100% - 3px); width: 3px; height: calc(var(--hang) + 7px); background: radial-gradient(circle at 50% calc(100% - 1.5px), var(--line) 1.5px, transparent 2px), linear-gradient(var(--line), var(--line)) 50% 0 / 1px calc(100% - 2px) no-repeat; }
+.gh::before { left: 1.25ch; }
+.gh::after { right: 1.25ch; }
+.gh:hover { color: var(--strong); }
+.gh svg { width: 14px; height: 14px; margin-right: 1ch; vertical-align: -2px; fill: currentColor; }
 
 /* Cell screens */
 .screen {
-  --fs: min(var(--max, 12.5px), max(8.5px, calc((100cqw - var(--pad, 26px)) / var(--cols) / 0.6)));
+  --cell: .6em;
+  --fs: min(var(--max, 12.5px), max(var(--min, 8.5px), calc((100cqw - var(--pad, 26px)) / var(--cols) / 0.6)));
   position: relative;
-  width: max-content;
+  /* Its size before the script fills it in, so the page doesn't reflow. */
+  width: calc(var(--cols) * var(--cell));
+  min-height: calc(var(--rows) * 1.42em);
   font-size: var(--fs);
   line-height: 1;
   color: var(--text);
@@ -95,16 +108,30 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
   user-select: none;
 }
 .screen.bare { background: transparent; }
-.screen .r { display: flex; height: 1.42em; }
+.screen .r { position: relative; display: flex; height: 1.42em; }
 .screen .r[hidden] { display: none; }
-.screen .r > span { position: relative; flex: 0 0 1ch; width: 1ch; line-height: 1.42em; text-align: center; white-space: pre; background-repeat: no-repeat; }
+.screen .r > span { position: relative; flex: 0 0 var(--cell); width: var(--cell); line-height: 1.42em; text-align: center; white-space: pre; background-repeat: no-repeat; }
+.screen .game-link { position: absolute; z-index: 1; top: 0; height: 100%; cursor: pointer; }
+.screen .game-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .screen .b { font-weight: 700; }
 .screen .u::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0.12em; border-bottom: 1px solid var(--ulc, currentColor); }
 .screen .ud::after { border-bottom-style: dotted; }
-#v-watch { width: calc(var(--vis, 124) * 1ch); overflow: hidden; }
+#v-watch { width: calc(var(--vis, 124) * var(--cell)); overflow: hidden; }
+/* A slice with a phone crop shows its --phone-cols columns there, larger. */
+@container (width < 600px) {
+  .screen.phone-crop { --cols: var(--phone-cols) !important; }
+}
 /* A phone's keeps watch runs edge to edge, the terminal its own box. */
 .stage.phone { padding: 0; border: 0; border-radius: 0; background: none; }
-.screen .badge { position: absolute; z-index: 1; top: calc(.71em - 1.5ch); width: 3ch; height: 3ch; object-fit: contain; }
+/* Below 600 pixels the picker and the top card take the phone's layout,
+   before the script draws either. */
+#v-launcher-phone, #v-overview-phone { display: none; }
+@container (width < 600px) {
+  #v-launcher, #v-overview { display: none; }
+  #v-launcher-phone, #v-overview-phone { display: block; }
+  #overview-stage { padding: 0; border: 0; border-radius: 0; background: none; }
+}
+.screen .badge { position: absolute; z-index: 1; top: calc(.71em - 1.5 * var(--cell)); width: calc(3 * var(--cell)); height: calc(3 * var(--cell)); object-fit: contain; }
 .f-bg { color: var(--bg); } .f-surface { color: var(--surface); } .f-selected { color: var(--selected); }
 .f-line { color: var(--line); } .f-faint { color: var(--faint); } .f-muted { color: var(--muted); }
 .f-text { color: var(--text); } .f-strong { color: var(--strong); } .f-accent { color: var(--accent); }
@@ -128,6 +155,16 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 .band { grid-column: 1 / -1; container-type: inline-size; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; gap: 8px; }
 .band > h2 { justify-self: stretch; }
 .band > p, .band .line p { margin: 0; color: var(--muted); }
+.band > p code { color: var(--text); }
+/* Hackable: a terminal beside Corgi, sized together as one 150-column
+   screen, or stacked once they stop fitting. The terminal's blinking
+   cursor says it has the keys. */
+.cli { display: flex; justify-content: center; align-items: flex-start; gap: 16px; max-width: 100%; }
+.cli .screen { --fs: min(14px, max(8.5px, calc((100cqw - 84px) / 150 / 0.6))); outline: none; }
+@container (width < 900px) {
+  .cli { flex-direction: column; align-items: center; }
+  .cli .screen { --fs: min(14px, max(8.5px, calc((100cqw - 26px) / var(--cols) / 0.6))); }
+}
 .band .line { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 4px 4ch; }
 .band .stage { margin-top: 4px; }
 .legend { display: flex; flex-wrap: wrap; gap: 2px 2.5ch; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--faint); }
@@ -138,11 +175,6 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 #v-watch .cursor { transform-origin: 0 0; }
 #v-watch .cursor.locate { animation: locate 1.1s cubic-bezier(.3, .6, .2, 1); }
 @keyframes locate { 0%, 30% { transform: scale(4); } 100% { transform: scale(1); } }
-footer { grid-column: 1 / -1; display: grid; justify-items: center; text-align: center; gap: 4px; font-size: 13px; color: var(--faint); }
-footer .sleeper { display: flex; font-size: 15px; height: 1.6em; }
-footer .sleeper span { flex: 0 0 1ch; width: 1ch; text-align: center; white-space: pre; }
-footer p { margin: 0; }
-footer a { color: var(--muted); }
 
 /* `top` as a terminal shows it: regular weight on a screen's ground. */
 #overview h2 code { font-weight: 400; color: var(--text); background: var(--pane); border: 1px solid var(--surface); border-radius: 4px; padding: 1px 0.75ch; }
@@ -169,14 +201,23 @@ footer a { color: var(--muted); }
 /* A phone keeps the one row: the command, sized to fit, beside an icon
    that copies it. The prompt goes to make room. */
 @media (max-width: 600px) {
-  /* The title and the idle corgi center as a pair, the corgi on the word's
-     baseline; its fetch runs on toward the screen's edge (laneNow). */
+  /* The title and the idle corgi sit at the left, the corgi on the word's
+     baseline, so its fetch runs the screen's width to the edge (laneNow).
+     The tagline is sized to stay on one line. */
+  .hero { justify-items: start; text-align: left; }
   .title { display: flex; align-items: baseline; gap: 10px; }
   .title .sprite { position: static; width: 7ch; overflow: visible; font-size: 16px; }
+  .lede { font-size: min(16px, calc((100vw - 32px) / 45.5 / 0.6)); }
   /* The lane runs past the page's margin, its ramp at the screen's edge. */
   .hero { overflow-x: visible; }
-  .get { margin-top: 14px; gap: 10px; width: 100%; }
-  .band > p, .band .line p { font-size: 14px; }
+  .get { --gap: 10px; margin-top: 14px; width: 100%; }
+  /* The note keeps to one line beside the sign. */
+  .meta { grid-template-columns: 1fr auto; gap: 8px; }
+  .meta .note { grid-column: 1; }
+  .gh { font-size: 11px; }
+  .meta .note { font-size: min(11px, calc((100vw - 150px) / 33 / 0.6)); }
+  .gh { grid-column: 2; margin-right: 6px; }
+  .band > p, .band .line p { font-size: 13px; }
   .cmd { width: 100%; box-sizing: border-box; gap: 8px; padding: 6px 6px 6px 10px; }
   .cmd .ps { display: none; }
   .cmd code { overflow: visible; font-size: min(14px, calc((100vw - 92px) / 30.4)); }
@@ -189,10 +230,21 @@ footer a { color: var(--muted); }
 .sim-band { gap: 12px; }
 .band[hidden] { display: none; }
 .sim-stage { margin-top: 0; outline: none; }
-#v-sim { outline: none; }
+#v-sim { outline: none; overflow: hidden; }
+#v-sim.launching { pointer-events: none; }
+@media (max-width: 600px) {
+  .sim-band { width: calc(100% + 24px); justify-self: center; }
+  .sim-stage { padding: 4px; border-radius: 5px; }
+  #v-sim { --pad: 10px; }
+}
 .band > .legend { font-size: inherit; color: var(--muted); }
+@media (max-width: 600px) {
+  .band > .legend { font-size: 13px; gap: 2px 2ch; }
+}
 .stage.marked { position: relative; }
-.stage.marked > .sim-ring, .stage.marked > .sim-dim, .stage.marked > .sim-wire { position: absolute; z-index: 2; pointer-events: none; }
+.stage.marked > .sim-ring, .stage.marked > .sim-dim, .stage.marked > .sim-wire { position: absolute; z-index: 2; pointer-events: none; transition: opacity .2s; }
+/* Once the visitor clicks into it, the slice is theirs. */
+.stage.live > .sim-ring, .stage.live > .sim-dim, .stage.live > .sim-wire { opacity: 0; }
 
 /* Sized once its rings are placed; until then it takes no room. */
 .sim-dim { width: 0; height: 0; overflow: visible; }
@@ -200,5 +252,95 @@ footer a { color: var(--muted); }
 /* A wire joins rings that go together. */
 .sim-wire { overflow: visible; }
 .sim-wire path { fill: none; stroke: var(--accent); stroke-width: 1; stroke-linejoin: miter; }
-.sim-wire circle { fill: var(--accent); }
-.sim-ring { border-radius: 4px; outline: 1px solid var(--accent); outline-offset: 1px; box-shadow: 0 0 0 4px rgb(123 241 168 / .08); }
+.sim-ring { box-sizing: border-box; border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 3px rgb(123 241 168 / .08); }
+
+/* Two viewers on one desktop, with the work alive behind both windows. */
+.running-desktop { box-sizing: border-box; width: 100%; max-width: 1200px; padding: 24px; border: 1px solid var(--surface); border-radius: 12px; background: var(--surface); }
+.running-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.running-window { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--pane); transition: opacity .25s, transform .25s; }
+.running-window.detached { opacity: 0; transform: translateY(12px) scale(.97); pointer-events: none; }
+.running-title { position: relative; padding: 7px 9px; border-bottom: 1px solid var(--surface); color: var(--muted); font-size: 11px; }
+.running-dots { position: absolute; left: 10px; color: var(--faint); font-size: 9px; }
+.running-window .screen { --fs: min(12px, calc((100cqw - 74px) / 152 / .6)); margin: 8px auto; }
+.running-background { display: flex; justify-content: center; align-items: baseline; gap: 1ch; margin-top: 20px; color: var(--muted); font-size: 12px; }
+.running-replay { padding: 2px 1ch; border: 0; background: none; color: var(--faint); font: inherit; font-size: 12px; cursor: pointer; }
+.running-replay:hover { color: var(--strong); }
+@container (width < 760px) {
+  .running-desktop { padding: 12px; }
+  .running-windows { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .running-window .screen { --fs: min(12px, calc((100cqw - 42px) / 76 / .6)); }
+  /* Each status, 49 columns with its dot, keeps to one line. */
+  .running-background { margin-top: 12px; font-size: min(11px, calc((100cqw - 28px) / 49 / .6)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .running-window { transition: none; }
+}
+
+.band > h3 { margin: 32px 0 0; font-size: inherit; font-weight: 700; color: var(--strong); }
+.band > h2 + h3 { margin-top: 4px; }
+
+/* ---- Keyboard and mouse: corgi's command menu on the page itself, under
+   its presets drawn as corgi draws tabs. */
+.presets { display: flex; flex-wrap: wrap; justify-content: center; }
+.presets button { font: inherit; font-size: 13px; color: var(--faint); background: none; border: 0; padding: 1px 1.5ch; cursor: pointer; }
+.presets button:hover { color: var(--strong); }
+.presets button[aria-pressed="true"] { color: var(--strong); font-weight: 700; background: var(--selected); }
+#keys-stage { justify-self: center; max-width: 100%; overflow-x: auto; margin-top: 4px; outline: none; }
+#keys-stage .screen { --pad: 0px; }
+#v-keys-phone { display: none; }
+@container (width < 600px) {
+  #v-keys { display: none; }
+  #v-keys-phone { display: block; }
+}
+
+/* ---- SSH friendly: one pane twice over a link that stalls, and a
+   timeline of both under them, filled up to the playhead. */
+.band > p.note { font-size: 13px; color: var(--faint); }
+.pace { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px 28px; margin-top: 8px; cursor: pointer; }
+.pace figure { margin: 0; display: grid; justify-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.pace figcaption { font-size: 13px; color: var(--muted); }
+.pace .stage { margin-top: 0; }
+.timebar { flex-basis: 100%; max-width: 820px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 12px; font-size: 12px; text-align: left; }
+.tb-name { color: var(--muted); text-align: right; }
+.tb-track { position: relative; height: 20px; overflow: hidden; border-radius: 3px; background: var(--surface); }
+.tb-track::after { content: ""; position: absolute; top: 0; bottom: 0; left: calc(var(--at, 0) * 100%); width: 1px; background: var(--strong); }
+.tb-fill { position: absolute; inset: 0; clip-path: inset(0 calc(100% - var(--at, 0) * 100%) 0 0); }
+.tb-fill > span { position: absolute; top: 0; bottom: 0; box-sizing: border-box; padding: 0 6px; overflow: hidden; line-height: 20px; white-space: nowrap; }
+.tb-usable { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 2px 0 var(--accent); }
+.tb-halt { color: var(--hot); background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--hot) 22%, transparent) 0 5px, color-mix(in srgb, var(--hot) 8%, transparent) 5px 10px); box-shadow: inset 2px 0 var(--hot); }
+.tb-catchup { color: var(--warm); background: color-mix(in srgb, var(--warm) 22%, transparent); box-shadow: inset 2px 0 var(--warm); }
+
+/* ---- Corgi loves the community: who made it possible, each on its own
+   card, then the first testers, with the corgi asleep under them. */
+.thanks { padding-top: 24px; }
+/* Four to a row, two or one on narrower screens. */
+.credits { --per: 4; display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; width: 100%; margin: 12px 0 0; padding: 0; list-style: none; text-align: left; }
+/* The name up top, what Corgi owes it at the bottom. */
+.credits li { container-type: inline-size; box-sizing: border-box; flex: 0 1 calc((100% - (var(--per) - 1) * 16px) / var(--per)); display: flex; flex-direction: column; gap: 16px; padding: 18px 20px 20px; background: var(--pane); border: 1px solid var(--surface); border-radius: 8px; transition: border-color .2s; }
+.credits li:hover { border-color: var(--line); }
+/* Sized so "herdr & herdr-reviewr", icon and all, fits on one line. */
+.credits .name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0.5em; font-size: min(22px, 100cqi / 14.2); line-height: 1.3; font-weight: 700; color: var(--strong); }
+.credits .name a { color: inherit; text-decoration: none; }
+/* Each project's own icon, beside its name. */
+.credits .name a { display: inline-flex; align-items: center; gap: 0.35em; white-space: nowrap; }
+.credits .name img { width: 1.2em; height: 1.2em; object-fit: contain; border-radius: 0.25em; }
+.credits .name a:hover { color: var(--accent); }
+.credits .and { color: var(--faint); font-weight: 400; }
+.credits p { margin: auto 0 0; font-size: 14px; line-height: 1.55; color: var(--muted); }
+.credits p.aside { display: flex; align-items: center; gap: 0.75ch; margin-top: -8px; font-size: 12px; color: var(--faint); }
+.credits .aside svg { flex: none; width: 14px; height: 14px; }
+.testers { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 6px 0 0; padding: 0; list-style: none; }
+.testers a { display: flex; align-items: center; gap: 1ch; padding: 6px 1.75ch; border-radius: 6px; background: var(--surface); color: var(--strong); font-weight: 700; text-decoration: none; }
+.testers a:hover { background: var(--selected); }
+.testers svg { width: 15px; height: 15px; fill: var(--muted); }
+.thanks .sleeper { display: flex; margin-top: 28px; font-size: 22px; height: 1.6em; }
+/* The dog fills its first 6 cells and dreams into the rest: center the dog. */
+.thanks .sleeper { transform: translateX(5ch); }
+.thanks .sleeper span { flex: 0 0 1ch; width: 1ch; text-align: center; white-space: pre; }
+@container (width < 1200px) { .credits { --per: 2; } }
+@container (width < 560px) {
+  .credits { --per: 1; gap: 12px; }
+  .credits li { padding: 14px 14px 16px; }
+  .credits p { font-size: 13px; }
+  .thanks .sleeper { font-size: 18px; }
+}

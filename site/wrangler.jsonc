@@ -1,0 +1,17 @@
+// The landing page on corgi.computer: a Worker serving assets on / and
+// /moonlander. Other paths pass through to the release bucket
+// (install.sh, the update channel). Deployed by `bun run landingpage:publish`.
+{
+  "name": "corgi-site",
+  "main": "./worker.ts",
+  "account_id": "7f5e179b466c0478193c9b4667f05950",
+  "compatibility_date": "2026-10-01",
+  // / serves index.html and /moonlander serves moonlander.html, neither
+  // redirecting.
+  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": true },
+  "routes": [
+    { "pattern": "corgi.computer/*", "zone_name": "corgi.computer" },
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+}

@@ -9,8 +9,19 @@
     "typecheck": "bun typecheck.ts",
     "integration": "bun integration.ts",
     "landingpage:dev": "bun site/serve.ts --dev",
-    "landingpage:build": "bun build --compile --target=browser --minify site/index.html --outdir site/dist",
-    "landingpage:start": "bun site/serve.ts"
+    "landingpage:build": "bun site/build.ts",
+    "landingpage:start": "bun site/serve.ts",
+    "landingpage:publish": "bun site/publish.ts"
+  },
+  "browser": {
+    "./src/review/git.ts": "./site/browser/git.ts",
+    "./src/launch/command.ts": "./site/browser/command.ts",
+    "./src/trackers/git_status.ts": "./site/browser/git_status.ts",
+    "./src/trackers/ports.ts": "./site/browser/ports.ts",
+    "./src/trackers/resource_os.ts": "./site/browser/resource_os.ts",
+    "./src/viewer_native.ts": "./site/browser/viewer_native.ts",
+    "fs/promises": "./site/browser/fs.ts",
+    "zlib": "./site/browser/zlib.ts"
   },
   "dependencies": { "@earendil-works/pi-tui": "1.0.4" }
 }

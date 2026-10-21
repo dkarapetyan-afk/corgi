@@ -3,6 +3,8 @@
 zig-out/
 node_modules/
 dist/
+.wrangler/
+/site/.generated/
 *.log
 .DS_Store
 

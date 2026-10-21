@@ -13,19 +13,25 @@
  * Corgi's palette tokens by name. The workspaces, agents and numbers below
  * are the page's story; the drawing is Corgi's.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drawRestoring, frame, ui as uiOf, type Ui } from "../src/render";
 import { Model, Rect, Selection, View as LayoutView } from "../src/layout";
 import * as sidebar from "../src/sidebar";
 import * as subagentTooltip from "../src/subagent_tooltip";
-import * as resourceTooltip from "../src/resource_tooltip";
+import * as worktreeAgents from "../src/worktree_agents";
+import type * as worktrees from "../src/worktrees";
+import type { FileDiff } from "../src/review/diff";
+import * as reviewGit from "../src/review/git";
 import { Menu as LauncherMenu, option, type Row } from "../src/agent_launcher";
 import { historyEntry } from "../src/launcher_resume";
 import { Snapshot as PortsSnapshot } from "../src/trackers/ports";
-import { Process, Work, cpuText, memoryText, type Point } from "../src/trackers/resources";
+import { Process, Work, type Point } from "../src/trackers/resources";
 import { View as ContextView } from "../src/usage/context_window";
 import { Writer } from "../src/text";
+import { codepointWidths } from "../src/viewer_native";
 import { microTimestamp, milliTimestamp } from "../src/clock";
 import { blankCell, grid, unknown, type Cell } from "../site/terminal";
 
@@ -46,7 +52,14 @@ Date.now = () => PINNED;
 // ---------------------------------------------------------------- the page
 const data = JSON.parse(readFileSync(FRAMES, "utf8")) as {
   styles: unknown[][];
-  resTotals: unknown;
+  /** The resource card's samples, for the page to draw it from. */
+  resources: unknown;
+  /** Ghostty's codepoint widths, for the page's text.ts. */
+  widths: unknown;
+  /** What git answered about the flicker fix's checkout, for the page's review panel. */
+  review: unknown;
+  /** corgi's and moonlander's worktrees, for the page's worktree overviews. */
+  worktrees: unknown;
   frames: Record<string, any>;
 };
 const styleIndex = new Map(data.styles.map((s, i) => [JSON.stringify(s), i]));
@@ -469,7 +482,7 @@ const POINTS: Point[][] = WORKSPACE_PROCS.map((procs, wi) =>
     return { at: 0, cpu: work.cpu, memory: work.memory, io: work.read! + work.written! };
   }),
 );
-/** The sidebar rows show the first sample; the page patches them from RES_TOTALS as the cards loop. */
+/** The sidebar rows show the first sample; the page patches them from the card's samples as they loop. */
 const FIRST = WORKSPACE_PROCS.map((procs, wi) => Object.assign(sampleWork(wi + 1, procs, 0), { processes: [] }));
 
 // ---------------------------------------------------------------- state
@@ -745,9 +758,6 @@ function watchFrames() {
                   sidebar.drawGitTooltip(out, s.workspaces[0], phone ? PHONE.cards : COLS, ROWS, width - 3, 2);
                   keep(`${pre}git`, cardCells(out.buffered(), phone), out.buffered());
                 }
-                // Each workspace's resource card, one frame a second; corgi needs
-                // 68 columns for it, so phones have none.
-                if (!phone && corgi && !read) resourceFrames(s, width);
               }
             }
 }
@@ -756,50 +766,31 @@ function cardCells(ansi: string, phone: boolean): Cell[][] {
   const g = grid(ansi, phone ? PHONE.cards : COLS, ROWS);
   return phone ? g : g.map(r => r.slice(CARD_LEFT));
 }
-const totals: Record<string, [string, string][]> = { C: [], M: [] };
-function resourceFrames(s: ReturnType<typeof scene>, width: number) {
-  for (let f = 0; f < SAMPLES; f++) {
-    // Sample f is the latest point, after the 20 before it.
-    const works = WORKSPACE_PROCS.map((procs, wi) => {
-      const work = sampleWork(wi + 1, procs, f);
-      work.history = Array.from({ length: 21 }, (_, i) => POINTS[wi][(f + i + 2 * SAMPLES - 20) % SAMPLES]);
-      return work;
-    });
-    const busy = works.reduce((n, w) => n + w.cpu!, 0);
-    works.forEach((work, wi) => {
-      const tag = wi === 0 ? "C" : "M";
-      totals[tag][f] = [cpuText(work.cpu), memoryText(work.memory)];
-      const state = new resourceTooltip.State({ anchor: wi === 0 ? 4 : 7 });
-      state.update(work, false);
-      const out = frame(
-        view,
-        [],
-        COLS,
-        ROWS,
-        uiFor(s, width, {
-          link_tooltip: true,
-          pointer: { x: 14, y: state.anchor },
-          resource_hover: work.id,
-          resource_card: state,
-          resources: {
-            interval_ms: 1000,
-            host_cpu: Math.round(24 + busy / 12),
-            cores: 12,
-            memory_pressure: "normal",
-            memory_kind: "footprint",
-            workspaces: works,
-            workspace: (id: number) => works.find(w => w.id === id) ?? new Work(),
-          },
-        }),
-      );
-      keep(
-        `res_${tag}_${f}`,
-        grid(out, COLS, ROWS).map(r => r.slice(CARD_LEFT)),
-        out,
-      );
-    });
-  }
-}
+/** The resource card's samples, one a second, as the viewer passes them to
+ * it with bigints as numbers. The page draws the card from them with corgi's
+ * own code, and the sidebar's totals with them. */
+const resources = JSON.parse(
+  JSON.stringify(
+    Array.from({ length: SAMPLES }, (_, f) => {
+      // Sample f is the latest point, after the 20 before it.
+      const works = WORKSPACE_PROCS.map((procs, wi) => {
+        const work = sampleWork(wi + 1, procs, f);
+        work.history = Array.from({ length: 21 }, (_, i) => POINTS[wi][(f + i + 2 * SAMPLES - 20) % SAMPLES]);
+        return work;
+      });
+      const busy = works.reduce((n, w) => n + w.cpu!, 0);
+      return {
+        interval_ms: 1000,
+        host_cpu: Math.round(24 + busy / 12),
+        cores: 12,
+        memory_pressure: "normal",
+        memory_kind: "footprint",
+        workspaces: works,
+      };
+    }),
+    (_, value) => (typeof value === "bigint" ? Number(value) : value),
+  ),
+);
 
 // ---------------------------------------------------------------- the picker
 const PICK = { cols: 150, rows: 21 };
@@ -846,8 +837,16 @@ const HISTORY = [
     updated_at: secs - (ago as number),
   }),
 );
+// The page has no YOLO toggle, so the picker lays out without its column.
+class SiteLauncher extends LauncherMenu {
+  columns(width: number): number[] {
+    const widths = super.columns(width);
+    widths[1] = 0;
+    return widths;
+  }
+}
 function launcher(selected: Row): LauncherMenu {
-  const menu = new LauncherMenu({
+  const menu = new SiteLauncher({
     workspace: 1,
     selected,
     last: "claude",
@@ -1109,11 +1108,427 @@ function overviewFrames() {
   keep("ov_card", frames);
 }
 
+// ---------------------------------------------------------------- worktrees
+// corgi's worktrees: the flicker fix and the viewer refactor, each with its
+// agent, and a Bun upgrade nobody is in.
+const CORGI_ROOT = "/Users/me/dev/corgi";
+const treePath = (name: string) => `${CORGI_ROOT}/.claude/worktrees/${name}`;
+function checkout(name: string, branch: string, fields: Partial<worktrees.Checkout>): worktrees.Checkout {
+  return {
+    path: treePath(name),
+    head: "",
+    branch: `refs/heads/${branch}`,
+    primary: false,
+    bare: false,
+    detached: false,
+    locked: null,
+    prunable: null,
+    available: true,
+    comparison: { ahead: 0n, behind: 0n },
+    changes: null,
+    created: null,
+    edited: null,
+    stale: false,
+    ...fields,
+  };
+}
+const edits = (total: number, added: number, removed: number): worktrees.Changes => ({
+  total,
+  staged: 0,
+  modified: total,
+  untracked: 0,
+  conflicted: 0,
+  added,
+  removed,
+});
+const TREES: worktrees.Snapshot = {
+  common_dir: `${CORGI_ROOT}/.git`,
+  base: { ref: "refs/heads/main", name: "main", head: "8ae5085" },
+  entries: [
+    checkout("", "main", { path: CORGI_ROOT, primary: true }),
+    checkout("flicker", "fix/sidebar-flicker", {
+      comparison: { ahead: 3n, behind: 0n },
+      changes: edits(3, 142, 38),
+      created: ms - 50 * minute,
+      edited: ms - 4 * minute,
+    }),
+    checkout("viewer", "refactor/viewer-input", {
+      comparison: { ahead: 5n, behind: 2n },
+      changes: edits(6, 318, 204),
+      created: ms - 3 * 60 * minute,
+      edited: ms - minute,
+    }),
+    checkout("bun", "chore/bun-1.3.4", {
+      comparison: { ahead: 1n, behind: 9n },
+      changes: edits(0, 0, 0),
+      created: ms - 2 * day * 1000,
+      edited: ms - 2 * day * 1000,
+    }),
+  ],
+  agents: [
+    { target: { pane: CORGI[0].id }, path: treePath("flicker"), source: "write", stale: false },
+    { target: { pane: CORGI[COMPACTOR].id }, path: treePath("viewer"), source: "write", stale: false },
+  ],
+  stale: false,
+};
+/** What Clever Corgi wrote about each. */
+const BRIEFS = new Map<string, worktrees.Brief>(
+  [
+    ["flicker", "Draws each sidebar row in one write"],
+    ["viewer", "Moves input handling out of viewer.zig"],
+    ["bun", "Bumps Bun to 1.3.4 and its lockfile"],
+  ].map(([name, label]) => [treePath(name), { path: treePath(name), label, phase: "ready" }]),
+);
+/** What the page draws each workspace's overview from with Corgi's own
+ * code: the worktrees as the daemon sends them, bigints as numbers and times
+ * as of `at`, their briefs and agents, and the badge it opens from after each
+ * set of removals. */
+const overviews: Record<string, unknown> = {};
+function keepOverview(
+  name: string,
+  cwd: string,
+  snapshot: worktrees.Snapshot,
+  briefs: Map<string, worktrees.Brief>,
+  agents: Map<string, sidebar.Tally>,
+  badges: (Rect | null)[],
+) {
+  overviews[name] = JSON.parse(
+    JSON.stringify(
+      { at: ms, name, cwd, snapshot, briefs: [...briefs.values()], agents: [...agents], badges },
+      (_, value) => (typeof value === "bigint" ? Number(value) : value),
+    ),
+  );
+}
+/** The sidebar with corgi's agents under their worktrees, and again after
+ * each set of removals the overview can make (bit k for the k-th linked
+ * worktree), their agents closed with them. Two more rows fit both groups. */
+const WT_ROWS = ROWS + 4;
+function worktreeFrames() {
+  const linked = TREES.entries.filter(e => !e.primary),
+    badges: (Rect | null)[] = [];
+  let agents = new Map<string, sidebar.Tally>();
+  for (let mask = 0; mask < 1 << linked.length; mask++) {
+    const gone = new Set(linked.filter((_, k) => mask & (1 << k)).map(e => e.path)),
+      closed = new Set(TREES.agents.flatMap(a => (gone.has(a.path) && "pane" in a.target ? [a.target.pane] : []))),
+      trees = {
+        ...TREES,
+        entries: TREES.entries.filter(e => !gone.has(e.path)),
+        agents: TREES.agents.filter(a => !gone.has(a.path)),
+      };
+    // "Refactor the viewer" before it compacts, as the page shows it.
+    const s = scene({ phone: false, corgi: true, unread: 1, ahead: true, focused: false, read: false, early: true });
+    s.entries[0].focused = true;
+    const shut = s.entries.filter(e => "pane" in e.target && closed.has(e.target.pane));
+    const ws = s.workspaces[0];
+    ws.working -= shut.filter(e => e.state === "working").length;
+    ws.agents -= shut.length;
+    ws.worktrees = trees;
+    s.entries = worktreeAgents.grouped(
+      trees,
+      1,
+      s.entries.filter(e => !shut.includes(e)),
+      new worktreeAgents.State(),
+    );
+    const plain = frame(view, [], COLS, WT_ROWS, uiFor(s, 34));
+    keep(
+      mask ? `wt34_${mask}` : "wt34",
+      grid(plain, COLS, WT_ROWS).map(r => r.slice(0, 34)),
+      plain,
+    );
+    const side = sidebar.View.init(COLS, WT_ROWS, true, 0, s.entries.length)
+      .withWidth(34)
+      .withWorkspaces(s.workspaces.length, 0);
+    badges.push(sidebar.worktreeBadge(side, s.workspaces, 1));
+    if (!mask) agents = worktreeAgents.counts(trees, s.entries);
+  }
+  keepOverview("corgi", CORGI_ROOT, TREES, BRIEFS, agents, badges);
+}
+// moonlander's two agents, each in a worktree of its own, for Clever Corgi.
+const MOON_ROOT = "/Users/me/dev/moonlander";
+const moonPath = (name: string) => `${MOON_ROOT}/.claude/worktrees/${name}`;
+const MOON_TREES: worktrees.Snapshot = {
+  common_dir: `${MOON_ROOT}/.git`,
+  base: { ref: "refs/heads/main", name: "main", head: "3f1c2d4" },
+  entries: [
+    checkout("", "main", { path: MOON_ROOT, primary: true }),
+    checkout("", "feat/thrusters", {
+      path: moonPath("thrusters"),
+      comparison: { ahead: 4n, behind: 0n },
+      changes: edits(2, 96, 21),
+      created: ms - 2 * 60 * minute,
+      edited: ms - 2 * minute,
+    }),
+    checkout("", "art/lander-sprite", {
+      path: moonPath("sprite"),
+      comparison: { ahead: 2n, behind: 1n },
+      changes: edits(0, 0, 0),
+      created: ms - 5 * 60 * minute,
+      edited: ms - 40 * minute,
+    }),
+  ],
+  agents: [
+    { target: { pane: MOON[0].id }, path: moonPath("thrusters"), source: "write", stale: false },
+    { target: { pane: MOON[1].id }, path: moonPath("sprite"), source: "write", stale: false },
+  ],
+  stale: false,
+};
+/** What Clever Corgi wrote about moonlander's. */
+const MOON_BRIEFS = new Map<string, worktrees.Brief>(
+  [
+    ["thrusters", "Adds thrust and lunar gravity"],
+    ["sprite", "Draws the lander as pixel art"],
+  ].map(([name, label]) => [moonPath(name), { path: moonPath(name), label, phase: "ready" }]),
+);
+/** The sidebar beside moonlander's dev server: its agents under their
+ * worktrees, the rule dragged up under the workspaces. Its worktree badge
+ * opens moonlander's overview. */
+function cleverFrame() {
+  const s = scene({ phone: false, corgi: false, unread: 1, ahead: true, focused: false, read: false });
+  s.workspaces[1].worktrees = MOON_TREES;
+  s.entries = worktreeAgents.grouped(MOON_TREES, 2, s.entries, new worktreeAgents.State());
+  const u = uiFor(s, 34);
+  u.prefs.sidebar_split = 9;
+  const plain = frame(view, [], COLS, ROWS, u);
+  keep(
+    "clever34",
+    grid(plain, COLS, ROWS).map(r => r.slice(0, 34)),
+    plain,
+  );
+  const side = sidebar.View.init(COLS, ROWS, true, 0, s.entries.length)
+    .withWidth(34)
+    .withWorkspaces(s.workspaces.length, 0);
+  keepOverview("moonlander", MOON_ROOT, MOON_TREES, MOON_BRIEFS, worktreeAgents.counts(MOON_TREES, s.entries), [
+    sidebar.worktreeBadge(side, s.workspaces, 2),
+  ]);
+}
+/** The narrow sidebar beside the review panel: only the flicker fix's agent,
+ * idle now its turn is over, with no tool counts to crowd the workspaces. */
+function soloFrame() {
+  const s = scene({ phone: false, corgi: true, unread: 0, ahead: true, focused: false, read: false });
+  s.entries = s.entries.slice(0, 1);
+  Object.assign(s.entries[0], { focused: true, state: "idle", attention: "none", activity: "" });
+  Object.assign(s.workspaces[0], { working: 0, attention: 0, agents: 1 });
+  for (const ws of s.workspaces) Object.assign(ws, { stats: { ...ws.stats, tools: 0 } });
+  const plain = frame(view, [], COLS, ROWS, uiFor(s, 24));
+  keep(
+    "solo24",
+    grid(plain, COLS, ROWS).map(r => r.slice(0, 24)),
+    plain,
+  );
+}
+
+// ---------------------------------------------------------------- review
+// The flicker fix's checkout, made for real: main, then the branch's two
+// commits and a file not committed yet, each written when the story says.
+// The page runs Corgi's review panel on what git answers about it here.
+// Its lines fit the panel's 52 columns of code.
+const SIDEBAR_ZIG = `const std = @import("std");
+const Agent = @import("agent.zig").Agent;
+const Screen = @import("screen.zig").Screen;
+
+/// An agent's name row, then its activity row.
+fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
+    try s.clearLine(y);
+    try s.write(y, 1, a.glyph());
+    try s.write(y, 4, a.name);
+    try s.clearLine(y + 1);
+    try s.write(y + 1, 4, a.activity);
+}
+
+pub fn drawList(s: *Screen, all: []const Agent) !void {
+    for (all, 0..) |a, i| {
+        try drawAgent(s, a, @intCast(13 + i * 2));
+    }
+}
+`;
+const SIDEBAR_FIXED = SIDEBAR_ZIG.replace(
+  `/// An agent's name row, then its activity row.
+fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
+    try s.clearLine(y);
+    try s.write(y, 1, a.glyph());
+    try s.write(y, 4, a.name);
+    try s.clearLine(y + 1);
+    try s.write(y + 1, 4, a.activity);
+}`,
+  `/// Both rows built whole and written at once, so
+/// a redraw never shows a cleared row.
+fn drawAgent(s: *Screen, a: Agent, y: u16) !void {
+    var top = Row.init(s.width);
+    top.put(1, a.glyph());
+    top.put(4, a.name);
+    var under = Row.init(s.width);
+    under.put(4, a.activity);
+    try s.writeRows(y, &.{ top, under });
+}`,
+).replace(
+  `const Screen = @import("screen.zig").Screen;`,
+  `const Row = @import("row.zig").Row;\nconst Screen = @import("screen.zig").Screen;`,
+);
+const SCREEN_ZIG = `const std = @import("std");
+
+pub const Screen = struct {
+    out: std.fs.File,
+    width: u16,
+
+    pub fn clearLine(self: *Screen, y: u16) !void {
+        try self.out.writer().print("\\x1b[{d};1H\\x1b[2K", .{y + 1});
+    }
+
+    pub fn write(self: *Screen, y: u16, x: u16, text: []const u8) !void {
+        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
+    }
+};
+`;
+const SCREEN_ROWS = SCREEN_ZIG.replace(
+  `        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
+    }
+`,
+  `        try self.out.writer().print("\\x1b[{d};{d}H{s}", .{ y + 1, x + 1, text });
+    }
+
+    /// Rows from \`y\` down, in one write.
+    pub fn writeRows(self: *Screen, y: u16, rows: []const Row) !void {
+        var buf = std.ArrayList(u8).init(std.heap.page_allocator);
+        defer buf.deinit();
+        for (rows, 0..) |row, i| try row.render(buf.writer(), y + @as(u16, @intCast(i)));
+        try self.out.writeAll(buf.items);
+    }
+`,
+).replace(`const std = @import("std");`, `const std = @import("std");\nconst Row = @import("row.zig").Row;`);
+const ROW_ZIG = `const std = @import("std");
+
+/// A row of cells, built in memory before it reaches the screen.
+pub const Row = struct {
+    cells: [256]u8 = [_]u8{' '} ** 256,
+    width: u16,
+
+    pub fn init(width: u16) Row {
+        return .{ .width = width };
+    }
+
+    pub fn put(self: *Row, x: u16, text: []const u8) void {
+        @memcpy(self.cells[x .. x + text.len], text);
+    }
+};
+`;
+/** A diff as the patch git gives for it, the whole file as context. */
+const patch = (d: FileDiff) =>
+  [
+    "@@ -1 +1 @@",
+    ...d.rows.map(row => (row.kind === "insertion" ? "+" : row.kind === "deletion" ? "-" : " ") + d.text(row)),
+  ].join("\n");
+const sourceKey = (s: reviewGit.Source) => (s.kind === "worktree" ? `w:${s.against}` : `c:${s.hash}`);
+/** What git answers the panel about the checkout, for every scope and file
+ * it can show: site/browser/git.ts answers the same on the page. */
+async function reviewFixture() {
+  const repo = join(tmpdir(), "corgi-site", "corgi");
+  rmSync(repo, { recursive: true, force: true });
+  mkdirSync(join(repo, "src"), { recursive: true });
+  let clock = secs - 3 * 3600;
+  const git = (...args: string[]) => {
+    const when = `${clock} -0400`;
+    const r = spawnSync("git", ["-C", repo, ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Tal Shiri",
+        GIT_AUTHOR_EMAIL: "tal@example.com",
+        GIT_COMMITTER_NAME: "Tal Shiri",
+        GIT_COMMITTER_EMAIL: "tal@example.com",
+        GIT_AUTHOR_DATE: when,
+        GIT_COMMITTER_DATE: when,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+      },
+    });
+    if (r.status !== 0) throw Error(`git ${args.join(" ")}: ${r.stderr}`);
+  };
+  const put = (path: string, text: string) => {
+    const file = join(repo, path);
+    writeFileSync(file, text);
+    utimesSync(file, clock, clock);
+  };
+  const later = (minutes: number) => (clock += minutes * 60);
+  const commit = (subject: string) => {
+    git("add", "-A");
+    git("commit", "-q", "-m", subject);
+  };
+  try {
+    git("init", "-q", "-b", "main");
+    put("src/sidebar.zig", SIDEBAR_ZIG);
+    put("src/screen.zig", SCREEN_ZIG);
+    commit("sidebar: list agents two rows each");
+    git("checkout", "-q", "-b", "fix/sidebar-flicker");
+    later(90);
+    put("src/screen.zig", SCREEN_ROWS);
+    commit("screen: write several rows at once");
+    later(40);
+    put("src/sidebar.zig", SIDEBAR_FIXED);
+    commit("sidebar: draw each row in one write");
+    later(48);
+    put("src/row.zig", ROW_ZIG);
+    const [head, branch, base] = await Promise.all([
+      reviewGit.head(repo),
+      reviewGit.branch(repo),
+      reviewGit.base(repo),
+    ]);
+    const commits = await reviewGit.commits(repo, base);
+    // The "all", "uncommitted" and each commit's scope.
+    const sources: reviewGit.Source[] = [
+      { kind: "worktree", against: base?.merge_base ?? reviewGit.empty_tree },
+      { kind: "worktree", against: head ?? reviewGit.empty_tree },
+      ...commits.map(c => ({ kind: "commit" as const, hash: c.hash })),
+    ];
+    const fixture = {
+      at: secs,
+      root: "~/corgi",
+      head,
+      branch,
+      base,
+      commits,
+      listings: {} as Record<string, reviewGit.Change[]>,
+      edited: {} as Record<string, number>,
+      diffs: {} as Record<string, string | reviewGit.Loaded>,
+    };
+    for (const source of sources) {
+      const key = sourceKey(source),
+        changes = await reviewGit.changes(repo, source);
+      fixture.listings[key] = changes;
+      for (const change of changes) {
+        const loaded = await reviewGit.fileDiff(repo, source, change);
+        fixture.diffs[`${key}\0${change.path}`] = loaded.kind === "diff" ? patch(loaded.diff) : loaded;
+      }
+      if (source.kind === "worktree")
+        for (const [path, ms] of await reviewGit.edited(
+          repo,
+          changes.map(c => c.path),
+        ))
+          fixture.edited[path] = ms;
+    }
+    return fixture;
+  } finally {
+    rmSync(join(tmpdir(), "corgi-site"), { recursive: true, force: true });
+  }
+}
+/** Ghostty's width of every codepoint, as the ranges whose width isn't 1. */
+function widthRanges(): [number, number, number][] {
+  const table = codepointWidths(),
+    out: [number, number, number][] = [];
+  for (let from = 0, cp = 1; cp <= table.length; cp++)
+    if (cp === table.length || table[cp] !== table[from]) {
+      if (table[from] !== 1) out.push([from, cp - 1, table[from]]);
+      from = cp;
+    }
+  return out;
+}
+
 // ---------------------------------------------------------------- run
 if (dumpDir) mkdirSync(dumpDir, { recursive: true });
 watchFrames();
 pickerFrames();
 overviewFrames();
+worktreeFrames();
+cleverFrame();
+soloFrame();
+const review = await reviewFixture();
 if (unknown.size) console.log("unhandled sequences:", [...unknown].join(", "));
 
 /** How a new frame differs from the page's: cells whose text or style changed. */
@@ -1219,7 +1634,10 @@ if (writes) {
     ...Object.keys(HELD).map(name => [name, data.frames[name]]),
   ]);
   for (const [name, why] of Object.entries(HELD)) console.log(`kept the page's ${name}: ${why}`);
-  data.resTotals = totals;
+  data.resources = resources;
+  data.widths = widthRanges();
+  data.review = review;
+  data.worktrees = overviews;
   // One frame per line, so a re-recording diffs by frame.
   const frames = Object.entries(data.frames).map(([name, f]) => `    ${JSON.stringify(name)}: ${JSON.stringify(f)}`);
   writeFileSync(
@@ -1227,7 +1645,10 @@ if (writes) {
     [
       "{",
       `  "styles": ${JSON.stringify(data.styles)},`,
-      `  "resTotals": ${JSON.stringify(data.resTotals)},`,
+      `  "resources": ${JSON.stringify(data.resources)},`,
+      `  "widths": ${JSON.stringify(data.widths)},`,
+      `  "review": ${JSON.stringify(data.review)},`,
+      `  "worktrees": ${JSON.stringify(data.worktrees)},`,
       `  "frames": {`,
       frames.join(",\n"),
       "  }",

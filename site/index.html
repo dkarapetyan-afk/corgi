@@ -20,18 +20,20 @@
       <button class="sprite" id="sprite" type="button" aria-label="Throw the ball" title="Throw the ball"></button>
     </div>
     <p class="lede">Terminal multiplexer for humans (and agents).</p>
-    <p class="love" id="love" role="img" aria-label="A love letter to the modern terminal.">A love letter to the modern terminal. &lt;3</p>
     <div class="get">
       <div class="cmd">
         <code id="install-cmd"><span class="ps">$ </span>curl -fsSL https://corgi.computer/install.sh | bash</code>
         <button class="btn" id="copy" type="button" aria-label="Copy the install command"><span class="label"><span class="word">copy</span><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 9.5h.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span><span class="done" aria-hidden="true">✓</span></button>
       </div>
-      <span class="note">Supported on macOS, Linux and WSL</span>
+      <div class="meta">
+        <span class="note">Supported on macOS, Linux and WSL</span>
+        <a class="gh" href="https://github.com/tals/corgi"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>tals/corgi</a>
+      </div>
     </div>
   </header>
 
   <section class="band sim-band" aria-label="A corgi session">
-    <div class="stage sim-stage"><div class="screen" id="v-sim" tabindex="0" aria-label="A corgi session: Claude and Codex side by side. Hover the agents, click to switch, or type in moonlander's shell." style="--cols:124;--max:14px"></div></div>
+    <div class="stage sim-stage"><div class="screen" id="v-sim" tabindex="0" aria-label="A terminal types $ corgi, then opens the Corgi environment." style="--cols:124;--rows:24;--min:5px;--max:14px"></div></div>
   </section>
 
   <section class="band" aria-label="Keeps watch" hidden>
@@ -61,7 +63,8 @@
       <li><b class="f-accent">●</b> unread</li>
       <li><span class="f-muted">○</span> clear</li>
     </ul>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
+    <p><kbd id="f1">F1</kbd> to catch up.</p>
+    <div class="stage"><div class="screen" style="--cols:81;--rows:22;--max:14px"></div></div>
   </section>
 
   <section class="band">
@@ -69,54 +72,147 @@
     <p><kbd id="ctrl-t">Ctrl-T</kbd> to jump into work, new or old.</p>
     <div id="launcher-stage" tabindex="0" aria-label="The new agent picker. Press / to search past conversations, Enter to open one.">
       <input id="launcher-query" type="text" autocomplete="off" spellcheck="false" aria-label="Search past conversations" hidden>
-      <div class="screen bare" id="v-launcher" style="--cols:112;--max:14px"></div>
-      <div class="screen bare" id="v-launcher-phone" style="--cols:48;--max:14px" hidden></div>
+      <div class="screen bare" id="v-launcher" style="--cols:112;--rows:18;--max:14px"></div>
+      <div class="screen bare" id="v-launcher-phone" style="--cols:48;--rows:19;--max:14px"></div>
     </div>
-  </section>
-
-  <section class="band" data-feature="steps">
-    <h2><span>activity tracking</span></h2>
-    <p>Hover an agent to see what it did.</p>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
-  </section>
-
-  <section class="band" data-feature="away">
-    <h2><span>while you were away</span></h2>
-    <p>Finished agents wait for you.</p>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
-  </section>
-
-  <section class="band" data-feature="push">
-    <h2><span>unpushed work</span></h2>
-    <p>Push from the sidebar.</p>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
-  </section>
-
-  <section class="band" data-feature="systems">
-    <h2><span>dev servers</span></h2>
-    <p>Every running server gets a link.</p>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
-  </section>
-
-  <section class="band" data-feature="resources">
-    <h2><span>cpu and memory</span></h2>
-    <p>Per workspace, live.</p>
-    <div class="stage"><div class="screen" style="--max:14px"></div></div>
   </section>
 
   <section class="band" id="overview" aria-label="Top for your tokens">
     <h2><span><code>top</code> for your tokens</span></h2>
     <p>Where did the tokens go?</p>
-    <div class="stage" id="overview-stage"><div class="screen" id="v-overview" style="--cols:124;--max:14px">
+    <div class="stage" id="overview-stage"><div class="screen" id="v-overview" style="--cols:124;--rows:15;--max:14px">
       <div class="cursor on" aria-hidden="true">
         <svg class="arrow" viewBox="0 0 14 20"><path d="M1 1v15.5l4-3.8 2.7 5.8 2.4-1.1-2.6-5.6H13z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>
       </div>
-    </div><div class="screen bare" id="v-overview-phone" style="--cols:48;--max:14px" hidden></div></div>
+    </div><div class="screen bare" id="v-overview-phone" style="--cols:48;--rows:13;--max:14px"></div></div>
   </section>
 
-  <footer>
+  <section class="band" data-feature="steps">
+    <h2><span>activity tracking</span></h2>
+    <p>Hover an agent to see what it did.</p>
+    <div class="stage"><div class="screen" style="--cols:122;--rows:16;--max:14px"></div></div>
+  </section>
+
+  <section class="band" id="keep-running">
+    <h2><span>Keep ’em running</span></h2>
+    <p>Like tmux, your agents and processes keep running in the background.</p>
+    <p><code>corgi</code> and you’re in.</p>
+    <div class="running-desktop" id="running-desktop" role="img" aria-label="Two terminal windows type corgi and attach to the same environment. One shows an agent working on Corgi, the other shows Moonlander's dev server. The first window closes and reconnects while both keep running.">
+      <div class="running-windows">
+        <div class="running-window" id="running-window-agent">
+          <div class="running-title"><span class="running-dots" aria-hidden="true">● ● ●</span><span>terminal 1 · agent</span></div>
+          <div class="screen" id="v-running-agent" style="--cols:76;--rows:24;--min:4px;--max:12px"></div>
+        </div>
+        <div class="running-window">
+          <div class="running-title"><span class="running-dots" aria-hidden="true">● ● ●</span><span>terminal 2 · dev server</span></div>
+          <div class="screen" id="v-running-server" style="--cols:76;--rows:24;--min:4px;--max:12px"></div>
+        </div>
+      </div>
+      <div class="running-background"><span class="f-accent">●</span> <span id="running-status">agents + dev server · running in the background</span></div>
+    </div>
+    <button class="running-replay" id="running-replay" type="button">replay ↻</button>
+  </section>
+
+  <section class="band" data-feature="reviews">
+    <h2><span>see their changes</span></h2>
+    <p>Every file it touched, in one scroll.</p>
+    <div class="stage"><div class="screen" tabindex="0" aria-label="Corgi's review panel beside the agent fixing the sidebar flicker: all its changed files in one scroll, newest edit first, the new row.zig folded to its heading. Click it, then use its keys: ? lists them, c comments on a line, s sends the notes to the agent." style="--cols:124;--rows:24;--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="worktrees">
+    <h2><span>worktrees</span></h2>
+    <p>Fantastic trees and where to find them.</p>
+    <div class="stage"><div class="screen" tabindex="0" aria-label="Corgi's worktree overview for the corgi workspace: three worktrees with their agents, commits against main, ages, uncommitted changes and a brief of each. Up and down arrows browse; holding Backspace removes the selected worktree; Escape closes it, and its badge in the sidebar opens it again." style="--cols:124;--rows:28;--max:14px"></div></div>
+  </section>
+
+  <section class="band">
+    <h2><span>clever corgi</span></h2>
+    <p>Organizes your workspaces for you.</p>
+    <div class="stage" data-feature="clever"><div class="screen phone-crop" style="--cols:124;--rows:15;--phone-cols:56;--max:14px"></div></div>
+    <div class="stage" data-feature="briefs"><div class="screen phone-crop" aria-label="moonlander's worktree overview, open from its badge in the sidebar: feat/thrusters and art/lander-sprite, each with the brief Corgi wrote of its changes." style="--cols:124;--rows:18;--phone-cols:56;--max:14px"></div></div>
+  </section>
+
+  <section class="band" data-feature="resources">
+    <h2><span>resource usage</span></h2>
+    <p>Per workspace, live.</p>
+    <div class="stage"><div class="screen" aria-label="Corgi's resource card, open beside the corgi workspace's CPU and memory row: CPU, memory and disk graphs over its top processes, sampled once a second. Click a column heading to sort the processes by it, or point at moonlander's row for its card." style="--cols:117;--rows:24;--max:14px"></div></div>
+  </section>
+
+  <section class="band" id="ssh">
+    <h2><span>ssh friendly</span></h2>
+    <p>Image paste just works* with <kbd>⌘V</kbd>. On a slow link, Corgi keeps pace.</p>
+    <div class="pace" id="pace" role="img" aria-label="The same Claude pane twice, over a link that drops for 20 seconds while the agent writes walls of output and finishes. A timeline under them marks each side usable, halted, catching up and usable again: plain SSH replays every screen of output it missed and settles 10 seconds after the link is back; Corgi shows the finished pane about when the link is. Tapping it plays it again.">
+      <figure>
+        <figcaption>plain ssh</figcaption>
+        <div class="stage"><div class="screen" id="v-pace-plain" style="--cols:44;--rows:13;--max:14px"></div></div>
+      </figure>
+      <figure>
+        <figcaption>corgi</figcaption>
+        <div class="stage"><div class="screen" id="v-pace-corgi" style="--cols:44;--rows:13;--max:14px"></div></div>
+      </figure>
+      <div class="timebar" id="timebar"></div>
+    </div>
+    <p class="note">* Requires <a href="https://github.com/ghostty-org/ghostty/releases/tag/tip">Ghostty Nightly</a>.</p>
+  </section>
+
+  <section class="band" id="cli" aria-label="Hackable">
+    <h2><span>hackable</span></h2>
+    <p>Drive Corgi from any terminal. <code>corgi --skill</code> teaches your agents.</p>
+    <div class="cli">
+      <div class="stage"><div class="screen" id="v-cli-term" tabindex="0" aria-label="A terminal outside Corgi runs corgi commands: it splits a pane running the tests beside an agent, reads its failure, asks the agent to fix it, and starts the dev server. Click it to type your own; corgi --help lists them." style="--cols:60;--rows:24"></div></div>
+      <div class="stage"><div class="screen" id="v-cli-corgi" aria-label="Corgi answering each command: the new panes, the agent at work, the tests turning green." style="--cols:90;--rows:24"></div></div>
+    </div>
+  </section>
+
+  <section class="band" aria-label="Keyboard and mouse">
+    <h2><span>keyboard and mouse</span></h2>
+    <p>Corgi loves both.</p>
+    <div class="presets" id="keys-presets" role="group" aria-label="Keys">
+      <button type="button" data-preset="corgi" aria-pressed="true" title="Made for Corgi">Corgi</button>
+      <button type="button" data-preset="tmux" aria-pressed="false" title="Prefix + classic splits">tmux</button>
+      <button type="button" data-preset="herdr" aria-pressed="false" title="Prefix + home row">Herdr</button>
+      <button type="button" data-preset="cmux" aria-pressed="false" title="Command shortcuts">cmux</button>
+    </div>
+    <div id="keys-stage" tabindex="0" aria-label="Corgi's command menu, as Ctrl-B opens it: every shortcut for tabs, workspaces, agents, panes and the terminal. Press a shortcut or click it to light what it runs; t throws the corgi in its footer a ball.">
+      <div class="screen bare" id="v-keys" style="--cols:112;--rows:36;--max:14px"></div>
+      <div class="screen bare" id="v-keys-phone" style="--cols:48;--rows:30;--max:14px"></div>
+    </div>
+  </section>
+
+  <footer class="band thanks">
+    <h2><span>corgi loves the community</span></h2>
+    <p>This project was made possible by:</p>
+    <ul class="credits">
+      <li>
+        <span class="name"><a href="https://ghostty.org"><img src="./icons/ghostty.png" alt="">Ghostty</a> <span class="and">&amp;</span> <a href="https://sw.kovidgoyal.net/kitty/"><img src="./icons/kitty.svg" alt="">Kitty</a></span>
+        <p>For their pioneering work on computer terminals, and for providing such a strong foundation.</p>
+      </li>
+      <li>
+        <span class="name"><a href="https://github.com/herdrdev/herdr"><img src="./icons/herdr.png" alt="">herdr</a> <span class="and">&amp;</span> <a href="https://github.com/persiyanov/herdr-reviewr">herdr-reviewr</a></span>
+        <p>Corgi's main inspiration. We borrow many of their ideas.</p>
+        <p class="aside"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h2.5L8 3v10l-3.5-3H2z" fill="currentColor"/><path d="M10.5 5.8a3 3 0 0 1 0 4.4M12.6 3.8a6 6 0 0 1 0 8.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>...and their sound cues</p>
+      </li>
+      <li>
+        <span class="name"><a href="https://github.com/earendil-works/pi"><img src="./icons/pi.svg" alt="">Pi</a></span>
+        <p>We use its wonderful <a href="https://github.com/earendil-works/pi/tree/main/packages/tui">pi-tui</a> library.</p>
+      </li>
+      <li>
+        <span class="name"><a href="https://bun.sh"><img src="./icons/bun.svg" alt="">Bun</a></span>
+        <p>Enabled Corgi to be written in TypeScript.</p>
+      </li>
+    </ul>
+    <h3>early testers</h3>
+    <p>Special thanks for their wonderful suggestions and feedback.</p>
+    <ul class="testers">
+      <li><a href="https://x.com/MaxBittker"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>Max Bittker</a></li>
+      <li><a href="https://github.com/ablakeman"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+"/></svg>Aaron Blakeman</a></li>
+      <li><a href="https://github.com/sirkaiserkai"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+"/></svg>Kai Johnson</a></li>
+      <li><a href="https://github.com/lukealonso"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+"/></svg>Luke Alonso</a></li>
+    </ul>
     <div class="sleeper" id="sleeper" aria-hidden="true"></div>
-    <p>Powered by <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>. Inspired by <a href="https://github.com/herdrdev/herdr">herdr</a>.</p>
   </footer>
 </main>
 
