@@ -1,5 +1,7 @@
 # Agent notes
 
+See [HACKING.md](HACKING.md) for development workflows and architecture.
+
 ## Commands
 
 - **Build:** `bun build.ts` (`--no-native` skips the Zig native layer when
@@ -96,7 +98,7 @@ that produced the code.
 **Saved formats.** Anything serialized into a checkpoint or handoff is
 checked by the schema snapshots in `src/fixtures/`. A new field
 with a default only needs a refreshed snapshot. A rename, removal or change
-of meaning needs a migration step; see `docs/development-reloads.md`.
+of meaning needs a migration step; see [HACKING.md](HACKING.md#change-protocols-or-saved-formats).
 
 ## Zig style (native/)
 

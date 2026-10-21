@@ -1,0 +1,155 @@
+# Working on Corgi
+
+## Get running
+
+Install Bun and use the pinned Zig 0.16.0 wrapper, `./scripts/zig`.
+Start in an isolated environment:
+
+```sh
+./go.ts --env dev
+```
+
+This builds `dist/corgi` and starts or attaches to the named runtime. Its
+preferences and recovery state persist. `--temp` gives each invocation fresh
+Corgi state; detaching leaves either runtime running. Provider accounts and
+import sources are still shared. Use a sandbox for fake agents.
+
+Plain `./go.ts` uses the main environment and stops your other Corgi daemons.
+Inside a named environment it keeps that environment. Run environment-switching
+commands from an outer terminal; `./go.ts --help` describes the options.
+
+## Architecture
+
+The daemon owns processes, PTYs, workspaces and conversations. Viewers compose
+the UI from snapshots and terminal surfaces; each keeps its own focus, menus,
+scroll position and selection. CLI and viewer mutations use the same commands.
+
+| Concern | Start here |
+| --- | --- |
+| Daemon and shared state | [server.ts](src/server.ts), [runtime.ts](src/runtime.ts), [session.ts](src/session.ts) |
+| Viewer and actions | [controller.ts](src/controller.ts), [action.ts](src/action.ts), [viewer_protocol.ts](src/viewer_protocol.ts) |
+| Provider observations | [agents guide](docs/agents.md), [conversations.ts](src/conversations.ts) |
+| Native terminal, PTYs and rendering | [native/](native/), [native_bridge.ts](src/native_bridge.ts) |
+| Persistence and handoff | [persist/](src/persist/) |
+
+Shared layout contains arrangement, not viewer navigation. A pane takes the size
+requested by its most recently active viewer; hidden panes retain their size.
+Background workers return observations for the daemon to validate and apply.
+Keep application policy in TypeScript and the native boundary small.
+
+## Build, test and format
+
+```sh
+bun build.ts --no-native      # TypeScript-only rebuild
+bun test src                 # unit tests
+bun typecheck.ts             # types and formatting
+bun format.ts                # format TypeScript
+bun build.ts --test          # dist/corgi-test
+bun integration.ts           # process, socket and PTY suites
+```
+
+Use `bun build.ts` when native code changes. Iterate with a focused unit test or
+named integration suite, then run the full unit suite and relevant integrations.
+If a parallel integration suite fails, rerun it with `--jobs 1` first.
+`bun integration.ts --check` only parses and bundles suites; it does not run them.
+
+[AGENTS.md](AGENTS.md) owns coding and commit conventions.
+[tests/README.md](tests/README.md) explains test tiers, isolated runtimes and
+deterministic waiting. [evals/README.md](evals/README.md) covers activity-summary
+evals; live model checks consume provider usage.
+
+## Try the UI
+
+```sh
+./go.ts --sandbox review
+bun tools/probe.ts run bun -e 'key ctrl+b c; snap'
+```
+
+The sandbox supplies a seeded repository and fake agents with separate HOME,
+provider configuration and state. Add a world in [tools/sandboxes/](tools/sandboxes/)
+when a feature needs repeatable setup. Sandbox `--restart` discards that world.
+
+The [probe](tools/probe.ts) drives a real viewer in an isolated PTY and records
+screens. It uses `dist/corgi`, so rebuild first. Its command reference is at the
+top of the file. Use [UI tokens and rules](docs/ui_styleguide.md) for visual work.
+
+## Reload, restart and recovery
+
+| Action | What survives |
+| --- | --- |
+| `./go.ts --env dev --reload` | Rebuilds and hands off the daemon; pane processes and attached viewers stay alive. |
+| `corgi reload /absolute/path/to/corgi` | Same handoff using an existing executable. |
+| `./go.ts --env dev --restart` | Ends processes, then restores saved context in new shells or dormant agents. Run outside Corgi. |
+| `corgi checkpoint` | Saves recovery state now and prints its path. |
+
+Before live handoff commits, the replacement must restore and validate its state.
+Failure resumes the old daemon; it never falls back to killing the session.
+The transfer retains PTYs, native pipes, viewer sockets and buffered protocol
+state. Terminal restoration requests a repaint; parser fragments and some
+terminal state are approximate, so applications can retain display artifacts.
+
+Cold recovery restores layout, directories, retained output and agent identities,
+not process memory. Ordinary panes start new shells. Recovered agents are dormant
+until their pane gains focus, which runs their resume command. Arbitrary saved
+input is not replayed. Missing directories fall back to HOME.
+
+Recovery files are private, atomic snapshots under
+`${XDG_STATE_HOME:-$HOME/.local/state}/corgi/recovery`, keyed by socket. Malformed
+or unsupported files fail startup rather than being replaced with an empty
+session. Do recovery experiments in a disposable runtime.
+
+## Change protocols or saved formats
+
+These are separate compatibility boundaries:
+
+| Boundary | Definition |
+| --- | --- |
+| Runtime and viewer wire formats | [protocol.ts](src/protocol.ts), [viewer_version.ts](src/viewer_version.ts) |
+| Checkpoint and live handoff JSON | [persist/migrations.ts](src/persist/migrations.ts), [persist/steps.ts](src/persist/steps.ts) |
+| Live terminal/update compatibility | `terminal_abi` and `update_abi` in [persist/handoff.ts](src/persist/handoff.ts) |
+
+Wire renames, required-field or type changes require the corresponding protocol
+version to change. Defaulted fields can be compatible, but `session.command`
+rejects unknown nested fields: changing its payload also affects old clients.
+Unversioned requests cannot rely on a version handshake for compatibility.
+
+For saved data, a defaulted addition needs an updated schema snapshot; a rename,
+removal or change of meaning needs a migration:
+
+1. Append a pure JSON step to the appropriate list in `persist/steps.ts`.
+   Its position defines the version. Never edit a released step or import
+   changing runtime types into it.
+2. Preserve old fixtures and add input/output examples under
+   [src/fixtures/steps/](src/fixtures/steps/). Cover the upgrade, current round
+   trip, malformed data and rejection of future versions in persistence tests.
+3. Update the relevant `.schema` under [src/fixtures/](src/fixtures/) and review
+   its conformance assertions in [core_schema.test.ts](src/core_schema.test.ts).
+   These tests include pinned schema hashes; there is no current automatic
+   `CORGI_UPDATE_SCHEMA` regeneration command.
+4. For live changes, verify process/client continuity and rollback with the
+   isolated `reloads` integration suite. State migrations cannot repair an
+   incompatible terminal ABI or inherited process interface.
+
+Terminal ABI changes describe whether old terminal snapshots can be restored;
+they are independent of JSON schema versions. Update compatibility also gates
+live replacement. Check both when changing the native boundary.
+
+Recovery migration writes a backup of the original bytes only after restoration
+succeeds, then rewrites the snapshot. Failed decoding or restoration leaves the
+source untouched. Migrations run forward only.
+
+## Debug
+
+`server.log` lives beside the runtime socket, normally
+`/tmp/corgi-UID/server.log`; `CORGI_SOCKET` selects another runtime. Only the
+daemon and handoff process log there. Activity-summary records include exact
+model inputs and outputs, so inspect and redact before sharing logs.
+
+Use `corgi integration status` for hook installation/trust and `corgi which codex`
+or `corgi which claude` for executable discovery. `corgi rpc` can inspect a
+snapshot; [protocol.ts](src/protocol.ts) defines the requests. Test failures
+retain their isolated runtime directory when cleanup fails.
+
+Release builds configured with Sentry report daemon/viewer crashes; ordinary
+development builds have no DSN. [crash.ts](src/crash.ts) owns local reports and
+uploading; [releases.md](docs/releases.md) covers publisher setup.

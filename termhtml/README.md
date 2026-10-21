@@ -69,8 +69,8 @@ Text clips to the widget; only explicit newlines start another row.
 
 Set `data-fg` / `data-bg` to a six-digit hex color or a palette name: `fg`, `bg`,
 `muted`, `line`, `accent`, `surface`, `selected`, `danger`, `warm`. The `corgi`
-theme also names every token in `src/palette.zig` (`faint`, `text`, `strong`,
-`hot`, ...); see `docs/ui_styleguide.md`. Other styles
+theme also names every token in [`src/palette.ts`](../src/palette.ts) (`faint`, `text`, `strong`,
+`hot`, ...); see the [UI styleguide](../docs/ui_styleguide.md). Other styles
 are `data-bold`, `data-underline`, and `data-underline-color`. Styles inherit from
 the nearest widget. Use these attributes for widget appearance so ANSI can match
 it; arbitrary CSS decoration is not included in exported frames.

@@ -1,194 +1,76 @@
-# Corgi reference
+# Using Corgi
 
-A small terminal multiplexer for agents, written in Zig, using **Ghostty's native Zig VT module**. Corgi owns the PTYs and background runtime. Workspaces group tabs and panes with a default working folder. No tmux or Git worktrees.
+Corgi keeps terminals and agents running in workspaces. Each workspace has a
+folder, tabs and split panes. Start with the [installation guide](../README.md);
+building and working on Corgi are covered in [HACKING](../HACKING.md).
 
-## Run
+## Set up and import
 
-Requires **Zig 0.16.0**, pinned to the Ghostty revision in `build.zig.zon`. `scripts/zig` selects a matching compiler from `ZIG`, PATH, or the local `.tools/` download.
+Run `corgi` to start or attach. `corgi onboard` reopens setup; inside Corgi,
+click the corgi badge or press **prefix i**. Choose a shortcut preset and a
+Ctrl+B or Ctrl+A prefix. The cmux preset is available on macOS.
 
-```sh
-./go.ts                        # build, then start or attach
-./go.ts --temp                 # fresh isolated runtime, setup and state
-./go.ts --env demo             # reuse an isolated named environment
-./go.ts --env demo onboard     # reopen its onboarding
-./go.ts --sandbox review       # try a feature on a seeded world with fake agents
-./go.ts --reload               # rebuild and replace daemon; panes/viewers stay alive
-./go.ts --restart              # stop processes, then recover in new shells
-./scripts/zig build test
-bun run tests/run.ts smoke smoke_input smoke_terminal # real PTYs + socket tests; mock providers, no inference
-```
+**prefix** means press the prefix, release it, then press the next key.
+Press it twice to send it to the program. **prefix ?** opens the current
+keymap; **Corgi setup → Keymap** changes it. Command shortcuts need host
+forwarding. Setup can install a Ghostty configuration block on local macOS;
+it affects Ghostty globally and requires a Ghostty configuration reload.
 
-After building, the executable is `dist/corgi`. Its directory is added to each pane's PATH. Ordinary `go.ts` preserves the running runtime; UI-only changes load in a newly opened viewer. `./go.ts --reload` builds, transfers the live runtime to that executable, and returns to the current terminal. It works inside a Corgi pane. `corgi reload [ABSOLUTE_EXE]` uses an already built executable. A failed build or handoff leaves the old runtime serving; there is no destructive fallback.
+The import step lists real sessions, regardless of the shortcut preset.
+Select workspaces and review what will happen before importing, or choose
+**Skip import**. Expanding a workspace's preview does not change its selection.
 
-`./go.ts --restart` remains an explicit process restart: it terminates existing processes and starts new shells from saved recovery context. Run it outside Corgi. Put flags first; further arguments are passed through, e.g. `./go.ts --restart start`. It cannot preserve process memory or unsaved application work.
+| Source | What comes across | What happens to the source |
+| --- | --- | --- |
+| tmux | Folders, window names, split layout and recent output; editable restart commands where available | Programs keep running in tmux. Corgi opens shells; suggestions do not run automatically. |
+| Herdr copy | Layout, folders and known agent resume suggestions | Source sessions keep running. Suggestions do not execute automatically. |
+| Herdr handoff | The whole source session, including its running processes and PTYs | Ownership moves to Corgi. Start Corgi outside the Herdr session being moved. Requires compatible Herdr support. |
+| cmux (macOS) | Saved workspaces, readable surfaces, folders and approximate layouts where needed; browser URLs as text | Processes remain in cmux. Corgi starts new shells. |
 
-`--temp` and `--env NAME` select isolated runtimes before any reload or restart.
-They also isolate preferences, onboarding completion, workspaces, inference settings
-and recovery snapshots. Named data lives under
-`${XDG_STATE_HOME:-$HOME/.local/state}/corgi/environments/NAME`; sockets use a short,
-private directory under `/tmp`. Names contain up to 32 letters, digits, `_` or `-`
-and start with a letter or digit. Named setup survives reboot; processes do not.
-`./go.ts --env demo --reload` reloads only demo, and `./go.ts --env demo shutdown`
-asks before stopping it. Switching environments requires a terminal outside Corgi;
-inside a named environment, ordinary `./go.ts` keeps using that environment.
-
-Temporary data lives in a fresh private `/tmp/corgi-temp-<uid>.*` directory.
-Detach leaves its runtime alive and retains the directory. Use the printed reconnect
-command to return, or append `shutdown` to it to stop the runtime with confirmation.
-After shutdown, the printed directory can be removed. Source projects, agent accounts
-and external import sources remain shared. These flags isolate Corgi state, not the
-programs running inside it.
-
-`--sandbox NAME` goes further, for trying a feature by hand: it runs Corgi
-with its own HOME, Claude and Codex config dirs, state and socket under
-`/tmp/corgi-sandbox-<uid>/NAME`, so your agents' settings are never touched.
-`tools/sandboxes/NAME.ts` seeds the world once (for `review`, a repository
-with worktrees and changes of every kind) and opens its tabs; `claude` and
-`codex` there are fakes that take `work`, `stop`, `block` and `exit`. It works
-inside a Corgi pane, taking the prefix the outer Corgi doesn't use. Run it
-again to come back; `--restart` throws the world away and seeds it again
-without asking. `tools/sandbox.ts` says what a new one needs.
-
-Live handoff transfers compact VT snapshots of retained screens, history, cursor, and input modes instead of accumulated terminal event journals. After the new daemon owns the PTYs, it briefly changes each PTY width and restores it 250 ms later, asking applications to repaint through ordinary resize notifications. Processes and PTYs stay alive; parser fragments and some saved terminal state may be lost, and applications that do not repaint can retain display artifacts.
-
-Pane IDs and split arrangement survive live handoff. Connected viewers retain their local selection, menus, scroll positions, and input parser because their sockets and viewer processes remain alive. Native JSONL sessions retain their pipes, partial messages, outstanding approvals, and process IDs. Normal `corgi` viewers can stay connected. Upgrading from a daemon without `session.command` performs a one-time viewer relaunch while keeping pane processes alive.
-
-Recovery snapshots preserve workspace/tab/split arrangement, working directories, retained terminal output, and recorded agent session IDs. They are written atomically with mode 0600 in a private directory under `$XDG_STATE_HOME/corgi/recovery` (default `~/.local/state/corgi/recovery`), with a separate file per socket path. Changed state is saved every two seconds and before clean shutdown; `corgi checkpoint` saves immediately and prints the path. A crash can lose changes since the last completed save. Snapshots contain terminal contents and should be treated as private session data.
-
-After a crash or reboot, starting Corgi loads that snapshot. Saved output includes retained primary history and alternate-screen contents as scrollback, without the old process's input modes. A pane whose agent session was recorded comes back dormant: nothing runs in it, and its old output shows faded under a card with the agent's name and the command that resumes it, such as `codex resume 'SESSION_ID'` or `claude --resume 'SESSION_ID'`. The agent resumes in that pane once it has focus, whether by a click or by switching to it, its old screen held until the agent draws, as when reopening a closed agent. Other panes start fresh shells. Native sessions become archived records with a recovery shell tab showing their saved journal and resume command. Missing directories fall back to HOME; the old path remains visible. Shells still manage their own command history files; Corgi cannot recover unsaved shell history or arbitrary application memory.
-
-The handoff manifest is limited to 256 MiB. If retained snapshots and other runtime state exceed that limit, the terminal dependency changes, accepted writes cannot drain, or candidate restoration fails, reload is rejected and the current runtime continues. A successfully committed new daemon can still crash like any other process; disk recovery is the fallback then. Rebuilding does not update the exporter inside an already running daemon: an old daemon blocked by its checkpoint limit cannot acquire this fix merely by retrying reload.
-
-Multiple viewers can attach at once. They share workspace/tab order, split ratios, names, and running processes. Each owns its selected workspace/tab/pane, zoom, menus, dialogs, scroll/copy state, and mute setting. Shared edits appear in every viewer; closing a selected pane chooses a surviving pane locally. Each pane takes the dimensions of the most recently used viewer displaying it: input or a window resize makes a viewer the most recent, and so does attaching. Other viewers clip or pad that pane. Hidden panes keep their last size. `prefix q` detaches only that viewer. Closing the last pane in the only workspace detaches everyone. The earliest live viewer supplies terminal theme defaults.
-
-Attachments compose their UI locally from session snapshots and terminal surfaces. The viewer and daemon use the same current protocol.
-
-## Agent CLI
-
-`corgi --skill` prints the [bundled agent guide](../src/corgi-skill.md); the main
-help includes the instruction to load it only when it is not already in context.
-`corgi tab`, `corgi pane`, and any command's `--help` show usage without
-connecting. A malformed command prints its own usage lines and exits 2.
-
-`corgi list` returns a versioned session snapshot in `result`, plus `viewers`.
-Workspace entries contain ordered tabs and split trees; pane entries contain
-stable IDs, live location, cwd, PID, and agent observations. `corgi current`
-resolves `CORGI_PANE` through the runtime, so its tab/workspace remain accurate
-after moves. `--text` pretty-prints JSON; `pane read --text` emits plain text.
-
-```sh
-corgi tab new --name Tests --workspace 1 --cwd /absolute/project/path
-corgi tab rename 12 Backend
-corgi tab rename 12 --clear
-corgi tab move 12 --before 8
-corgi tab move 12 --workspace 2
-corgi pane split current --right
-corgi pane move 31 --below 42
-corgi pane move 31 --new-tab --name Logs
-corgi tab merge 12 --right-of 42
-corgi pane swap 31 42
-corgi pane resize 31 --width 60%
-corgi pane read 31 --lines 100 --text
-corgi pane send 31 --stdin --enter < /path/to/prompt.txt
-corgi pane keys 31 ctrl+c
-corgi focus 31 --viewer 1
-```
-
-Move/merge support `--left-of`, `--right-of`, `--above`, and `--below`; split
-supports `--left`, `--right`, `--up`, and `--down`. Tab merge preserves the entire
-source split tree. Empty source tabs disappear; processes, output, and pane IDs
-survive, including across workspaces. Resize sets the target side's percentage
-of the nearest matching-axis split (10%-90%), including other panes on that side.
-
-Creation and layout mutations return affected `pane`, `tab`, and `workspace` IDs
-in `result`. Layout mutations validate on copies before committing and do not
-select a viewer. Explicit focus requires a viewer ID from `list`.
-`pane close ID` and `tab close ID` terminate the targeted processes without a
-prompt; successful responses list `result.closed_panes`.
-
-The new commands never implicitly start or restart a server. They return JSON
-errors on stderr, exit 2 for invalid usage and 1 for runtime failures. Focus requires `--viewer` in the CLI. Commands resolve `current` from the calling
-pane before sending an explicit target. Shared operations use protocol-1
-`session.command`, whose `command` field contains one typed operation, for example:
-
-```json
-{"op":"session.command","protocol":1,"command":{"tab.rename":{"target":42,"name":"Build"}}}
-```
-
-The daemon has no selected pane/tab and does not calculate headless layout geometry.
-`action` and `workspace switch` controls need a live viewer; without one they
-return `NoViewer`. Creation uses `tab new --workspace ID` or `pane split ID|current`.
-All shared operations use `session.command`; named RPC aliases are not supported.
-Tab creation and splitting accept `--command SHELL_COMMAND` to launch a command.
-Pane reads return their text in `result.text`.
-`agent.rename` (`target`, `name`) and `agent.fork` (`target`, optional `name`)
-are the sidebar's agent menu. `agent.rename` without a name, and `agent.fork`
-with `check`, only check that they can run now; they fail with `AgentBusy`,
-`RenameUnavailable` or `NoConversation` when they can't.
-
-Unwatched panes retain their last dimensions; new headless panes start at 80×24.
-Only real viewers supply layout geometry. A saved workspace preference determines
-where a new viewer opens, and is never an implicit command target.
-
-Regression suite: `bun test tests/cli.test.ts` uses isolated sockets and provider settings.
+Copying cannot transfer arbitrary application memory or a shell's environment.
+Import notes identify partial recovery; a failed import does not complete setup.
+Even an isolated Corgi environment imports from real source sessions.
 
 ## Tabs and panes
 
-`prefix` means press Ctrl+B (or your configured prefix), release, then the next
-key. While it waits, a PREFIX bar across the bottom of the panes shows Esc to
-cancel, the prefix to send it, and ? for shortcuts. **`prefix ?` opens the full
-shortcut screen used in onboarding.**
-Press a displayed shortcut or click its label/key to run the action. Esc, Enter,
-the Back control, or a click outside dismisses it. Press the prefix twice to send
-it through to the child. Resize has its own clickable direction menu.
+**prefix c** opens the [agent and terminal picker](agent-launcher.md).
+**prefix N** creates a workspace; choose its name and folder, then hold Enter
+to create it. Missing folders can be created from the folder picker.
 
-Section headings and Focus/Swap/Split diagrams organize the active preset.
-Both columns scroll together with PageUp/PageDown or the wheel; arrows also
-scroll in Herdr, and focus panes in the other presets. Below 60 columns the columns
-stack. Action keys retain their usual meaning: for example, Corgi j/k focus panes
-and q detaches. The prefix and Back control stay visible.
+Click a tab, pane or sidebar agent to focus it. Drag split dividers to resize.
+Right-click tabs, panes and agents for their actions; hold Shift when an
+application captures the mouse. Drag workspace or agent rows to reorder them.
+Workspace and agent order is shared; rearranging agents does not move panes.
 
-Arrows after the prefix move focus and repeat as tmux's do: within a second
-of one, the next arrow needs no prefix, and arrows that move within the
-sidebar keep the repeat going. Any other key ends the repeat and goes to the
-pane. Corgi's `h/j/k/l` also move focus, once per prefix.
+Use **prefix w** to choose a workspace, **prefix a** to choose an agent, and
+**prefix g** to search agents in the Corgi preset. Arrow focus crosses between
+the sidebar, panes and review panel. **prefix b** hides or shows the sidebar.
+[Workspace activity and worktrees](workspaces.md) explains its indicators.
 
-The sidebar, the panes and the review panel sit left to right. Focus moves
-within the one that has it first: between the sidebar's lists, between panes,
-or between the review panel's file list and diff. Past its edge, focus goes on
-to the one beside it.
+Drag terminal text to copy it; hold Shift over mouse-aware applications.
+The wheel enters scroll mode. There, `j/k`, PageUp/PageDown and `g/G` move,
+`/` searches, `n/N` repeat the search, `y` or Enter copies, and `q` exits.
+Output continues while you scroll.
 
-`prefix ←` from the leftmost pane moves focus into the agent list while the
-sidebar is open. Up and Down move through the list and wrap at its ends;
-`prefix ↑` moves to the workspace list and `prefix ↓` back, as between panes.
-The focused list sits in a box in the focused pane's outline color; the
-sidebar keeps its first column and bottom row free for it, so nothing moves
-when it appears.
-Choose agent (`prefix a`) and Choose workspace (`prefix w`) focus a list
-directly, on the focused agent or the current workspace. While the sidebar is
-folded, they open that list alone as a drawer over the dimmed panes, from the
-top of the screen to the bottom, and the panes stay where they are; the same
-key again, Esc, or a click outside it puts the drawer away. An agent no pane
-shows appears as a dimmed ghost across the bottom half of the screen, each line
-where entering it will put it; a hibernated agent stays asleep. Enter opens the
-row as a click would; Right opens an agent or a workspace, and otherwise
-returns to the pane. Esc returns without changing anything, and typing in the
-open sidebar starts an agent search as `prefix g` does. Any other
-prefixed command, or a click, gives the keyboard back to the pane.
+Closing a tab or pane ends its processes. **prefix u** reopens the latest
+recoverable closed agent in the workspace, resuming its conversation; closed
+shells and unsaved application memory cannot be restored. **prefix q** detaches
+this viewer and leaves the runtime running.
 
-Click **+** after the visible tabs, choose **New tab** from a menu, or press `prefix c` to open the agent picker, which starts an agent or a terminal in a new tab. Unnamed tabs store no name: their displayed numbers are recomputed as tabs move or close. The + button remains visible when tabs overflow. The CLI/control API creates tabs immediately, unnamed unless an explicit title is supplied.
+Viewers share processes and layout but keep their own selection and zoom.
+A pane takes its size from the last-used viewer displaying it; other viewers
+clip or pad it. Hidden panes keep their last size.
 
-Headers show either the custom name or the automatic number, centered in a minimum width of 10 columns. Narrow terminals clip the active tab as needed while keeping **+** accessible.
+After a crash or reboot, Corgi restores saved layout and output. Recorded agent
+sessions return dormant and resume when their pane gets focus; other panes
+start new shells. Recovery cannot restore arbitrary process memory. See
+[reload and recovery details](../HACKING.md).
 
-**Rename tab** opens a bordered dialog. Type to replace the selection, or move the cursor with Left/Right, Home/End and edit with Backspace/Delete. Ctrl-C, Ctrl-U, or **Clear** empties the field; saving an empty field removes the custom name and restores automatic numbering. The number shown in an empty field is a preview, not saved text. A number you explicitly type is a custom name and stays fixed. Save, Clear, and Cancel are clickable. Cancel leaves the existing name unchanged.
+### All shortcuts
 
-Right-click a tab title for Herdr's tab menu: **New tab**, **Rename**, and **Close**. Actions target the clicked tab; opening or dismissing the menu does not switch tabs. Click a row, press the key on its cap, or use Up/Down (or j/k) and Enter. Escape or a click outside dismisses it. New tab opens the agent picker; Close immediately ends all of that tab's panes.
-
-Every shortcut of every preset, as `corgi keys` prints it. `prefix` is the
-prefix key, released before the next one; a key without it is held with its
-modifiers. cmux's held keys need [host forwarding](onboarding.md#keys). In resize mode, `h/j/k/l` resize and any other key
-exits. Pressing the prefix twice sends it to the pane, so with the Ctrl+A
-prefix, `prefix Ctrl+A` types Ctrl+A instead of opening New agent.
+This is the table printed by `corgi keys`. Keys without `prefix` are held
+with their modifiers. In resize mode, `h/j/k/l` resize and another key exits.
+tmux tab numbering starts at zero; other presets start at one.
 
 | Action | Corgi | tmux | Herdr | cmux |
 | --- | --- | --- | --- | --- |
@@ -242,251 +124,99 @@ prefix, `prefix Ctrl+A` types Ctrl+A instead of opening New agent.
 | Setup | `prefix i`, `prefix C` | `prefix C` | `prefix s` | `Cmd+,`, `prefix i`, `prefix C` |
 | All shortcuts | `prefix ?` | `prefix ?` | `prefix ?` | `prefix ?` |
 
-Right-click a pane for its own context menu: rename, clear name, swap with the previously focused pane, split right/down, zoom, or close. Opening the menu does not change focus. Pane names are shared, survive reload/recovery and reopening closed agents, and appear in the focused-pane status line and agent sidebar. An empty name restores the default label. Hold Shift while right-clicking to open the menu over a mouse-aware application.
+## Review changes
 
-New workspace (`prefix N`) asks for a name and a folder. Typing starts in the name, selected, with the folder field below it at the focused pane's directory; Tab moves between them. The name follows the folder's until you edit it. Typing in the folder field lists the folders there that start with what follows the last slash (dot folders once you type a dot). Up and Down go round the name, the folder field and the list, writing each folder into the field. Right opens the highlighted folder and picks the first folder in it; Left goes up a level and picks the first folder there, as they also do at the end of the field. Click a folder to pick it and again to open it. Hold Enter, or hold the mouse on its button, to create the workspace in the folder the field names; the card's border fills as you hold, and letting go early undoes it. When the field names a folder that doesn't exist yet, the list ends with an offer to create it ("+ Create new/deeper", from the deepest folder that does exist); opening the offer makes the folders and lists the new one, and holding Enter makes them and creates the workspace there.
+**prefix e** opens the review panel for the focused pane's checkout. Press it
+again to focus the panel, and a third time to close it. Esc returns to the pane;
+drag the panel's left edge to resize.
 
-Drag workspace rows to reorder them, using the horizontal destination marker; release outside the workspace list or press Escape to cancel. Order is shared and saved. Drag agent rows to set a separate order within each workspace. The highlighted ghost occupies the destination slot, and neighboring rows shift to preview the order before you release. Scroll the wheel while dragging to reach offscreen agents. Release outside the agent list or press Escape to cancel. Agent order is shared across viewers, survives reload/recovery, and leaves tabs and splits in place. In the grouped All view, agents stay within their workspace group. Drag the sidebar's right border to change its width, clamped to leave at least 20 terminal columns. Width is local to the viewer and resets on reattach; the workspace/agent division remains halfway down.
+| Task | Key |
+| --- | --- |
+| Review commits and uncommitted changes together | Default view |
+| Compare the working copy with HEAD | `u` |
+| Pick one commit | `g` |
+| Move between file list and diff | Tab |
+| Move between hunks | `[` / `]` |
+| Search / toggle wrapping | `/` / `w` |
+| Select lines / add a note | `v` / `c` |
+| Paste notes into the pane / copy notes | `s` / `y` |
+| Pin the checkout while changing agents | `p` |
+| Show all review keys | `?` |
 
-Click tabs and panes to focus. Drag split dividers to resize. Drag terminal text to select and copy through OSC 52. Mouse-aware terminal applications, agents included, receive translated clicks, drags and hover through Ghostty; hold Shift to select text instead. Text an application copies with OSC 52 goes to the clipboard of the viewer most recently used on its pane. Right-click opens the pane menu when the terminal application is not handling the mouse. Wheel scrolling enters scroll mode. In scroll mode: `j/k`, Ctrl-U/D, PageUp/Down, `g/G`, `/` literal search, `n/N` repeat, `y` or Enter copies the selection (or viewport), `q` exits. Output keeps running while you scroll.
+The default comparison includes changes since the branch diverged from the
+default branch. On that branch, it includes work not yet pushed.
+**Review changes** on a worktree heading starts a Reviewer agent there and
+pins the panel to that checkout.
 
-`corgi action move-tab left|right` reorders tabs. `corgi action join N` moves the focused pane into tab N. New tabs and splits use the workspace default directory.
+Pasting notes does not press Enter. For a pane without bracketed paste,
+such as a bare shell, notes are copied instead. Notes belong to the viewer
+and disappear when it exits. The panel reads Git without modifying the
+repository; binary and oversized files show a notice instead of a diff.
 
-Exiting a shell immediately removes its pane; an empty tab disappears too. Closing a pane while its agent is running keeps the agent to reopen: each workspace keeps its last **eight closed agents**, with their screen and scrollback, tab name, pane name and working directory. `Ctrl+Shift+T` or `Cmd+Shift+T` in the Corgi preset, `Cmd+Shift+T` in cmux or through the Ghostty integration, or `prefix u` in any preset (or `corgi action undo-close`) reopens the newest one in this workspace in a new tab. The old screen comes back faded under a **Restoring…** band naming the command, and the agent resumes its conversation right away (`claude --resume` or `codex resume`), with the yolo flag if Corgi started it in yolo mode. The band goes away when the agent first draws over the old screen. Resuming a closed agent's conversation from the new-agent launcher reopens it the same way. Closed shells, agents that quit on their own and agents whose session Corgi never learned are not kept, and closing a workspace drops its closed agents. With one workspace, closing the last tab automatically detaches and returns to the outer terminal. Run `./go.ts` to reattach with a new shell, then reopen the agent. Closed agents and native agent sessions remain in the background runtime until it shuts down.
+## Script Corgi
 
-This is an initial implementation of Herdr's core tab/pane operations. Copy mode is intentionally smaller: it does not yet reproduce all of Herdr's vi word motions, keyboard selection, smart-case search, or configurable bindings. Multiple viewers share arrangement and independently select what to view. Limits: 64 panes per tab, 16 native provider processes, 10,000 scrollback lines per terminal.
-
-The additive [runtime protocol](development-reloads.md#protocol-1) exposes shared
-session snapshots, pane surfaces, and operations with explicit targets for the
-viewer-owned UI. The former `attach`/`input`/`size` socket operations have been removed;
-`corgi attach` uses `viewer.open` and `viewer.sync`.
-
-New panes run a login shell. To choose it, open **Corgi setup** (click the
-corgi badge or press `prefix i`), then **Panes › Shell**: the picker lists
-**Default**, each installed shell in `/etc/shells`, and **Other…** for a path.
-The choice is the `shell` setting in `settings.json` (beside
-`workspaces.json`, default `~/.local/state/corgi/settings.json`), which you can
-also edit by hand:
-
-```json
-{ "shell": "/bin/zsh" }
-```
-
-The setting counts when it names an executable, as an absolute path or a name
-on the runtime's PATH. Otherwise, the default is `$SHELL` as the runtime
-inherited it, when absolute; then your account's login shell; then `/bin/sh`.
-Panes get `SHELL` set to the shell they run. A change applies to panes opened
-after it. Clients can use
-`corgi rpc '{"op":"shell.configure","protocol":1,"shell":"zsh"}'` (an empty
-`shell` clears it); the session snapshot's `shell` field reports the setting,
-the shell new panes run and where it came from.
-
-**Corgi setup › Theme** picks **Corgi** or **Animal Style**. Corgi keeps its
-own colors. When your terminal's background is dark enough (Corgi's text
-reads at 8:1 or more on it), the background shows behind the sidebar and
-cards and Corgi's panels step up from it. Otherwise Corgi paints its own dark
-panels. Animal Style takes every color from your terminal's theme: its
-background shows behind the sidebar and cards, as in Herdr, the grays step
-from it toward the foreground, and working, needs input and failed take the
-theme's green, yellow and red. Each color is adjusted until it reads at 4.5:1,
-and a background too mid-toned for that gets a deeper panel of its own hue.
-When the terminal reports a theme change (mode 2031, as Ghostty does on a
-config reload), Corgi asks for its colors again and repaints. The theme under
-the cursor previews across the screen; Enter keeps it in `viewer.json`.
-
-### Review changes
-
-`prefix e`, or **Review changes** in an agent's right-click menu, opens the
-review panel at the window's right edge. The menu row says what it would show:
-the files and lines changed since the agent's branch left `main`. Corgi reads
-that ahead for the focused agent, the agents beside it and one you hover, so
-it's usually there when the menu opens. A turn starting or ending in the
-checkout, or 15 seconds passing, makes it read again the next time; opening
-the menu always checks, and fades in any change. Until the first read, faint
-bars hold its place. The panes make room for the panel; drag its left edge to
-resize it. It shows the checkout of the focused pane, or the worktree the
-agent list puts its agent under, so it follows you from agent to agent, and
-each pane keeps its own place and notes. A second
-`prefix e` gives it the keyboard, a third closes it; Esc hands the keyboard
-back to the pane, and a click anywhere else does too. `prefix →` from the
-rightmost pane moves into it as well, and `prefix ←` back to the focused
-pane; `prefix ↑` and `prefix ↓` move between the file list and the diff, as
-`Tab` does. Inside, plain arrows are the panel's own.
-
-It opens on **all**: the working tree against where the branch left `main`,
-so commits and uncommitted changes show together. `main` is the default branch
-`origin/HEAD` names, else `main` or `master`; of the local branch and origin's,
-the one the branch forked from latest counts, and on `main` itself origin's
-does, so what isn't pushed yet is what there is to review. `u` narrows to the
-working copy against HEAD; `g` opens a menu of the branch's commits, with what
-each touched, and reviews one alone. Changed files sit in a tree above the
-diff, each with how long ago it was last written: `j`/`k` move and the diff
-follows, `Tab` moves into the diff, and `o` (or the sort on the rule above
-them) lists them newest edit first instead; `O`, or clicking the sort in use,
-turns it around, and its arrow says which way it runs.
-
-`p` (or the `⚲` beside the title) pins the panel to the checkout it shows: it
-stays when you focus another pane, its edge turns heavy, and its notes go to
-the focused pane instead, whose name the title shows after an arrow.
-**Review changes** in a worktree heading's menu, or `e` in the worktrees
-overview, starts an agent named Reviewer in that worktree, focuses it, and pins
-the panel there, so any worktree can be reviewed whether an agent works in it
-or not.
-
-The diff holds the whole file, with long unchanged runs folded (`→` opens
-one), the words that changed inside an edited line marked, and syntax colors. `]`/`[` walk hunks across files, `w` toggles
-wrapping, `/` finds in the file. `v` selects lines and `c` writes a note on
-them; `s` pastes every note, with the lines it was written on, into the pane's
-prompt without pressing Enter, and `y` copies them instead. A pane that hasn't
-asked for bracketed paste, such as a bare shell, would run them, so its notes
-are copied. Until they're sent, the pane's sidebar row shows how many notes
-wait. `?` lists every key.
-
-Lockfiles and minified files start collapsed until Enter; binary files and
-files over 2 MB or 50,000 lines show a notice instead of a diff. The panel
-rereads git every two seconds while open and never writes to the repository.
-Notes live in the viewer and are lost when it exits.
-
-## Agent integration
-
-The left sidebar is split 50/50: workspaces above, agents from the selected workspace below, in tab order until manually reordered. Click + beside workspaces to enter just a name (the focused pane’s current directory is inherited), click a workspace to switch, and right-click for **Rename** and **Close**. Menu actions target the clicked workspace. Close ends its panes and native sessions and removes the workspace; the last workspace cannot be closed. `prefix N` creates, `prefix W` edits, `prefix w` focuses the workspace list, and `prefix {` / `prefix }` switch workspaces. Each workspace retains its tabs; each viewer remembers its focused pane within them. Processes keep running while hidden. New tabs and splits inherit the focused pane’s current directory (a targeted split inherits its target pane’s directory), falling back to the workspace’s default folder when empty; explicit RPC `cwd` overrides it. Changing a default folder does not change existing shells. Workspace names, IDs, and default folders are saved automatically across restarts. Each viewer owns its selection; tabs and processes are not restored after a daemon restart. State lives at `$XDG_STATE_HOME/corgi/workspaces.json` (default `~/.local/state/corgi/workspaces.json`), or beside an explicit `CORGI_SOCKET` as `<socket>.workspaces.json`. `corgi workspace list`, `new NAME [--cwd DIR]`, `switch ID [--viewer ID]`, `edit ID [--name NAME|--clear] [--cwd DIR]`, and `close ID` provide CLI access; close requires an empty workspace with no native sessions. Each entry has two rows: a colored status circle followed by the working directory, then an activity icon beneath the circle and the agent name. The activity icon is blank when idle, 🧠 while thinking, and 🔧 during a known tool call or its approval prompt. Paths under your home use `~`; long paths are shortened from the left so the current directory remains visible. Hook-reported directories take precedence over the foreground process directory; native sessions show their launch directory. Tab names, tool names, and routine lifecycle messages are omitted. An agent nearing compaction ends its first row with how full its context window is; see [Context](agents.md#context).
-
-Right-click an agent in the sidebar for **Rename**, **Fork**, **Copy ID**, **Mark as unread** and **Close**. Close sits apart below a rule, and the menu never opens with it highlighted. Rename names the conversation in the agent's own records, so Claude Code's and Codex's titles and resume lists show the same name, and it clears the pane's name. Claude renames itself when its messaging socket asks, as Claude's agent view does. Codex renames a session its shared background server runs through that server's socket, mid-turn or with a draft typed. A Codex started without the server (`-c`, `--profile`, `--no-daemon` and similar flags) only hears `/rename`, so Corgi types it, and only into an input box it can see is empty with nothing over it; it never presses Ctrl+C or touches a draft. Otherwise Rename is crossed out. Fork asks for the copy's name, prefilled as "‹name› (fork)", on a card whose picture of a branch splits in two as it opens; the split plays only where the terminal shows Kitty graphics and reports its cell size in pixels (Ghostty and Kitty do), and elsewhere the branch shows at rest. **Create Fork** starts it the way the original was started (`claude --resume … --fork-session` or `codex fork …`), in a new tab with its row right under the original's, and focuses it. Claude takes the name at launch; Codex takes it as soon as its server or its empty input box can. It works mid-turn: the copy ends where the original is, with any running tool call marked interrupted. Fork is crossed out until there is a conversation to copy: Claude's starts with its first message, and Codex's once Corgi knows its id. Mark as unread brings back the teal circle for the agent's last finished turn. A pane in view stays unread until focus moves onto it, it takes input, or it leaves view. It is crossed out until the agent has finished a turn, and while that turn is unread. Close closes the agent's pane.
-
-The indicators match Herdr's dot style: yellow filled circle for working, red filled circle for blocked, teal filled circle for an unseen completion, green hollow circle for idle, and a muted dot for unknown. Corgi adds a muted purple circle for initialization, with no activity icon; ended native sessions use a muted hollow circle. Click either row to focus its pane and acknowledge attention. Ordinary shells are omitted. Use the header arrow or `prefix b` to collapse/expand it; it also hides automatically in narrow or short terminals. Scroll with the wheel or the footer arrows when the list fills the screen.
-
-Terminal agents are discovered from each pane's foreground process group, including native binaries and CLI scripts launched with Bun, Node, or Python. Ordinary shells are omitted, and an agent disappears when its process returns to the shell. Native App Server/stream sessions appear separately and use their protocol events. Clicking a native entry shows the command to inspect its events; it does not answer or dismiss pending approvals. State changes update the sidebar even when the agent's tab is hidden.
-
-Inside a pane:
+Commands return JSON; `--text` makes supported output readable. Take IDs from
+`corgi list`. `current` means the pane running the command, not UI focus.
 
 ```sh
-claude
-codex
-claude --resume SESSION_ID
-claude --remote-control
-codex resume SESSION_ID
-```
-
-At runtime startup, Corgi merges its hooks into `~/.codex/hooks.json` and `~/.claude/settings.json` when those provider directories exist. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected. It preserves other settings and hook handlers, saves the original file beside it as `.corgi-backup`, and writes atomically. Repeated startup does not duplicate hooks or rewrite unchanged files. Malformed files and symlinks are left untouched, with a diagnostic in the status bar/server log. Restart Corgi after first installing a provider. Hook setup applies to newly launched agent sessions.
-
-The installed commands use the pane's `CORGI_BIN`, `CORGI_SOCKET`, and `CORGI_PANE`; they do nothing outside Corgi. Provider flags, login, model selection, inference, resume, and native remoting remain available. Permission policies and project configuration are unchanged.
-
-Codex requires trusting new hook definitions in its `/hooks` UI. Corgi does not bypass hook trust, approvals, or disabled-hook settings. Until hooks arrive, strong visible prompt signals supply debounced working/waiting/idle status. New processes remain in initialization until their first recognized prompt or hook: title spinners alone never mean working, and fallback turn detection waits for the first stable idle prompt. Hook events take precedence once received; output activity alone never means a turn finished.
-
-`corgi integration status [claude|codex]` shows what Corgi has added, including whether Codex trusts its hooks yet. `corgi integration uninstall [claude|codex]` removes everything Corgi added to those providers, with one line per item: its hook handlers, the approvals Codex keeps for them (approvals of your other hooks move with their hooks, so they stay trusted), the thread ID in Codex's title (restored from the backup when it still applies), and the backups and lock file beside them. Corgi then leaves those config directories alone at startup, in every environment, until `corgi integration install [claude|codex]` adds everything back. Without a provider, each command covers both; `corgi integration --help` lists them.
-
-`corgi hooks claude|codex` prints hook configuration for inspection or your own integration. `corgi agent claude|codex ...` launches the discovered provider without injecting duplicate hooks.
-
-For a running shared Codex daemon, Corgi identifies the CLI's displayed session from its terminal title. At fresh runtime startup, Corgi adds `"thread-id"` to `[tui].terminal_title`, preserving existing items. An unset title uses `["app-name", "thread-id", "activity", "project"]`. Setup uses a temporary Codex app-server process for its config API, without creating a thread or making a model request. Codex parses and edits TOML with a version precondition; Corgi saves `config.toml.corgi-backup` before the first edit and refuses symlink files. Setup errors appear in the status bar and server log. Already-running CLIs must restart to pick up the setting; project/profile overrides can still hide the ID. Corgi resolves the truncated UUID only when exactly one loaded thread matches it, and checks that the title came from the current foreground process.
-
-A separate read-only observer polls the default daemon every 500 ms for selected threads' status and latest turn. It never resumes threads, subscribes to approvals, or changes CLI arguments, shell aliases or CODEX_HOME. Initial attachment establishes a baseline without announcing historical completions; new completed turns update unread receipts and chimes. Multiple turns completed between polls may coalesce into one receipt. Missing/ambiguous titles or an unavailable daemon cannot establish a new binding; stale observations yield to screen detection after five seconds; ordinary hooks and screen detection remain available. Explicit remote or custom CODEX_HOME clients require their own observation source. Codex hooks only update conversations already associated with their claimed pane; they never establish or switch a pane's selected conversation. A daemon or tool inheriting stale pane variables cannot claim a different session through a hook.
-
-The optional launcher and native App Server sessions find Codex automatically: working executables on PATH first, then common user/system installation locations, then macOS app bundles in `~/Applications` and `/Applications` (including Codex and ChatGPT). Candidates must successfully answer `--version`; broken package wrappers, missing binaries, and hung commands are skipped. Run `corgi which codex` to see the selected executable. Legacy pane-launcher symlinks still pass arguments through unchanged and are skipped during discovery to avoid recursion.
-
-Optional explicit `CORGI_CODEX_BIN` / `CORGI_CLAUDE_BIN` overrides remain available for development, set before starting the runtime.
-
-Hooks describe working, waiting, tools, and session identity. `Stop` is provisional: the pane stays working with “checking completion” until the observer confirms the end of that turn. A shared worker checks only pending-stop transcripts, reads bounded appended chunks, backs off when completion is delayed, and never treats silence as completion. Codex requires matching session metadata and turn IDs in `task_complete`/`turn_complete`; Claude uses a fresh, matching-session `system/turn_duration` record after the Stop hook; an Esc during Stop hooks cancels them and leaves a `hook_cancelled` Stop record instead, which ends the turn as interrupted. Assistant messages and stop-hook summaries alone are not confirmation. These transcript formats are provider internals: missing paths, unsupported records, or missing Codex turn IDs leave completion unverified. Native sessions use protocol completion events. Claude sends no hook when a turn is interrupted, so a hook-reported Claude turn becomes idle once its idle title (`✳`) has shown for 1.5 seconds without an "esc to interrupt" hint, or for 250 ms when it follows an Esc or Ctrl-C sent to the pane within the last 5 seconds; a later Stop still starts a normal completion check. Screen-only idle remains an estimate and does not create unread results or completion sounds.
-
-Unread results are independent of working/idle status. Each confirmed end of turn has a monotonic receipt number; a new turn does not erase unread results. A separate sidebar dot remains visible even while the agent works again. Active viewers automatically acknowledge the receipt they displayed when visiting a tab or pane (visible splits count; zoom-hidden panes do not). Background viewers do not acknowledge; terminal focus reporting depends on the host terminal. Receipts are shared across viewers and survive live reload and recovery. Delayed receipts cannot clear newer completions. Reading native events acknowledges that native session. Interrupted/failed turns retain their outcome without playing a successful-completion sound.
-
-The sidebar shows bounded tool/thinking activity, provider-supplied tool descriptions when present, and the most recent completed tool. Generated semantic summaries and background inference are not enabled.
-
-Provider contracts: [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude hooks](https://code.claude.com/docs/en/hooks).
-
-## A ding with somewhere to go
-
-- **Needs you:** Herdr's request sound, including in the focused pane; unseen requests retain a sticky `! needs you` marker.
-- **Turn finished:** Herdr's completion sound; sticky `+ done` marker.
-- `prefix f` visits waiting panes first, oldest first, then completed panes. Visiting acknowledges the marker without changing the agent's actual state.
-- Completion sounds stay quiet for a pane focused in any watching viewer. Input requests still ding. Focus reporting depends on the outer terminal supporting it.
-- Completion receipts are deduplicated by turn. Duplicate hooks don't ring twice. Bursts are coalesced, with at least 1.5 seconds between sounds and waiting taking precedence.
-- Muting suppresses sounds while retaining the attention queue. `CORGI_BELL=terminal` selects BEL; `CORGI_BELL=off` disables client sounds.
-
-The two MP3s are embedded in the binary. Playback runs in a background thread using `afplay` on macOS, or the first successful MP3-capable player on Linux (`paplay`, `pw-play`, `ffplay`, `mpg123`, `mpv`). Temporary audio files are removed after playback; failed playback falls back to BEL. Plain SSH attachments use BEL so the notification reaches the local terminal rather than the remote host's audio device; its audibility depends on your terminal's bell settings.
-
-Sounds play on the attached machine. A detached runtime retains attention markers but does not send desktop notifications. Native protocol sessions also contribute to the attention count; `prefix f` identifies the session and command to inspect it.
-
-## Native agent protocols
-
-For integrations that should not type into a terminal, Corgi can own durable provider processes independently of panes:
-
-```sh
-corgi native start codex [--workspace ID]
-# => {"ok":true,"session":1,"provider":"codex"}
-corgi native send 1 '{"id":1,"method":"thread/start","params":{}}'
-corgi native events 1
-# Read the returned provider thread.id, then:
-corgi native send 1 '{"id":2,"method":"turn/start","params":{"threadId":"THREAD_ID","input":[{"type":"text","text":"Explain this project"}]}}'
-corgi native events 1 10    # events after Corgi sequence 10
-corgi native list
-corgi native stop 1
-```
-
-This path uses **Codex App Server**, not Exec Server. Corgi performs the initialize/initialized handshake and queues requests until it completes. The provider's JSON-RPC messages remain intact: thread start/resume/fork, turn start/steer/interrupt, models, approvals, and supported remote-control methods are available through the same transport. See the [App Server protocol](https://developers.openai.com/codex/app-server).
-
-With multiple workspaces, pass `--workspace ID` to `native start`; it never uses a hidden daemon selection.
-
-For Claude, `corgi native start claude` launches its bidirectional streaming CLI with the host permission channel. Send SDK-compatible control/user messages with `native send`, inspect stream events with `native events`. For example, initialize with:
-
-```sh
-corgi native send 2 '{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}'
-corgi native send 2 '{"type":"user","message":{"role":"user","content":"Explain this project"}}'
-```
-
-Native sessions expose protocol messages, not a custom chat UI. Approval/user-input requests remain in `pending_requests` until you send an explicit matching provider response. **Nothing auto-approves.** The event journal retains the latest 128 messages within 4 MiB and exposes `first_seq`/`next_seq` so consumers can detect eviction. Each event's `line` is the original JSON message, encoded as a string. Pending requests are stored separately, so event rotation cannot silently discard an unanswered approval. These are process-local buffers, not disk archives. Provider protocol/version compatibility remains the provider's responsibility; Claude's control channel is less stable than its documented terminal interface.
-
-## Control API
-
-All operations use newline-delimited JSON on a private Unix socket. By default: `/tmp/corgi-UID/control.sock`. Set `CORGI_SOCKET` to select another runtime in its own private directory. Direct `serve` runs the server in the foreground; ordinary startup handles locking and stale socket recovery.
-
-```sh
-corgi tab new --workspace 1 --command 'bun run dev'
-corgi pane split 3 --right
-corgi list
-corgi pane send 3 'run the tests' --enter
-corgi pane read 3 --text
+corgi list --text
+corgi tab new --workspace 1 --name Tests --command 'bun test src'
+corgi pane split current --right
+corgi pane read 3 --lines 100 --text
+corgi pane send 3 --stdin --enter < /path/to/prompt.txt
 corgi focus 3 --viewer 1
-corgi action rename api
-corgi action attention
-corgi shutdown              # ends this runtime and all its processes
 ```
 
-`pane send` writes literal terminal input; `--enter` explicitly submits it. It is not a semantic provider RPC. `rpc JSON` exposes the underlying operations used by the CLI. Shared pane and workspace operations use `session.command`; `session.list` lists shared state and `session.locate` resolves a pane's workspace and tab. Viewer navigation uses `focus`, `workspace.switch`, and `action`. Pane and native-session IDs are separate namespaces.
+`pane send` types literal input; `--enter` submits it. `pane close` and
+`tab close` terminate their target processes without prompting. Layout changes
+do not focus a viewer; `focus` requires an explicit `--viewer` from `list`.
+Commands do not implicitly start a missing runtime.
 
-With normal viewers, CLI navigation and actions target the oldest live viewer by default. They are queued and applied on its next update, then acknowledged. Queued viewer actions run in order; a focus followed by a split action uses that focus. To choose another viewer explicitly:
+Use `corgi --help` and each command's `--help` for syntax, or `corgi --skill`
+for the [bundled scripting guide](../assets/corgi-skill.md).
+[Agent internals](agents.md) covers hooks and native provider sessions.
 
-```sh
-corgi rpc '{"op":"viewer.list"}'
-corgi rpc '{"op":"focus","viewer":2,"pane":3}'
-corgi rpc '{"op":"action","viewer":2,"name":"next","value":""}'
-```
+## Settings and troubleshooting
 
-`viewer.list` reports each viewer's ID and last reported workspace/pane. Unqualified CLI controls target the oldest live viewer; an explicit `viewer` selects one viewer. Shared session data contains no viewer selection. `pane send`, `pane read`, and `pane close` always address the pane ID.
+Prefer **Corgi setup** for changes. **Panes → Shell** selects the shell for new
+panes; **Theme** changes appearance; **Clever Corgi** controls model-backed
+features and Smart Links. Settings and launcher commands survive restarts.
 
-For remote terminals, run Corgi on the host through SSH (`ssh -t host corgi`); the runtime persists there when the connection drops. Provider remoting can also be enabled through the native CLI/App Server interfaces. Corgi itself does not expose an unauthenticated TCP listener.
+For a standard runtime, state lives under `$XDG_STATE_HOME/corgi`, defaulting
+to `~/.local/state/corgi`:
 
-Cmd+V pastes images from your computer's clipboard into a pane, locally and over SSH, when the terminal supports the Kitty clipboard protocol's paste events (Ghostty nightly on macOS does). Corgi saves the image beside its socket, on the host over SSH (`paste/<hash>.png`, private, removed a day after it was last pasted) and pastes the file's path, which Claude Code and Codex attach. With text on the clipboard too, the text is pasted, as a plain paste would. A viewer asks the terminal once when it attaches. Over SSH, when a paste can't bring an image, a card opens above the focused pane's caret saying why and what fixes it: the terminal lacks paste events (use Ghostty Nightly), tmux sits in between, or Ghostty's `clipboard-read = deny` refuses reads. Ghostty passes its paste key on as a key when it has no text to paste, so the card opens for Cmd+V on macOS and Ctrl+Shift+V on Linux, and for Ctrl+V in an agent pane. Ghostty on Linux has no paste events yet. Its "Ghostty Nightly" link, and the download URL under it, open in your browser with Cmd+Shift-click: Corgi captures the mouse, and Shift tells Ghostty to skip that and open the link itself. A plain click copies the URL, and the card says so. Esc closes the card; a click elsewhere or any other key closes it and goes on. While paste events are on, Corgi refuses text containing an end-of-paste marker, the check Ghostty makes otherwise. Agents' own Ctrl+V still reads the clipboard of the machine they run on. A program that turns on paste events itself gets the paste as its own event instead: Corgi reads the text and image up front and answers the program's read with them, once, for that paste's password; any other clipboard read from a pane is refused. Corgi setup (prefix `i`) reports it under **Terminal capabilities**, beside what else the terminal can do.
+| File or folder | Purpose |
+| --- | --- |
+| `viewer.json` | Setup completion, keymap, appearance and worktree folder preferences |
+| `workspaces.json` | Saved workspace configuration |
+| `settings.json` | Runtime settings, including shell and inference choices |
+| `recovery/` | Saved layout, terminal output and agent recovery context |
+| `account-previews/`, `limit-history/` | Cached account/usage metadata and rate-limit history |
 
-## Layout
+An explicit `CORGI_SOCKET` selects another runtime; its workspace/settings
+files live beside the socket. Viewer preferences remain shared. Developer
+environments can isolate these paths; see [HACKING](../HACKING.md).
+Saved inference choices override inference environment defaults.
 
-- `layout.zig`: pure split tree, tab and pane identity, geometry, navigation.
-- `pane/terminal.zig`: PTYs, Ghostty parser/render state, selections and search.
-- `runtime.zig` / `session.zig`: resource ownership and the typed shared command executor.
-- `navigation.zig`: local workspace, tab, pane, and zoom selection.
-- `server.zig` / `peer.zig`: daemon loop, socket dispatch, and viewer controls.
-- `controller.zig`: viewer input, dialogs, and rendering.
-- `viewer.zig` / `client.zig`: viewer event loop and outer-terminal setup/cleanup.
-- `mirror.zig`: local session projection and terminal framebuffers; no PTYs.
-- `viewer_protocol.zig` / `protocol.zig`: runtime operations, snapshots, sizing interests, and conflict-checked shared edits.
-- `runtime.zig`: shared workspaces, PTYs, native sessions, and closed panes.
-- `render.zig` / `client.zig`: terminal presentation, attach, clipboard, sound.
-- `commands.zig`: command menu layout, shortcut labels, and mouse targets.
-- `name_dialog.zig`: tab name editor and dialog rendering/mouse targets.
-- `workspace.zig`: workspace ownership, names, default folders, and pane lookup.
-- `sidebar.zig`: workspace and agent list presentation, scrolling, and mouse targets.
-- `agents.zig` / `integration.zig`: hook lifecycle evidence and provider launch configuration.
-- `discovery.zig`: automatic provider executable discovery and bounded version checks.
-- `native.zig`: durable App Server / Claude JSONL transports and retained approvals.
-- `os.zig`: Unix/macOS boundary.
+| Symptom | First check |
+| --- | --- |
+| A shortcut goes to the terminal or does nothing | Open `prefix ?`, check the preset and prefix, then check host key forwarding. Reload Ghostty after setup changes its bindings. |
+| Mouse selection or links do not work | Hold Shift for terminal selection; use Cmd+Shift-click for Ghostty's native link handling on macOS. |
+| Image paste fails, especially over SSH | Open **Corgi setup → Terminal capabilities**. The paste notice identifies missing terminal support, tmux interference or clipboard permission. Text paste is independent. |
+| An agent is missing or status is wrong | Run `corgi which codex` or `corgi which claude`, then `corgi integration status`. Codex hooks need trust in `/hooks`; newly installed hooks need a new agent session. |
+| Usage says Unavailable | Check the provider's login and the reason shown in the launcher; usage failures do not necessarily prevent launching. |
+| Installed Corgi seems out of date | `corgi update status` shows installed/running versions; `corgi update --check` checks for a release without installing it. |
+| A release needs reverting | `corgi update rollback` switches to the retained previous release, when available. |
 
-macOS arm64 is the exercised platform. Cross-compilation to x86_64 Linux passed; Linux runtime behavior still needs validation. Windows, graphics-protocol rendering, and daemon restart recovery are not implemented.
+Update commands apply to installed releases. Development or unmanaged builds
+use the workflow in [HACKING](../HACKING.md).
+
+For remote work, run `ssh -t host corgi`; detaching or losing the connection
+leaves the runtime on that host. Image paste and sound behavior depend on the
+outer terminal; plain SSH uses the terminal bell for notifications.
+
+For a bug report, include `corgi --version`, OS, terminal, whether SSH/tmux is
+involved, and the shortest reproduction. The runtime's `server.log` sits beside
+its socket (normally `/tmp/corgi-UID/server.log`). Logs and recovery files can
+contain conversation and terminal contents; inspect excerpts before sharing.
+Use the [sandbox and probe workflow](../HACKING.md) for reproducible UI cases.

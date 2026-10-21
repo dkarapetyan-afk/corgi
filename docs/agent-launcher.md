@@ -1,303 +1,104 @@
-# New agent launcher
+# Starting and resuming agents
 
-The agents heading has a split `New ▾` button. `New` opens a new interactive
-agent tab in the focused pane's directory (or the workspace directory when
-empty), repeating the provider last used in that workspace. A workspace that
-has used none repeats the last provider used anywhere. Codex is the initial
-default. The choice is shared by viewers and retained by live reload and disk
-recovery.
+Use **New ▾** in the sidebar or **prefix c** to open the picker. It starts an
+agent or terminal in a new tab. You can also run `claude` or `codex` in any
+pane; Corgi discovers them automatically.
 
-Hover over the button for an immediate preview, or click the arrow to keep the popover
-open. Choose Codex or Claude Code to launch and remember that provider.
-Providers that are not installed are hidden: the daemon checks `CORGI_CODEX_BIN`
-/ `CORGI_CLAUDE_BIN`, `PATH`, and the usual install locations without running
-anything, and skips previews for missing providers. Providers confirmed signed out
-are also hidden. Unknown status, including failed account checks, stays visible. A pinned
-popover supports Up/Down, Tab/Shift-Tab, Home/End, Enter, and Escape.
-Below the providers, a `New terminal` row opens a plain shell tab in the same
-directory; press t in the popover to open one directly. Pressing Cmd+T (the prefix, then c) or Ctrl+T again
-while the popover is open also opens a terminal. It does not change the
-remembered provider.
-Arrow keys stop at the first/last row; Tab cycles. Navigation keys also activate
-a hover-opened popover. Escape keeps it dismissed until the pointer moves. Clicking outside dismisses it.
-A hover preview accepts a, A, or Ctrl+A to launch; other ordinary typing goes to the terminal. Opening a preview never sends a prompt.
+## Start an agent
 
-Press Ctrl+B, then a, A, or Ctrl+A to open the preview. Press any of those again to launch
-the selected agent, or use arrows to select another provider first. The preview
-starts on the row this viewer last left selected in the workspace, else the
-workspace's provider; a new workspace starts on the last row used anywhere. The next-tab binding is unchanged. Jump to attention is now Ctrl+B, f.
+Choose a provider and press Enter. **New** repeats the workspace's last provider,
+falling back to the last provider used anywhere, then Codex. **New terminal**
+(or `t` in the picker) starts a shell without changing that choice.
 
-The compact popover shows one row per provider with aligned agent and model
-and account columns, a full-row selection highlight, and the destination named in its title
-(see [Worktrees](#worktrees)). Codex
-uses `config/read` with that directory and `model/list` for the provider default.
-These calls use a separate, lazily started App Server on a background worker;
-no thread or inference turn is created. Claude previews `ANTHROPIC_MODEL`, user,
-project, local, and local managed settings. Models show their names, as in
-[Model names](agents.md#model-names). Aliases stay aliases, so `opus` shows as
-"Opus" with no version; account policy, trust, and dynamic defaults remain
-provider decisions. Missing or unreadable configuration displays
-`Provider default` instead of guessing a specific model.
+The picker title names the destination. It follows the focused agent's checkout
+when that agent works in a linked worktree; otherwise it uses the focused pane's
+directory, falling back to the workspace directory. Press `w` to choose or
+plan a worktree; see [Create or choose a worktree](workspaces.md#create-or-choose-a-worktree).
+Nothing is created merely by browsing.
 
-Usage stays on that same row. Each reported limit groups its window, usage bar,
-percent used, and reset countdown, with `·` before the countdown and `│` between
-limits. A missing limit is omitted; a reported zero remains visible. Unknown
-reset times display `unknown`. Cached readings use the same presentation. Bars
-shrink away on narrow terminals, with account/model/plan columns yielding space
-before the usage text is clipped.
+Built-in providers appear when installed and not known to be signed out.
+An inconclusive account check does not hide them. Use `corgi which codex` or
+`corgi which claude` to inspect binary discovery. `CORGI_CODEX_BIN` and
+`CORGI_CLAUDE_BIN` can select explicit executables before runtime startup.
 
-Viewers keep an `agent.subscribe` stream for the active directory, including while
-the picker is closed. The daemon sends the cached preview immediately, refreshes
-subscribed directories every sixty seconds, and pushes changed snapshots. Opening
-the picker reads the viewer's latest snapshot without requesting data. Directory
-changes select a new subscription; daemon reloads retain the last displayed values
-until fresh reads complete. A first uncached read can still show `Reading…`.
-Account and usage reads share a separate credential-scoped cache with a sixty-second
-minimum interval across directories, viewers, and daemon processes. Interactive launches use
-Corgi's existing discovered-binary launcher and ordinary provider settings,
-without overriding models or adding a prompt. Each provider row has an independent
-YOLO checkmark (click it, or press y for the selected row). It defaults off and
-stays set across viewers, live reload, and disk recovery. Toggling keeps the
-menu open and does not launch an agent. New and keyboard launches use that
-provider's remembered setting. When enabled, Codex receives
-`--dangerously-bypass-approvals-and-sandbox` and Claude Code receives
-`--dangerously-skip-permissions`; when off, ordinary provider permissions apply. They do not use the
-small-model status inference settings.
+Each provider has its own **YOLO** checkbox, initially off. Click it or press
+`y` on that row to change it; this does not launch anything. The choice is
+remembered across viewers and recovery:
 
-The protocol exposes `agent.subscribe` (workspace and cwd) on a dedicated connection,
-which receives `{type: "agent.preview", cwd, preview}` messages. The one-shot
-`agent.preview` operation remains available. The session command
-`agent.create` (workspace, optional cwd, optional provider). Omitting provider
-repeats that workspace's choice. The session snapshot and checkpoint include
-`last_agent`, the latest choice anywhere, with a Codex default for older data,
-and each workspace's `last_agent`, null until an agent starts there.
+| Provider | Flag enabled by YOLO |
+| --- | --- |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` |
+| Claude Code | `--dangerously-skip-permissions` |
 
-Account previews use Codex `account/read` without token refresh and Claude
-`auth status --json`. Claude quota reads use a persistent, isolated headless CLI
-with `initialize` and `get_usage` control requests (`skip_behaviors: true`). No
-model prompts, tools, hooks, MCP servers, saved sessions, or status-line commands
-are used. Claude handles credential storage and any authentication UI itself;
-Corgi does not read tokens or Keychain entries.
+With YOLO off, the provider's normal permission settings apply. Launcher model
+previews reflect provider configuration; Corgi does not override the interactive
+agent's model with its own activity-summary model.
 
-Account checks are shared across directories for one minute. Public quota readings
-are cached per account/profile across reloads; refreshes are at most once a minute,
-with five-minute backoff after failures. Unsupported or malformed usage replies
-preserve the detected account and the last reading's original age. The experimental
-control protocol may be unavailable on older Claude versions; that does not hide
-the agent. Reads are bounded and run on the preview worker.
+## Resume or find a conversation
 
-## Worktrees
+The picker lists recent closed conversations from its destination folder.
+Enter resumes one in a new tab. **Show more** or `/` opens the full history;
+search matches titles and prompts/messages. Tab broadens the scope from this
+folder to the workspace to everywhere. Esc clears search, then collapses it.
+Selecting a conversation already running focuses its existing pane.
 
-The title says where agents start: “New agent in ⌥ topic”, naming the Git
-checkout by its branch (without a leading `worktree-` or `worktree/`), or
-“New agent in finance” for a folder outside a repository. Nothing else in the
-launcher repeats it; the conversations' heading says “3 here”. Off the
-comparison branch (usually `main`), the ⌥ and the branch turn warm. It starts
-where the agent list puts the focused agent: one started on main that works
-in a worktree, and is listed under it, opens the launcher in that worktree.
+A recoverable recently closed agent returns with its saved command and output.
+Otherwise Corgi uses the provider's resume command and the launcher's provider
+flags. Resuming does not change the provider that **New** repeats.
+A Claude session still running in Claude's background daemon is attached
+instead; closing that tab leaves the background session running.
 
-The panes behind the launcher dim, and the agent list keeps lit only where
-the agent will go, as browsing a worktree in the overview does: in a linked
-worktree, its group; in the main checkout, the workspace's own rows, its
-worktree groups fading; for a new worktree, nothing yet.
+**prefix u** reopens the last recoverable closed agent in the workspace.
+Corgi keeps up to eight; closed shells and agents without a known session ID
+cannot be reopened this way. Recovery after a crash restores recorded agents
+asleep; focusing their panes starts the resume command.
 
-In a checkout the name sits on a button with a `w` keycap. Press w, or click
-it, for one box: the workspace's checkouts, the primary one first, with ✓ on
-the current one and its agents and uncommitted files at the right (“2 agents ·
-3 changed”, “clean”); then, a blank row down, a **New worktree** rule carrying
-an `n` keycap and the form under it. The box opens with the caret in the
-form's Branch; Up from there goes to the last checkout, just above the form.
-Up/Down move along the checkouts, Enter or a click chooses one, w or Escape
-closes the box. Choosing a checkout moves the launcher there: the model
-preview, the conversations and `t` follow it.
+History excludes SDK runs and subagents. The short recent list also omits
+commit-only conversations, which search can still find. Conversations whose
+folders no longer exist cannot be resumed from this list. An agent that exits
+with an error leaves its last output and exit code visible until its tab closes.
 
-The form has Branch, the new branch's name (a typed space becomes `-`); From,
-what it starts from, the comparison branch (usually `main`) to begin with; and
-Folder, `./.worktrees/login` under the project's main checkout unless Corgi
-setup says otherwise (see below). n, Down past the last checkout, or a click
-puts the caret back in Branch, and the rule lights up. Escape closes the box
-from the checkouts or the form alike. Tab or Down moves to From, whose list
-opens right under the field, as wide as it and on its background: the
-repository's local and remote branches, newest commit first, with each one's
-age. Typing filters them, names starting with the text first; Up/Down pick,
-Enter or Tab takes one and goes back to Branch, and Escape only dismisses the
-list, keeping the old one. The daemon lists them (`git.branches`) when the box
-opens; one that can't offers `main` and the current branch. Enter on Branch
-takes the form. Names Git won't take, and branches checked out already, are
-refused there. The title then names the new branch, and the footer says “new
-worktree from main · new tab”.
+## Save a launch command
 
-Nothing is created until something launches. An agent, a saved command or a
-terminal has the daemon run `git worktree add -b <branch> <folder> <base>` on
-its own connection first, then starts in the new folder; the footer says
-“adding ./.worktrees/login…” meanwhile. A branch or folder that exists
-already opens the box back on the form with the reason, and nothing launches. Escaping
-the launcher leaves no worktree behind. A worktree inside the main checkout
-would show there as untracked, so its top folder (`/.worktrees/`) goes in the
-repository's `.git/info/exclude`, which isn't committed, unless Git already
-ignores it.
+Choose **Manage agents** or press `m` in the picker:
 
-**Corgi setup › Source control** sets where new worktrees go, as a template
-the viewers share in their preferences (`worktree_folder` in `viewer.json`):
-`$PROJECT_ROOT/.worktrees/$NAME` by default. `$PROJECT_ROOT` is the project's
-main checkout, `$PROJECT_NAME` its folder's name, `$NAME` the new branch with
-`/` as `-`, and `$HOME` or a leading `~` the home folder; `${NAME}` works too.
-A relative folder is relative to `$PROJECT_ROOT`, and a `./` typed at the
-start becomes `$PROJECT_ROOT/`. `../$PROJECT_NAME-$NAME` puts them beside the
-project.
+1. Paste a command and review its resolved command, account, model and permissions.
+2. Adjust its suggested name, then choose **Add**.
+3. Use **Edit**, the Show checkbox or **Delete** to change the saved entry.
 
-The pane is a box that takes typing once it has focus, with the folder it
-makes for a branch `fix-login` of one of your projects under it, and each
-variable's value there below. Variables show green, mistakes amber. A template
-Corgi can't use says why in place of the folder, and Enter doesn't save it: an
-unknown variable (“$BRANCH isn't a variable; did you mean $NAME?”), lowercase
-(“Variables are uppercase”), a `$` or `${` left open, or no `$NAME`. Enter
-saves, Esc drops the edit, and an emptied box saves the default it shows. A
-hand-edited template that doesn't parse falls back to the default.
+Editing a built-in creates a custom entry and hides its default row.
+Up to six commands can be saved, each up to 2,048 bytes. Names and visibility
+are shared across viewers and survive reload and recovery.
 
-## Resume a closed conversation
+For example, `MY_PROJECT=demo claude --model opus` preserves the environment
+assignment and arguments. Preview resolves aliases and simple forwarding
+functions from shell startup configuration; saving freezes that expansion.
+Later alias changes do not change an existing saved command. Editing and
+saving its command source resolves it again.
 
-Below the agent rows and a rule, the launcher lists the five newest closed
-conversations from its folder: provider, title, the last thing you said, and how
-long ago. The provider is named once per run of rows: a line continues it down
-the rows below, and the next name marks a switch. A scrolled list or a new day
-names it again. A ✕ marks a turn that was interrupted, and the branch shows when it differs from
-the folder's newest conversation. Down from the last agent row moves into the
-list; Enter (or a click) resumes the conversation in a new tab, in the folder
-it ran in, with that provider's launcher flags such as YOLO. Its sidebar row
-shows at once, asleep, and the corgi digs out a **Restoring…** band over a blank
-screen until the agent has drawn and settled. A closed agent that undo could
-reopen comes back as undo brings it back instead: with the command that started
-it, its old screen faded under the band, and in its old tab place when it
-closed in this workspace. Resuming does not change which agent `New` starts.
-A Claude conversation that Claude's background daemon still runs, such as one
-sent there with `/bg`, opens with `claude attach` instead, since `claude
---resume` refuses it; closing its tab leaves it running there. Corgi checks the
-records live Claude processes keep in `~/.claude/sessions/` at that moment.
-Saved launcher commands still resume, since they may use another account.
-When an agent Corgi started exits with an error, as a refused resume does, its
-tab stays with its last screen and `# Exited with code N` until you close it.
+Preview does not execute the agent command. Complex shell functions are rejected;
+paste their underlying command instead. Launch uses an interactive, non-login
+shell, so definitions belong in `.bashrc`, `.zshrc` or fish configuration,
+not only in another running shell. Normal variable expansion happens at launch.
 
-**Show N more…** or `/` expands the list into a table grouped by day. `/`
-searches titles, first prompts and last messages; every word must match. Tab
-widens the scope from this folder to the workspace to everywhere. Search lists
-conversations a pane already runs first; Enter goes to that pane instead of
-starting a second copy of the session. Esc clears the search, then collapses the
-list.
+Custom commands keep their own options and account/profile settings.
+Built-in YOLO toggles do not rewrite them. A custom profile is not hidden merely
+because the default provider account is signed out.
 
-The list holds Claude transcripts and interactive Codex threads that contain a
-prompt and whose folder still exists, since a Claude session resumes only from
-its own folder. Running conversations, SDK runs, subagents and sessions continued
-under a new id are left out, and so are conversations that only asked for a
-commit (`$commit-all`), which search still finds. Claude Code keeps transcripts
-for 30 days by default; Codex keeps its threads.
+## Accounts and usage
 
-The daemon keeps the list current on its own worker. It reads everything once
-when it starts: Claude transcripts by their first 128 KB and a tail that grows
-until it holds the last prompt, and Codex threads through `thread/list` on an
-App Server that runs only while it lists. After that it rereads only what
-changes. `fs_watch.zig` watches `<claude config>/projects` and the Codex home
-(FSEvents on macOS, inotify on Linux), and a busy transcript is reread once
-its writes settle for a second. A new Codex thread or a rename lists the most
-recent page of threads again. With nothing changing, the worker sleeps. Where
-watching cannot start, it rereads everything every five minutes.
+The picker shows available model, account, plan and rate-limit information.
+Unknown configuration stays **Provider default**; unknown account information
+stays unknown. Opening the picker does not send a model prompt.
 
-Viewers follow the list instead of asking for it, so opening the launcher does
-no work. The daemon sends each viewer the whole list once, then only the
-conversations that changed or went away. The launcher keeps the list it opened
-with, so rows never move while it is open. The viewer adds what Corgi knows
-about conversations it ran: the name its sidebar showed, and when it last saw
-or closed them, so a conversation you just closed comes first.
+Usage percentages mean **used**, followed by a reset countdown where available.
+Missing limits are omitted; a reported zero remains visible. Recent cached
+readings can remain visible after a failed refresh. Once too old, they show
+**Unavailable** with a reason; an unsupported usage query does not itself
+make the provider unusable.
 
-`agent.history` returns the list. With `follow` on an `agent.subscribe`
-connection, the daemon pushes `{type: "agent.history", update}` messages
-instead: `update.full` replaces the list, otherwise `entries` replace those
-with the same provider and session and `removed` drops some. The session
-command `agent.resume` (workspace, cwd, provider, session) starts the resumed
-agent. With `asleep`, its tab opens hibernated, named `name`, and the agent
-starts once its pane is focused.
-
-## Manage agents and saved commands
-
-Choose **Manage agents** on the launcher's title, or press m, for a table of Show checkboxes, agent
-names, accounts, and **Edit** buttons. The inline command field below the table
-is focused by default. Paste a command; a name is suggested from the provider
-and model. Permission behavior appears in the YOLO column. Press Tab to edit the
-name, then Enter or **Add**
-to save. Names persist across edits, hide/show, and reloads. **Edit**
-loads a command into that same field; editing a built-in creates a custom command
-and hides its default row after saving. **Done** returns to the picker. Use **Delete** beside a saved command to remove it. Clearing an edited command
-and saving also deletes it. There is no hiding
-hotkey. Preferences and commands are shared by viewers and survive reload and
-recovery. Up to six custom commands can be saved, each up to 2048 bytes.
-
-For example, `FOO=123 claude code --whatever` is saved as shell source, preserving
-inline environment assignments, quoting, arguments, and provider options. Saving
-and previewing never execute the agent command. After a 350 ms typing pause, Corgi loads the
-detected shell configuration and reads alias/simple forwarding-function
-definitions in a background worker and previews the expansion below the field.
-The preview also summarizes the model and permission behavior. With no explicit
-auth override it uses the provider account preview. Explicit API keys/tokens,
-endpoints, config overrides, and named profiles are distinguished from that
-default account; unknown identities remain unknown. Explicit Codex homes and
-Claude config/home paths can provide a cached public email, labeled `(cached)`.
-These local identity hints are not a live token-validity check.
-
-Add/Save stores that exact preview; it waits for resolution if pressed early.
-Editing the draft invalidates older results. Fish resolution uses the actual function
-body, not potentially stale `--wraps` metadata. For example, `cc` becomes
-`command claude --allow-dangerously-skip-permissions --dangerously-skip-permissions`.
-The `command` prefix bypasses later alias/function changes. An unchanged draft, hide/show, repainting,
-and launching never resolve the saved shorthand again. Editing and saving new
-source resolves it again. Complex functions are rejected rather than executed
-or guessed; paste their underlying launch command instead. Simple commands are labeled by their
-recognized provider, including commands behind `env`, `bunx`, or `bun x`. Unknown
-commands remain usable; custom profiles are not filtered using the default
-provider account, because inline environment settings may select another account.
-
-Corgi detects the shell from `SHELL`, falling back to the user's passwd
-entry and then `/bin/sh`. Saved commands use an **interactive, non-login shell**
-(`-ic`), loading bash's `.bashrc`, zsh's `.zshrc` (respecting `ZDOTDIR`), or fish's
-normal configuration. The debounced draft preview uses that configuration to resolve aliases and
-simple forwarding functions. Launches evaluate the saved command and its ordinary variable
-expansions in the selected working directory. Alias/function definitions
-must be in the shell's startup configuration; definitions made only in another
-running shell are not inherited. Passive process discovery identifies the actual
-Codex/Claude process after the saved command starts it. Saved commands use
-their own supplied options; built-in YOLO toggles do not rewrite them.
-
-The session commands `agent.visibility`, `agent.command`, and
-`agent.command.create` manage visibility, saved source, and launching respectively.
-Snapshots/checkpoints include `agent_hidden` and `agent_commands`, defaulting to
-visible built-ins and no saved commands for older data.
-
-The manager separates Command and Name into bordered fields. The compact preview
-shows provider/account and explicit model or permission overrides; Show command
-reveals the frozen expansion. Cancel clears the draft. Original shorthand is
-saved separately so a name-only edit reuses the frozen expansion. The new-agent
-picker shows numeric keycaps starting at 0 for visible agents and a left-side
-`t` keycap for a plain terminal.
-
-Custom commands use the same picker columns as built-in agents. Their account
-comes from the saved command preview; commands using the default account share
-its current plan and usage preview. Separate profiles do not inherit those values.
-
-Account preview metadata and request deadlines persist under
-`$XDG_STATE_HOME/corgi/account-previews` (or `~/.local/state/corgi/account-previews`).
-Files are private; credentials are never stored in this cache. Claude cache names
-hash the executable, config directory, and public account identity reported by the
-CLI. Logins without a public email remain launchable but do not share cached quota
-readings. Claude usage failures back off for five minutes across directories and
-reloads. Account status is checked independently, so a usage failure does not hide
-account identity. Failed refreshes keep showing the last successful usage reading
-without a cache indicator. Its successful-fetch timestamp persists with the value;
-retries, account reads, and reloads do not renew it. At ten minutes old, usage shows
-`Unavailable` until a successful refresh. The picker includes the reason, such as
-`Unavailable · Claude usage request unsupported` or `request timed out`.
-Recent cached values keep their normal presentation even when a refresh fails.
-An account or config-directory change uses a separate Claude cache.
-Each usage reading is also filed into a per-account history under
-`$XDG_STATE_HOME/corgi/limit-history` (or `~/.local/state/corgi/limit-history`),
-keyed by provider and account rather than credential, so token refreshes keep it.
-It holds the latest reading in each eleventh of a window and feeds the usage
-overview's limit sparks; previews carry it as `history`.
+Explicit accounts or profiles in saved commands get separate previews.
+A cached public identity is a hint, not proof that its credentials still work.
+Corgi's account cache stores metadata, not credentials; provider tools retain
+responsibility for login. See [settings and troubleshooting](reference.md#settings-and-troubleshooting)
+and [agent internals](agents.md) for further details.

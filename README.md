@@ -10,6 +10,17 @@ macOS (Apple Silicon) or Linux (amd64):
 curl -fsSL https://corgi.computer/install.sh | bash
 ```
 
+## First session
+
+1. Run `corgi` in your project directory and choose a shortcut preset.
+2. Click **New** in the agent list to start Claude Code or Codex.
+3. Click an agent or pane to focus it; open the shortcut menu with your prefix,
+   then `?` (the default prefix is Ctrl+B).
+4. Choose **Detach** in the shortcut menu to leave processes running.
+5. Run `corgi` again to reconnect.
+
+See the [documentation](docs/README.md) for setup, workspaces and troubleshooting.
+
 ## Uninstall
 
 ```sh
@@ -49,18 +60,14 @@ learn the interface.
 
 ## Development
 
-Needs [Bun](https://bun.sh) and [Zig](https://ziglang.org) 0.16.0 (on PATH, or
-set `ZIG`).
+Needs [Bun](https://bun.sh) and the [pinned Zig toolchain](AGENTS.md#zig-toolchain).
 
 ```sh
 ./go.ts
 ```
 
-`go.ts` builds Corgi, then starts its runtime or attaches to the running one.
-When the build changed, it live-reloads the runtime; running panes survive. Run
-from inside a Corgi pane, it reattaches that viewer to the new build.
-`./go.ts --sandbox review` opens a seeded world of its own, with fake agents,
-for trying a feature by hand. `./go.ts --help` lists the options.
+`go.ts` builds and attaches, reloading changed builds while preserving panes.
+See [HACKING.md](HACKING.md) for the development workflow and architecture.
 
 ## Acknowledgements
 
@@ -68,8 +75,8 @@ for trying a feature by hand. `./go.ts --help` lists the options.
   for their pioneering work on computer terminals, and for providing such a
   strong foundation.
 - [herdr](https://github.com/herdrdev/herdr): Corgi's main inspiration. We
-  borrows many of their ideas.
-- [Pi](https://github.com/earendil-works/pi): we uses its 
+  borrow many of their ideas.
+- [Pi](https://github.com/earendil-works/pi): we use its
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui) library.
 - [Bun](https://bun.sh): enabled Corgi to be written in TypeScript.
 
