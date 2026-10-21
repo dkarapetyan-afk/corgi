@@ -96,6 +96,8 @@ export class Claude {
     "PreCompact",
     "Notification",
     "PostToolUseFailure",
+    "SubagentStart",
+    "SubagentStop",
   ];
   hooks = new Hooks();
   hook(v: any) {

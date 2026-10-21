@@ -126,6 +126,12 @@ export class Children {
   complete() {
     return this.running === this.len;
   }
+  without(id: string) {
+    const kept = this.items.filter(c => c.id.text() !== id);
+    this.running -= this.len - kept.length;
+    this.items = kept;
+    return this;
+  }
   static claude(value: any) {
     if (!Array.isArray(value)) return null;
     const out = new Children();

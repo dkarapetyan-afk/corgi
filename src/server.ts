@@ -217,15 +217,16 @@ export class Server {
         this.listener = listen(this.socket);
         chmodSync(this.socket, 0o600);
         this.socketPath = SocketPath.claim(this.socket);
-        for (const provider of Provider.all)
-          try {
-            if (!integration.uninstalled(provider)) await integration.install(provider);
-          } catch (error) {
-            console.error("hook setup:", error);
-          }
         if (!integration.uninstalled("codex"))
           void integration.installCodexTitle().catch(error => console.error("Codex title setup:", error));
       } else this.socketPath = SocketPath.claim(this.socket);
+      // A handoff to a newer Corgi may hook more events than the old one did.
+      for (const provider of Provider.all)
+        try {
+          if (!integration.uninstalled(provider)) await integration.install(provider);
+        } catch (error) {
+          console.error("hook setup:", error);
+        }
       this.bindPanes();
       observers.start(this);
       for (const p of this.runtime.panes) if (p.terminal.imported) p.terminal.adopt(p.terminal.fd, p.terminal.pid);

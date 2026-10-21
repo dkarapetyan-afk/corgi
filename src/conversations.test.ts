@@ -609,6 +609,51 @@ test("a Claude subagent counts from its launch until a Stop's list leaves it out
   expect(a1.state.state).toBe("idle");
 });
 
+test("a Claude subagent ends at its SubagentStop, without its parent's Stop", () => {
+  const registry = new Registry();
+  const parent = registry.get("claude", "parent");
+  const hooks = new Hooks();
+  const running = [{ id: "a1", type: "subagent", status: "running", description: "Lane A" }];
+  const [prompt, launch, stop, inside, foreground, ended, resumed] = [
+    { hook_event_name: "UserPromptSubmit", session_id: "parent" },
+    {
+      hook_event_name: "PostToolUse",
+      session_id: "parent",
+      tool_name: "Agent",
+      tool_input: { description: "Lane A", subagent_type: "general-purpose" },
+      tool_response: { status: "async_launched", agentId: "a1" },
+    },
+    { hook_event_name: "Stop", session_id: "parent", background_tasks: running },
+    { hook_event_name: "PreToolUse", session_id: "parent", agent_id: "a1", tool_name: "Bash" },
+    { hook_event_name: "SubagentStart", session_id: "parent", agent_id: "f1", agent_type: "Explore" },
+    {
+      hook_event_name: "SubagentStop",
+      session_id: "parent",
+      agent_id: "a1",
+      agent_type: "general-purpose",
+      background_tasks: running,
+    },
+    { hook_event_name: "SubagentStart", session_id: "parent", agent_id: "a1", agent_type: "general-purpose" },
+  ].map(value => hooks.decode(value));
+  expect(inside).toBeNull();
+  expect(ended).toMatchObject({ kind: "subagent_stop", subagent: "a1", subagent_type: "general-purpose" });
+  registry.observeHook(parent, prompt!, 1n, false, 100);
+  registry.observeHook(parent, launch!, 2n, false, 200);
+  registry.observeHook(parent, stop!, 3n, false, 300);
+  const a1 = registry.find("claude", "a1")!;
+  expect(parent.state.subagents).toEqual({ running: 1, blocked: 0, waiting: true });
+  expect(registry.observeHook(parent, foreground!, 4n, false, 400)).toBe(false);
+  expect(registry.find("claude", "f1")).toBeNull();
+  registry.observeHook(parent, ended!, 5n, false, 500);
+  expect(a1.state.state).toBe("idle");
+  expect(parent.state.state).toBe("working");
+  expect(parent.state.last_seq).toBe(3n);
+  expect(parent.state.subagents.running).toBe(0);
+  registry.observeHook(parent, resumed!, 6n, false, 600);
+  expect(a1.state.state).toBe("working");
+  expect(parent.state.subagents.running).toBe(1);
+});
+
 test("a Claude session's end ends the subagents its last Stop listed", () => {
   const registry = new Registry();
   const parent = registry.get("claude", "parent");

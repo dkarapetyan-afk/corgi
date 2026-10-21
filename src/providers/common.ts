@@ -118,14 +118,16 @@ export const HookEvent = [
   "Interrupt",
   "SessionEnd",
   "Notification",
+  "SubagentStart",
+  "SubagentStop",
 ] as const;
 export type Hook = ReturnType<Hooks["decode"]>;
 /** Where Claude's EnterWorktree and ExitWorktree report moving the session. */
 const moves: Record<string, string> = { EnterWorktree: "worktreePath", ExitWorktree: "restoredCwd" };
 export class Hooks {
   decode(v: any) {
-    if (!v || typeof v !== "object" || Array.isArray(v) || str(v, "agent_id")) return null;
-    const kinds: Record<string, string> = {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+    const session_kinds: Record<string, string> = {
       SessionStart: "session_start",
       UserPromptSubmit: "prompt",
       PreToolUse: "tool_start",
@@ -139,7 +141,14 @@ export class Hooks {
       SessionEnd: "session_end",
       Notification: "notification",
     };
-    const kind = kinds[str(v, "hook_event_name")];
+    // A subagent's own hooks name it in agent_id; only its start and stop
+    // are news to the session that runs it.
+    const subagent_kinds: Record<string, string> = {
+      SubagentStart: "subagent_start",
+      SubagentStop: "subagent_stop",
+    };
+    const agent = str(v, "agent_id"),
+      kind = (agent ? subagent_kinds : session_kinds)[str(v, "hook_event_name")];
     const notification = str(v, "notification_type");
     if (!kind || (kind === "notification" && !["permission_prompt", "elicitation_dialog"].includes(notification)))
       return null;
@@ -169,8 +178,8 @@ export class Hooks {
       description: str(input, "description"),
       background_tasks: field(v, "background_tasks"),
       session_crons: field(v, "session_crons"),
-      subagent: launched ? str(response, "agentId") : "",
-      subagent_type: launched ? str(input, "subagent_type") : "",
+      subagent: agent || (launched ? str(response, "agentId") : ""),
+      subagent_type: agent ? str(v, "agent_type") : launched ? str(input, "subagent_type") : "",
       target:
         ["file_path", "notebook_path", "pattern", "query", "url", "command", "skill"]
           .map(k => str(input, k))

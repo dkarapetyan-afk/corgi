@@ -333,6 +333,10 @@ export class Registry {
     return false;
   }
   observeHook(actor: Actor, event: any, seq: bigint, watched: boolean, now: number, presence: Presence = "detached") {
+    if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
+      this.observeSubagentHook(actor, event, now);
+      return false;
+    }
     const accepted = actor.state.last_seq;
     const ding = actor.observeHook(event, seq, watched, now, presence);
     if (actor.state.last_seq === accepted || actor.provider() !== "claude") return ding;
@@ -381,6 +385,23 @@ export class Registry {
       )
     )
       return;
+    parent.state.subagents.running = Math.min(0xffffffff, parent.state.subagents.running + 1);
+    parent.children_observed_at = now;
+  }
+  /** A subagent's start or stop, which leaves its parent's own state alone. */
+  observeSubagentHook(parent: Actor, event: any, now: number) {
+    if (parent.provider() !== "claude") return;
+    if (event.kind === "subagent_stop") {
+      // The list still has the stopping subagent running.
+      const listed = background_tasks.Children.claude(event.background_tasks);
+      if (listed) this.observeSubagents(parent, listed.without(event.subagent), now);
+      return;
+    }
+    // A launch adopts a new subagent; a start only revives one a message resumed.
+    const child = this.find("claude", event.subagent);
+    if (!child || child.parent !== parent.id || child.state.state === "working") return;
+    child.state.state = "working";
+    child.observed_at = now;
     parent.state.subagents.running = Math.min(0xffffffff, parent.state.subagents.running + 1);
     parent.children_observed_at = now;
   }

@@ -96,25 +96,30 @@ export function removedConfig(provider: Provider, existing: string): Removal | n
   if (!Object.keys(hooks).length) delete root.hooks;
   return { text: JSON.stringify(root, null, 2), removed, moved };
 }
+function readHooks(path: string) {
+  let stat = null;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (stat && !stat.isFile()) throw Error("HookSettingsNotRegular");
+  if (stat && stat.size > 1024 * 1024) throw Error("FileTooBig");
+  return { stat, before: stat ? readFileSync(path, "utf8") : "{}" };
+}
 /** Edits a provider's hook settings under Corgi's lock. `change` returns the
  * new text, or null to leave the file as it is. */
 function editHooks(provider: Provider, change: (text: string) => string | null, backup: boolean) {
   const info = Provider.info(provider),
-    directory = info.configDir();
+    directory = info.configDir(),
+    path = join(directory, info.hooks_file);
   if (!existsSync(directory)) return "no_config";
+  // Settings that need no change are left untouched, lock file and all.
+  if (change(readHooks(path).before) === null) return "unchanged";
   const lock = openSync(join(directory, ".corgi-hooks.lock"), "a", 0o600);
   try {
     if (!flock(lock)) throw Error("HookSettingsBusy");
-    const path = join(directory, info.hooks_file);
-    let stat = null;
-    try {
-      stat = lstatSync(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (stat && !stat.isFile()) throw Error("HookSettingsNotRegular");
-    if (stat && stat.size > 1024 * 1024) throw Error("FileTooBig");
-    const before = stat ? readFileSync(path, "utf8") : "{}",
+    const { stat, before } = readHooks(path),
       after = change(before);
     if (after === null) return "unchanged";
     if (stat && backup)

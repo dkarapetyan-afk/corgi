@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { hookEvents, installedCommand, mergedConfig, removedConfig } from "./integration";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { hookEvents, install, installedCommand, mergedConfig, removedConfig } from "./integration";
 test("hook removal takes out only Corgi's handlers and reports where the rest moved", () => {
   const theirs = { type: "command", command: "herdr-hook session" },
     original = JSON.stringify({ model: "opus", hooks: { SessionStart: [{ hooks: [theirs] }] } }),
@@ -39,7 +42,29 @@ test("hook status counts the events that run Corgi's handler", () => {
   const all = mergedConfig("claude", "{}")!,
     some = JSON.parse(all);
   delete some.hooks.Stop;
-  expect(hookEvents("claude", all)).toEqual([10, 10]);
-  expect(hookEvents("claude", JSON.stringify(some))).toEqual([9, 10]);
-  expect(hookEvents("claude", "{}")).toEqual([0, 10]);
+  expect(hookEvents("claude", all)).toEqual([12, 12]);
+  expect(hookEvents("claude", JSON.stringify(some))).toEqual([11, 12]);
+  expect(hookEvents("claude", "{}")).toEqual([0, 12]);
+});
+test("installing leaves hook settings that already have every hook untouched", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "corgi-hooks-")),
+    settings = join(directory, "settings.json"),
+    was = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = directory;
+  try {
+    const all = JSON.parse(mergedConfig("claude", "{}")!),
+      written = JSON.stringify({ theme: "dark", hooks: all.hooks });
+    writeFileSync(settings, written);
+    expect(await install("claude")).toBe("present");
+    expect(readdirSync(directory)).toEqual(["settings.json"]);
+    expect(readFileSync(settings, "utf8")).toBe(written);
+    delete all.hooks.SubagentStop;
+    writeFileSync(settings, JSON.stringify({ theme: "dark", hooks: all.hooks }));
+    expect(await install("claude")).toBe("added");
+    expect(hookEvents("claude", readFileSync(settings, "utf8"))).toEqual([12, 12]);
+  } finally {
+    if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = was;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
