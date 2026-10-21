@@ -632,6 +632,12 @@ export class Menu {
     if (options[this.cursor]?.edit) this.edit(prefs);
     return true;
   }
+  /** Esc closes setup, except while adjusting a slider or copying sessions. */
+  escape(): boolean {
+    if (this.focus !== "options") return false;
+    if (this.item === "flourishes" || this.importing()?.stage === "copying") return this.back();
+    return false;
+  }
   /** Returns focus to the list. False when it already has it. */
   back(): boolean {
     if (this.intensity_drag !== null) {
@@ -1722,7 +1728,7 @@ export class Menu {
     if (this.editing)
       return [
         ["enter", "save"],
-        ["esc", "back"],
+        ["esc", "close"],
       ];
     const picker = this.importing();
     if (this.focus === "list") {
@@ -1755,7 +1761,7 @@ export class Menu {
     const option = this.options(s, prefs)[this.cursor];
     const enter: [string, string][] =
       option && !option.disabled && (option.apply || option.choice !== undefined) ? [["enter", option.action]] : [];
-    return [["↑↓", "move"], ...enter, ["esc", "back"]];
+    return [["↑↓", "move"], ...enter, ["←", "back"], ["esc", "close"]];
   }
 }
 /** Enter in the import picker: copy the chosen sessions, go back after a
@@ -1789,7 +1795,7 @@ function importHints(picker: importPicker.Picker): [string, string][] {
         ["space", picker.switch_focused ? (picker.handoff ? "turn off" : "turn on") : "select"],
       );
       if (count > 0) hints.push(["enter", picker.activeHandoff() ? "hand off" : `import ${count}`]);
-      hints.push(["esc", "back"]);
+      hints.push(["←", "back"], ["esc", "close"]);
       return hints;
     }
     case "copying":
@@ -1797,7 +1803,8 @@ function importHints(picker: importPicker.Picker): [string, string][] {
     case "complete":
       return [
         ["enter", "open"],
-        ["esc", "back"],
+        ["←", "back"],
+        ["esc", "close"],
       ];
   }
 }

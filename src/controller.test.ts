@@ -7,7 +7,7 @@ import { TabMenu } from "./commands";
 import { Dialog } from "./name_dialog";
 import * as newWorkspace from "./new_workspace";
 import { Menu as LauncherMenu } from "./agent_launcher";
-import { Menu as SetupMenu } from "./corgi_setup";
+import { Menu as SetupMenu, items as setupItems } from "./corgi_setup";
 import * as hostClipboard from "./host_clipboard";
 import * as keyboard from "./keyboard";
 import * as viewer from "./viewer";
@@ -25,6 +25,42 @@ function controller(): any {
   });
 }
 const bytes = (text: string) => new TextEncoder().encode(text);
+
+test.each(setupItems.filter(item => item !== "flourishes"))("Escape closes setup from %s", async item => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const menu = SetupMenu.open();
+  menu.item = item;
+  menu.openOptions(s.runtime.inference, s.prefs);
+  s.corgi_setup = menu;
+  try {
+    await s.input(bytes("\x1b[27u"));
+    expect(s.corgi_setup).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("Left returns to setup's list while Escape closes an open dropdown", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const menu = SetupMenu.open();
+  menu.openOptions(s.runtime.inference, s.prefs);
+  s.corgi_setup = menu;
+  try {
+    await s.input(bytes("\x1b[D"));
+    expect(s.corgi_setup).toBe(menu);
+    expect(menu.focus).toBe("list");
+    await s.input(bytes("\x1b[C\r"));
+    expect(menu.focus).toBe("options");
+    await s.input(bytes("\x1b[27u"));
+    expect(s.corgi_setup).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
 
 test("setup previews intensity drags and saves once on release, including outside the modal", async () => {
   const update = spyOn(preferences, "update").mockImplementation(() => {});
@@ -65,6 +101,11 @@ test("setup previews intensity drags and saves once on release, including outsid
     await s.input(bytes("\x1b[D"));
     expect(menu.focus).toBe("options");
     expect(update).toHaveBeenCalledTimes(2);
+    await s.input(bytes("\x1b[27u"));
+    expect(s.corgi_setup).toBe(menu);
+    expect(menu.focus).toBe("list");
+    await s.input(bytes("\x1b[27u"));
+    expect(s.corgi_setup).toBeNull();
   } finally {
     update.mockRestore();
     viewer.close(s);

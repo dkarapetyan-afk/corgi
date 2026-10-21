@@ -3033,6 +3033,8 @@ export class Controller {
       }
       switch (byte) {
         case 27:
+          if (!setup.escape()) this.closeMenu();
+          break;
         case 113:
           if (!setup.back()) this.closeMenu();
           break;

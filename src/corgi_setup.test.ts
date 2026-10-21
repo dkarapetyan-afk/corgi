@@ -99,7 +99,7 @@ test("the top border says when the build was made and links its commit", () => {
   expect(rows.join("\n")).not.toContain("be82c7b");
 });
 
-test("Model opens a dropdown on the choice in use, and Esc closes it", () => {
+test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   const menu = Menu.open(),
     prefs = new Preferences(),
     s = status({ choice: "claude" });
@@ -131,7 +131,7 @@ test("Model opens a dropdown on the choice in use, and Esc closes it", () => {
   expect(menu.click(row, s, prefs)).toBeNull();
   const codex = hits(menu, 100, 30, s, prefs).find(hit => "choice" in hit && hit.choice === 1)!;
   expect(menu.click(codex, s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
-  // Esc closes the dropdown, then returns to the list.
+  // Left closes the dropdown, then returns to the list.
   menu.enter(s, prefs);
   expect(menu.back()).toBe(true);
   expect(menu.focus).toBe("options");
@@ -514,6 +514,8 @@ test("each import source opens its sessions beside the list", async () => {
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("Copying into Corgi");
   expect(menu.back()).toBe(true);
   expect(menu.focus).toBe("options");
+  expect(menu.escape()).toBe(true);
+  expect(menu.focus).toBe("options");
   progress.phase = "complete";
   menu.import_picker.last_poll = 0;
   await menu.poll(conn);
@@ -593,7 +595,7 @@ test("Source control's box takes the worktree folder, shows where it leads, and 
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("→ /src/corgi/wt q/fix-login");
   expect(menu.enter(s, prefs)).toEqual({ kind: "worktree_folder", template: "$PROJECT_ROOT/wt q/$NAME" });
   expect([menu.editing, menu.focus]).toEqual([null, "list"]);
-  // Esc drops an edit; an emptied box saves the default it shows.
+  // Back drops an edit; an emptied box saves the default it shows.
   prefs.worktree_folder = "$PROJECT_ROOT/wt/$NAME";
   menu.enter(s, prefs);
   menu.key(127);
@@ -631,7 +633,7 @@ test("About links its acknowledgements and makes the whole spaceship a keyboard 
     expect(initial).not.toContain("Play Moonlander");
     menu.move(false, s, prefs);
     const scene = draw(menu, cols, rows, 0, s, prefs),
-      bottom = scene.findLastIndex(row => row.includes("esc back"));
+      bottom = scene.findLastIndex(row => row.includes("esc close"));
     expect(scene[bottom - 3]).toMatch(/━{16,}/);
     expect(scene.join("\n")).not.toContain("×2");
     expect(menu.enter(s, prefs)).toEqual({ kind: "moonlander" });
