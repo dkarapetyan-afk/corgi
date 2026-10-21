@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 //! Run with `bun tools/moonlander.ts`. No daemon or viewer is needed.
+//! `--hull` picks how the ship's hull is drawn; `--help` lists the choices.
 import { join } from "node:path";
 import * as terminal from "../src/moonlander_terminal";
 import * as faces from "../src/moonlander_faces";
+import * as hull from "../src/moonlander_hull";
 export { clearText, upload } from "../src/moonlander_terminal";
 
 export async function rasterize(atlas: faces.Atlas): Promise<Uint8Array> {
@@ -22,9 +24,46 @@ export async function rasterize(atlas: faces.Atlas): Promise<Uint8Array> {
   return faces.pack(atlas, tiles);
 }
 
-export async function run() {
+const usage = `usage: bun tools/moonlander.ts [--hull STYLE] [--levels 4|16]
+
+  --hull STYLE  how to draw the ship's hull:
+                  image        Kitty graphics, turned smoothly (default);
+                               turned-gray where the terminal has none
+                  turned-gray  braille: the upright dots turned as pixel art,
+                               with gray edges
+                  turned       the same, without gray
+                  fixed        braille: the outline redrawn at each tilt
+  --levels N    alpha levels in the hull image: 4 or 16 (default 16)
+`;
+const levels: Record<string, faces.Bits> = { "4": 2, "16": 4 };
+/** Options from the command line, or a usage error. */
+export function options(argv: string[]): terminal.Options | { error: string } {
+  const out: terminal.Options = {};
+  for (let i = 0; i < argv.length; i++) {
+    const [flag, inline] = argv[i].split(/=(.*)/s, 2),
+      value = inline ?? argv[++i] ?? "";
+    if (flag === "--hull") {
+      const style = hull.parseStyle(value);
+      if (!style) return { error: `unknown hull style: ${value}` };
+      out.hull = style;
+    } else if (flag === "--levels") {
+      if (!Object.hasOwn(levels, value)) return { error: `--levels takes 4 or 16, not ${value}` };
+      out.bits = levels[value];
+    } else return { error: flag === "--help" || flag === "-h" ? "" : `unknown option: ${flag}` };
+  }
+  return out;
+}
+
+export async function run(argv = process.argv.slice(2)) {
+  const chosen = options(argv);
+  if ("error" in chosen) {
+    process.stderr.write((chosen.error ? chosen.error + "\n\n" : "") + usage);
+    process.exit(chosen.error ? 2 : 0);
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("Run Moonlander in an interactive terminal");
-  const state = new terminal.State(process.stdout.columns, process.stdout.rows, () => {}, rasterize);
+  const state = new terminal.State(process.stdout.columns, process.stdout.rows, () => {}, rasterize, chosen);
+  // Every frame is written whole, so unchanged graphics needn't be resent.
+  state.incremental = true;
   let input = "",
     inputAt = 0,
     closed = false,

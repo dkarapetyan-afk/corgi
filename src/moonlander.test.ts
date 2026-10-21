@@ -180,3 +180,35 @@ test("terminal and browser share launch, thrust toggles, tilt steps and pause co
   expect(engine.game.state).toBe("title");
   expect(engine.keys.up).toBe(false);
 });
+
+test("a tilt either way draws the same outline mirrored", () => {
+  const engine = create();
+  engine.launch(1);
+  for (let step = 0; step <= 13; step++) {
+    const lit = engine.shipDots(step * 0.12).map(([x, y]) => x + "," + y),
+      mirrored = engine.shipDots(-step * 0.12).map(([x, y]) => -1 - x + "," + y);
+    expect(mirrored.sort()).toEqual(lit.sort());
+  }
+});
+
+test("while panned, the camera keeps the ship's top within four rows below its follow line", () => {
+  const engine = create();
+  engine.launch(1);
+  const L = engine.lander!,
+    R = 4 * engine.world.K;
+  Object.assign(L, { vx: 0, vy: -40, a: 0 });
+  let up = 0,
+    down = 0;
+  for (let i = 0; i < 500 && engine.game.state === "flying"; i++) {
+    const vy = L.vy;
+    engine.tick(0.02);
+    if (engine.cameraY >= 0) continue;
+    const top = L.y - moonlander.SHIP.top - engine.cameraY;
+    expect(top).toBeGreaterThanOrEqual(3.75 * R - 1e-6);
+    expect(top).toBeLessThanOrEqual(7.75 * R + 1e-6);
+    if (vy < 0) up++;
+    else down++;
+  }
+  expect(up).toBeGreaterThan(10);
+  expect(down).toBeGreaterThan(10);
+});

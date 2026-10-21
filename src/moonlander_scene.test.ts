@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import * as moonlander from "./moonlander";
+import * as hull from "./moonlander_hull";
 import * as scene from "./moonlander_scene";
 
 function create() {
@@ -182,4 +183,100 @@ test("fuel flame freezes on pause, fades after fuel exhaustion, and resets on re
   engine.press("advance");
   expect(engine.lander!.flame).toBe(0);
   expect(flameDots(engine)).toBe(0);
+});
+
+test("a braille hull of any style moves as one piece, a whole dot at a time", () => {
+  const engine = create(),
+    K = engine.world.K;
+  Object.assign(engine.world, { stars: [], twinkles: [], earth: { x: 0, y: 0, r: 0 } });
+  let style: hull.Braille = "fixed";
+  const dots = (x: number, y: number, a: number) => {
+    Object.assign(engine.lander!, { x, y: y * K, a });
+    const screen = scene.render(engine, true, style),
+      out: string[] = [];
+    screen.cells.forEach((cell, i) => {
+      if (cell.fg !== "text" || !cell.dots) return;
+      for (let b = 0; b < 8; b++)
+        if (cell.dots & (1 << b)) {
+          const at = [1, 8, 2, 16, 4, 32, 64, 128].indexOf(1 << b);
+          out.push(`${(i % screen.cols) * 2 + (at % 2)},${Math.floor(i / screen.cols) * 4 + Math.floor(at / 2)}`);
+        }
+    });
+    return out.sort();
+  };
+  const shifted = (list: string[], by: number) =>
+    list
+      .map(dot => {
+        const [x, y] = dot.split(",").map(Number);
+        return `${x + by},${y + by}`;
+      })
+      .sort();
+  for (style of ["fixed", "turned", "turned-gray"] as const)
+    for (const a of [0, 0.36, -0.84]) {
+      const rest = dots(72, 40, a);
+      expect(rest.length).toBeGreaterThan(60);
+      for (const d of [0.1, 0.3, 0.7, 1.2, 1.4, 1.6])
+        expect(dots(72 + d, 40 + d, a)).toEqual(shifted(rest, Math.round(d)));
+    }
+  // The image draws the hull itself, so the text leaves it out.
+  style = "fixed";
+  const braille = dots(72, 40, 0.36);
+  Object.assign(engine.lander!, { x: 72, y: 40 * K, a: 0.36 });
+  expect(scene.render(engine, true, "image").cells.filter(cell => cell.dots && cell.fg === "text")).toEqual([]);
+  expect(braille.length).toBeGreaterThan(60);
+});
+
+test("as the camera pans, a pad slides with the ground's dots and its label blurs across rows", () => {
+  const engine = create(),
+    R = 4 * engine.world.K,
+    L = engine.lander!,
+    lines = ["▔", ...Array.from({ length: 6 }, (_, i) => String.fromCodePoint(0x1fb76 + i)), "▁"];
+  // Where the first pad's line is, in eighths of a cell from the top, and its
+  // label, in cells, each row weighed by its share of the label.
+  const pad = () => {
+    const screen = scene.render(engine, true),
+      at = screen.cells.findIndex(cell => lines.includes(cell.glyph)),
+      width = screen.cells.filter(
+        (cell, i) => lines.includes(cell.glyph) && Math.floor(i / screen.cols) === Math.floor(at / screen.cols),
+      ).length,
+      col = screen.cells.findIndex(cell => cell.glyph === "×") % screen.cols,
+      label = screen.cells
+        .map((cell, i) => ({ cell, row: Math.floor(i / screen.cols), col: i % screen.cols }))
+        .filter(({ cell, col: c }) => cell.glyph === "×" && c === col);
+    expect(label.length).toBeLessThanOrEqual(2);
+    return {
+      width,
+      line: Math.floor(at / screen.cols) * 8 + lines.indexOf(screen.cells[at].glyph),
+      label: label.reduce((sum, { cell, row }) => sum + row * cell.alpha ** (1 / 0.6), 0),
+      shares: label.reduce((sum, { cell }) => sum + cell.alpha ** (1 / 0.6), 0),
+    };
+  };
+  Object.assign(L, { y: moonlander.SHIP.top + (3.75 - 1) * R, vx: 0, vy: 0 });
+  engine.tick(moonlander.STEP);
+  let camera = engine.cameraY,
+    at = pad(),
+    moved = 0;
+  for (let i = 0; i < 40; i++) {
+    Object.assign(L, { y: L.y - 0.2, vy: 0 });
+    engine.tick(moonlander.STEP);
+    const next = pad(),
+      dots = Math.floor(-camera / engine.world.K) - Math.floor(-engine.cameraY / engine.world.K);
+    expect(at.line - next.line).toBe(2 * dots);
+    expect(Math.abs(next.line - at.line)).toBeLessThanOrEqual(2);
+    expect(next.shares).toBeCloseTo(1, 6);
+    // The label never takes cells from the line.
+    expect(next.width).toBe(at.width);
+    expect((next.label - at.label) * 8).toBeCloseTo(next.line - at.line, 6);
+    moved += Math.abs(next.line - at.line);
+    ((at = next), (camera = engine.cameraY));
+  }
+  expect(moved).toBeGreaterThan(8);
+  // Once the camera holds still, the label settles into one row.
+  for (let i = 0; i < 30; i++) {
+    Object.assign(L, { vy: 0 });
+    engine.tick(moonlander.STEP * 3);
+  }
+  expect(engine.cameraY).toBe(camera);
+  const settled = scene.render(engine, true).cells.filter(cell => cell.glyph === "×");
+  expect(settled.every(cell => cell.alpha === 1)).toBe(true);
 });

@@ -3,6 +3,7 @@ import { deflateSync } from "node:zlib";
 import * as moonlander from "./moonlander";
 import * as scene from "./moonlander_scene";
 import * as faces from "./moonlander_faces";
+import * as hull from "./moonlander_hull";
 import * as palette from "./palette";
 import * as keyboard from "./keyboard";
 import { masks } from "./assets/moonlander_glyphs";
@@ -14,9 +15,13 @@ function lines(screen: scene.Screen) {
     let line = "",
       previous = "";
     for (const cell of screen.cells.slice(row * screen.cols, (row + 1) * screen.cols)) {
-      const style = `${cell.fg}/${cell.bg}/${cell.bold}`;
+      const style = `${cell.fg}/${cell.bg}/${cell.bold}/${cell.alpha}`;
       if (style !== previous) {
-        line += `\x1b[0m${palette.fg(cell.fg)}${palette.bg(cell.bg)}${cell.bold ? "\x1b[1m" : ""}`;
+        const fg =
+          cell.alpha < 1
+            ? palette.fgRgb(palette.mix(palette.colors[cell.bg], palette.colors[cell.fg], cell.alpha * 100))
+            : palette.fg(cell.fg);
+        line += `\x1b[0m${fg}${palette.bg(cell.bg)}${cell.bold ? "\x1b[1m" : ""}`;
         previous = style;
       }
       line += cell.glyph;
@@ -29,20 +34,25 @@ const imageId = 730202;
 const queryId = 730201;
 const hideFace = `\x1b_Ga=d,d=i,i=${imageId},q=2\x1b\\`;
 const removeFace = `\x1b_Ga=d,d=I,i=${imageId},q=2\x1b\\`;
+/** The hull is one image per flight tilt, sent the first time the ship takes it. */
+const hullFirst = 730210,
+  hullLast = hullFirst + hull.tiles - 1;
+const hideHull = `\x1b_Ga=d,d=r,x=${hullFirst},y=${hullLast},q=2\x1b\\`;
+const removeHull = `\x1b_Ga=d,d=R,x=${hullFirst},y=${hullLast},q=2\x1b\\`;
 /** Ghostty's ED2 also deletes stored images, including an unplaced atlas. */
 export function clearText(cols: number, rows: number): string {
   let out = hideFace + `\x1b[0m${palette.bg("bg")}`;
   for (let row = 0; row < rows; row++) out += `\x1b[${row + 1};1H${" ".repeat(cols)}`;
   return out;
 }
-export function upload(png: Uint8Array): string {
+export function upload(png: Uint8Array, id = imageId): string {
   const data = Buffer.from(png).toString("base64");
   let out = "";
   for (let offset = 0; offset < data.length; offset += 4096) {
     const end = Math.min(offset + 4096, data.length),
       more = Number(end < data.length);
     out +=
-      (offset === 0 ? `\x1b_Ga=t,t=d,f=100,i=${imageId},m=${more};` : `\x1b_Gm=${more};`) +
+      (offset === 0 ? `\x1b_Ga=t,t=d,f=100,i=${id},m=${more};` : `\x1b_Gm=${more};`) +
       data.slice(offset, end) +
       "\x1b\\";
   }
@@ -60,6 +70,25 @@ function place(items: faces.Placement[], atlas: faces.Atlas, ox: number, oy: num
   return out;
 }
 
+/** Each piece of the hull keeps its placement id, so placing it again moves
+ * it in place. Its z of 0 is over the text and under the face. */
+function hullPieces(tile: number, items: faces.Placement[], cell: Cell, ox: number, oy: number): string[] {
+  return items.map((p, i) => {
+    const x = p.x + ox * cell.width,
+      y = p.y + oy * cell.height,
+      col = Math.floor(x / cell.width),
+      row = Math.floor(y / cell.height);
+    return `\x1b[${row + 1};${col + 1}H\x1b_Ga=p,i=${hullFirst + tile},p=${i + 1},x=${p.sx},y=${p.sy},w=${p.w},h=${p.h},X=${x - col * cell.width},Y=${y - row * cell.height},C=1,q=1\x1b\\`;
+  });
+}
+
+export interface Options {
+  /** How to draw the hull; `image` falls back to braille without Kitty graphics. */
+  hull?: hull.Style;
+  /** Bits per pixel of the hull's tiles: 2 for 4 alpha levels, 4 for 16. */
+  bits?: faces.Bits;
+}
+
 export class State {
   readonly engine: moonlander.Engine;
   cell: Cell | null = null;
@@ -72,14 +101,39 @@ export class State {
   private generation = 0;
   private closed = false;
   private last: number | null = null;
+  /** When the first frame was drawn, and whether the terminal has said if
+   * it does Kitty graphics; the ship waits for its images from then. */
+  private started: number | null = null;
+  private answered = false;
+  private faceRefused = false;
   private writes: string[] = [];
   private rasterize: Rasterize;
+  readonly hullStyle: hull.Style;
+  private hullBits: faces.Bits;
+  /** Each tilt's tile: `sent` once its upload is queued, `ready` once the
+   * terminal has it, for the cell size, scale and color in `tileKey`. */
+  private tiles = new Map<number, "sent" | "ready">();
+  private sprites = new Map<number, hull.Sprite>();
+  private tileKey = "";
+  private lastTile: number | null = null;
+  /** The terminal refused a tile, so the hull stays braille. */
+  private hullRefused = false;
+  /** The hull tile and pieces the terminal shows, when known. */
+  private hullShown: { tile: number | null; pieces: string[] } | null = null;
+  private shownSize = { cols: 0, rows: 0 };
+  /** Every frame reaches the terminal, so the hull is sent only when it
+   * changes. The viewer drops frames when its host falls behind, so there
+   * each frame states the whole hull. */
+  incremental = false;
   constructor(
     cols: number,
     rows: number,
     private changed = () => {},
     rasterize?: Rasterize,
+    options: Options = {},
   ) {
+    this.hullStyle = options.hull ?? "image";
+    this.hullBits = options.bits ?? 4;
     this.size = { cols: Math.max(72, Math.min(200, cols)), rows: Math.max(24, Math.min(70, rows)) };
     this.options = { size: () => this.size, aspect: 2.2 };
     this.engine = moonlander.create(this.options);
@@ -96,7 +150,8 @@ export class State {
     this.closed = true;
     this.generation++;
     this.writes = [];
-    return removeFace;
+    this.hullShown = null;
+    return removeFace + removeHull;
   }
   release(): void {
     this.engine.keys.up = false;
@@ -154,11 +209,26 @@ export class State {
     const fields = new Map(result[1].split(",").map(field => field.split("=", 2)) as [string, string][]);
     if (fields.get("i") === String(queryId)) {
       this.supported = result[2] === "OK";
+      this.answered = true;
       return true;
     }
-    if (fields.get("i") !== String(imageId)) return false;
+    const id = Number(fields.get("i"));
+    if (id >= hullFirst && id <= hullLast) {
+      const tile = id - hullFirst;
+      if (result[2] === "OK") {
+        if (this.tiles.get(tile) === "sent") this.tiles.set(tile, "ready");
+      } else if (result[2].startsWith("ENOENT")) {
+        // The terminal lost the tile; send it again.
+        this.tiles.delete(tile);
+        this.hullShown = null;
+      } else this.hullRefused = true;
+      this.changed();
+      return true;
+    }
+    if (id !== imageId) return false;
     if (this.atlas) {
       this.ready = result[2] === "OK";
+      if (!this.ready) this.faceRefused = true;
       this.changed();
     }
     return true;
@@ -191,6 +261,53 @@ export class State {
       }
     }
   }
+  /** Sends tile `index` once, the first time the ship takes its tilt. */
+  private sendTile(cell: Cell, index: number): void {
+    const key = `${cell.width}/${cell.height}/${this.engine.world.K}/${palette.colors.text.join(",")}/${this.hullBits}`;
+    if (key !== this.tileKey) {
+      if (this.tileKey) this.writes.push(removeHull);
+      this.tileKey = key;
+      this.tiles.clear();
+      this.sprites.clear();
+      this.lastTile = null;
+      this.hullShown = null;
+    }
+    if (this.tiles.has(index) || this.closed) return;
+    this.tiles.set(index, "sent");
+    const sprite = hull.sprite(this.engine, cell.width, cell.height, index);
+    this.sprites.set(index, sprite);
+    faces
+      .encode(
+        { width: sprite.w, height: sprite.h },
+        sprite.alpha,
+        [...palette.colors.text],
+        this.hullBits,
+        raw => new Uint8Array(deflateSync(raw, { level: 9 })),
+      )
+      .then(png => {
+        if (this.closed || key !== this.tileKey) return;
+        this.writes.push(upload(png, hullFirst + index));
+        this.changed();
+      })
+      .catch(() => {
+        // A failed tile keeps the braille hull.
+        this.hullRefused = true;
+        this.changed();
+      });
+  }
+  /** What the terminal needs to show `pieces` of tile `tile`, and nothing else of the hull. */
+  private placeHull(tile: number | null, pieces: string[]): string {
+    const shown = this.hullShown;
+    this.hullShown = this.incremental ? { tile, pieces } : null;
+    if (tile !== null) this.lastTile = tile;
+    if (!shown) return hideHull + pieces.join("");
+    if (shown.tile !== tile)
+      return (shown.tile === null ? "" : `\x1b_Ga=d,d=i,i=${hullFirst + shown.tile},q=2\x1b\\`) + pieces.join("");
+    let out = pieces.filter((piece, i) => piece !== shown.pieces[i]).join("");
+    for (let p = pieces.length + 1; p <= shown.pieces.length; p++)
+      out += `\x1b_Ga=d,d=i,i=${hullFirst + tile!},p=${p},q=2\x1b\\`;
+    return out;
+  }
   frame(
     cols: number,
     rows: number,
@@ -209,6 +326,8 @@ export class State {
     )
       this.engine.title();
     if (supported && cell) void this.prepare(cell);
+    if (cols !== this.shownSize.cols || rows !== this.shownSize.rows) this.hullShown = null;
+    this.shownSize = { cols, rows };
     const dt = this.last === null ? 0 : (now - this.last) / 1000;
     this.last = now;
     let out = "\x1b[?1003h\x1b[?2026h\x1b[?25l" + clearText(cols, rows);
@@ -217,10 +336,37 @@ export class State {
         cols < 72 || rows < 24
           ? "Moonlander needs 72 columns × 24 rows. Resize, or q to go back."
           : `Resize to ${w.cols} × ${w.rows} to continue, or r to restart.`;
-      return out + `\x1b[1;1H${palette.fg("text")}${message.slice(0, cols)}\x1b[?2026l`;
+      return out + this.placeHull(null, []) + `\x1b[1;1H${palette.fg("text")}${message.slice(0, cols)}\x1b[?2026l`;
     }
     this.engine.tick(dt);
-    const screen = scene.render(this.engine, this.ready && supported),
+    // The hull image shows the ship's tilt once the terminal has its tile;
+    // until the terminal has any, braille does.
+    const L = this.engine.lander;
+    let tile: number | null = null;
+    if (this.hullStyle === "image" && supported && cell && L && !this.hullRefused) {
+      const want = hull.tile(L.a);
+      // The tilts either side go too, so a turn finds its tile waiting.
+      for (const index of [want, want - 1, want + 1]) if (index >= 0 && index < hull.tiles) this.sendTile(cell, index);
+      // Until the terminal has it, the nearest tile it has stands in, on the
+      // side the ship is turning from.
+      const from = this.lastTile !== null && this.lastTile < want ? -1 : 1;
+      for (let d = 0; d < hull.tiles && tile === null; d++)
+        for (const index of [want + d * from, want - d * from])
+          if (tile === null && this.tiles.get(index) === "ready") tile = index;
+    }
+    const style = tile !== null ? "image" : this.hullStyle === "image" ? hull.fallback : this.hullStyle,
+      // The face turns with the hull as shown, even while a new tilt's tile is on its way.
+      turned = tile !== null ? hull.angle(tile) : hull.drawn(style, L?.a ?? 0);
+    // At the start the ship waits for its images, rather than show braille
+    // and text that then snap to them: until the terminal says whether it
+    // does Kitty graphics, and if it does, until the face and hull arrive.
+    this.started ??= now;
+    const waiting = supported
+      ? ((!this.ready && !this.faceRefused) || (this.hullStyle === "image" && tile === null && !this.hullRefused)) &&
+        now - this.started < 1000
+      : !this.answered && now - this.started < 250;
+    if (waiting) tile = null;
+    const screen = scene.render(this.engine, waiting || (this.ready && supported), waiting ? "image" : style),
       rendered = lines(screen),
       ox = Math.floor((cols - this.engine.world.cols) / 2),
       oy = Math.floor((rows - this.engine.world.rows) / 2);
@@ -228,8 +374,25 @@ export class State {
       out += `\x1b[${row + oy + 1};${ox + 1}H${line}`;
     });
     out += `\x1b[1;3H${palette.fg("muted")}[ back ]`;
-    if (this.ready && supported && this.atlas)
-      out += place(faces.placements(this.engine, this.atlas, screen.occludes), this.atlas, ox, oy);
+    out += this.placeHull(
+      tile,
+      tile === null || !cell
+        ? []
+        : hullPieces(
+            tile,
+            hull.placements(this.engine, this.sprites.get(tile)!, cell.width, cell.height, screen.occludes),
+            cell,
+            ox,
+            oy,
+          ),
+    );
+    if (this.ready && supported && this.atlas && !waiting)
+      out += place(
+        faces.placements(this.engine, this.atlas, screen.occludes, style !== "image", turned),
+        this.atlas,
+        ox,
+        oy,
+      );
     return out + "\x1b[0m\x1b[?25l\x1b[?2026l";
   }
 }

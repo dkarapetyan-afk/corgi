@@ -10,13 +10,12 @@ export const SOFT = { vy: 5, vx: 2.5, a: 0.12 },
   SAFE = { vy: 9, vx: 5, a: 0.24 };
 export const FACE = { calm: "ᐯ•ᴥ•ᐯ", blink: "ᐯ◡ᴥ◡ᐯ", burn: "ᐱ•ᴥ•ᐱ", scared: "ᐯ°ᴥ°ᐯ", dizzy: "ᐯ@ᴥ@ᐯ" };
 export const TAIL = ["~", "-", "~", "^"];
-export const SHIP = { cabin: 7.5, top: 12, body: 9.5, face: -6, corner: 1.25 };
+export const SHIP = { cabin: 7.5, top: 12, body: 9.5, face: -6, corner: 1 };
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const mod = (v: number, n: number) => ((v % n) + n) % n;
 export const octant = (bits: number) => "oct" + bits;
 const bitsOf = (g: string) => +g.slice(3);
 export type Point = [number, number];
-export type Segment = [number, number, number, number];
 export interface PixelCell {
   col: number;
   row: number;
@@ -131,7 +130,9 @@ export function create(options: Options) {
   // The moon: ground heights at each dot column, wrapping at the edges, with
   // flat pads; narrow pads pay more.
   let world: World,
-    cameraY = 0;
+    cameraY = 0,
+    // How long the camera has held still, in game seconds.
+    cameraStill = Infinity;
   function makeWorld(cols: number, rows: number, round: number): World {
     const K = options.aspect / 2,
       W = cols * 2,
@@ -238,6 +239,7 @@ export function create(options: Options) {
     const { cols, rows } = options.size();
     world = makeWorld(cols, rows, round);
     cameraY = 0;
+    cameraStill = Infinity;
     options.changed?.();
   }
   function title() {
@@ -657,11 +659,15 @@ export function create(options: Options) {
     stepWreck(dt);
     stepCorgi(dt);
     if (game.state !== "title") {
+      // The camera follows the ship up once its top nears the top of the
+      // screen, and back down once it has dropped four rows below that.
       const R = 4 * world.K,
         points = lander ? [...hull(lander), ...feet(lander)] : [],
         top = Math.min(...points.map(p => p.y), corgi ? corgi.y - R : Infinity),
-        bottom = Math.max(...points.map(p => p.y), corgi ? corgi.y + R : -Infinity);
-      cameraY = Math.min(0, Math.max(bottom - world.H * 0.6, Math.min(cameraY, top - 3.75 * R)));
+        margin = 3.75 * R;
+      const was = cameraY;
+      cameraY = Math.min(0, Math.max(top - margin - 4 * R, Math.min(cameraY, top - margin)));
+      cameraStill = cameraY === was ? cameraStill + dt : 0;
     }
   }
 
@@ -677,130 +683,112 @@ export function create(options: Options) {
 
   // The ship turns the way a terminal can turn it: its outline is strokes in
   // its own frame, drawn back onto the grid as octant pixels, two across and
-  // four down per cell.
-  function insidePoly(poly: Point[], x: number, y: number) {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const [xi, yi] = poly[i],
-        [xj, yj] = poly[j];
-      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    return inside;
-  }
-  // Segments (Bresenham) and polygons in cell coordinates, to octant bits per cell.
-  function pixels(segs: Segment[], fills: Point[][]) {
-    const cells = new Map<string, PixelCell>(),
-      put = (px: number, py: number) => {
-        const col = Math.floor(px / 2),
-          row = Math.floor(py / 4),
-          key = col + "," + row;
-        if (!cells.has(key)) cells.set(key, { col, row, bits: 0 });
-        cells.get(key)!.bits |= 1 << ((py - row * 4) * 2 + (px - col * 2));
-      };
-    for (const [x1, y1, x2, y2] of segs) {
-      let x = Math.floor(x1 * 2),
-        y = Math.floor(y1 * 4);
-      const ex = Math.floor(x2 * 2),
-        ey = Math.floor(y2 * 4),
-        dx = Math.abs(ex - x),
-        dy = -Math.abs(ey - y),
-        sx = x < ex ? 1 : -1,
-        sy = y < ey ? 1 : -1;
-      for (let err = dx + dy; ;) {
-        put(x, y);
-        if (x === ex && y === ey) break;
-        const e2 = 2 * err;
-        if (e2 >= dy) ((err += dy), (x += sx));
-        if (e2 <= dx) ((err += dx), (y += sy));
-      }
-    }
-    for (const poly of fills) {
-      const xs = poly.map(p => p[0] * 2),
-        ys = poly.map(p => p[1] * 4);
-      for (let py = Math.floor(Math.min(...ys)); py <= Math.max(...ys); py++)
-        for (let px = Math.floor(Math.min(...xs)); px <= Math.max(...xs); px++)
-          if (insidePoly(poly, (px + 0.5) / 2, (py + 0.5) / 4)) put(px, py);
-    }
-    return cells;
-  }
+  // four down per cell. Each turn is drawn once, around an origin on a dot
+  // corner, and the ship carries it a whole dot at a time, so its dots never
+  // shift against each other in flight.
 
-  // The ship in its own frame, in units with y down: straight edges, quarter-
-  // round corners (a center and the angle each turns from), and the filled
-  // nozzle, with a flame that flickers to the thrust.
-
-  function shipParts() {
+  // The ship in its own frame, in units with y down: straight edges with their
+  // corners cut, legs, and a skirt under the nozzle.
+  function shipShape(): Point[][] {
     const K = world.K,
       B = 4 * K,
-      { cabin: cw, top, body: bw, corner: r } = SHIP;
+      { cabin: cw, top, body: bw, corner: c } = SHIP;
     // The feet stand on the row above the ground, not in it.
     const foot = 10 * K - 0.05;
-    const lines: Segment[] = [
-      [r - cw, -top, cw - r, -top],
-      [-cw, r - top, -cw, 0],
-      [cw, r - top, cw, 0],
-      [r - bw, 0, bw - r, 0],
-      [r - bw, B, bw - r, B],
-      [-bw, r, -bw, B - r],
-      [bw, r, bw, B - r],
+    const outline: Point[][] = [
+      [
+        [-cw, 0],
+        [-cw, c - top],
+        [c - cw, -top],
+        [cw - c, -top],
+        [cw, c - top],
+        [cw, 0],
+      ],
+      [
+        [c - bw, 0],
+        [bw - c, 0],
+        [bw, c],
+        [bw, B - c],
+        [bw - c, B],
+        [c - bw, B],
+        [-bw, B - c],
+        [-bw, c],
+        [c - bw, 0],
+      ],
+      [
+        [-1.5, B + K],
+        [1.5, B + K],
+      ],
     ];
     for (const s of [-1, 1])
-      lines.push([(bw - 3) * s, B, (bw + 0.1) * s, foot], [(bw - 1.1) * s, foot, (bw + 1.3) * s, foot]);
-    const corners = [
-      [r - cw, r - top, Math.PI],
-      [cw - r, r - top, 1.5 * Math.PI],
-      [r - bw, r, Math.PI],
-      [bw - r, r, 1.5 * Math.PI],
-      [bw - r, B - r, 0],
-      [r - bw, B - r, 0.5 * Math.PI],
+      outline.push(
+        [
+          [(bw - 3) * s, B],
+          [(bw + 0.1) * s, foot],
+        ],
+        [
+          [(bw - 1.1) * s, foot],
+          [(bw + 1.3) * s, foot],
+        ],
+      );
+    return outline;
+  }
+  // The ship's dots from its origin, turned to the nearest degree, each stroke
+  // a Bresenham line between the dots its ends fall in.
+  const sprites = new Map<string, Point[]>();
+  function shipDots(a: number): Point[] {
+    const turn = Math.round((a * 180) / Math.PI),
+      key = world.K + "/" + turn;
+    const cached = sprites.get(key);
+    if (cached) return cached;
+    const t = (turn * Math.PI) / 180,
+      cos = Math.cos(t),
+      sin = Math.sin(t),
+      lit = new Set<string>();
+    const at = ([x, y]: Point): Point => [
+      Math.floor(x * cos - y * sin + 1e-9),
+      Math.floor((x * sin + y * cos) / world.K + 1e-9),
     ];
-    return {
-      lines,
-      corners,
-      nozzle: [
-        [-1.2, B],
-        [1.2, B],
-        [1.8, 6.4],
-        [-1.8, 6.4],
-      ] as Point[],
-    };
-  }
-  function shipShape(flame: number) {
-    const { lines, corners, nozzle } = shipParts(),
-      r = SHIP.corner,
-      segs = [...lines];
-    for (const [cx, cy, from] of corners)
-      for (let i = 0; i < 3; i++) {
-        const a = from + (i * Math.PI) / 6,
-          b = a + Math.PI / 6;
-        segs.push([cx + r * Math.cos(a), cy + r * Math.sin(a), cx + r * Math.cos(b), cy + r * Math.sin(b)]);
+    for (const line of shipShape())
+      for (let i = 1; i < line.length; i++) {
+        // Top down, so a tilt either way draws the same stroke mirrored.
+        const ends = [at(line[i - 1]), at(line[i])].sort((p, q) => p[1] - q[1]);
+        let [x, y] = ends[0];
+        const [ex, ey] = ends[1],
+          dx = Math.abs(ex - x),
+          dy = -Math.abs(ey - y),
+          sx = x < ex ? 1 : -1,
+          sy = y < ey ? 1 : -1;
+        for (let err = dx + dy; ;) {
+          lit.add(x + "," + y);
+          if (x === ex && y === ey) break;
+          const e2 = 2 * err;
+          if (e2 >= dy) ((err += dy), (x += sx));
+          if (e2 <= dx) ((err += dx), (y += sy));
+        }
       }
-    const fire: Point[][] =
-      flame > 0.15
-        ? [
-            [
-              [-1.9, 6.8],
-              [1.9, 6.8],
-              [rand(-0.8, 0.8), 6.8 + flame * rand(4, 9)],
-            ],
-          ]
-        : [];
-    return { segs, fills: [nozzle], fire };
+    const dots = [...lit].map(key => key.split(",").map(Number) as Point);
+    sprites.set(key, dots);
+    return dots;
   }
-  // Where the ship's pixels fall, without antialiasing: what breaks off in a crash.
+  // The ship's origin on whole dots, `camera` units down the world.
+  function shipAt(L: Lander, camera = 0): Point {
+    return [Math.round(L.x), Math.round((L.y - camera) / world.K)];
+  }
+  // Where the ship's pixels fall: what breaks off in a crash.
   function shipCells(L: Lander) {
-    const R = 4 * world.K,
-      cos = Math.cos(L.a),
-      sin = Math.sin(L.a),
-      ox = L.x / 2,
-      oy = L.y / R,
-      shape = shipShape(0);
-    const at = (x: number, y: number): Point => [ox + (x * cos - y * sin) / 2, oy + (x * sin + y * cos) / R];
-    return {
-      cells: pixels(
-        shape.segs.map(([a, b, e, f]): Segment => [...at(a, b), ...at(e, f)]),
-        shape.fills.map(poly => poly.map(([x, y]) => at(x, y))),
-      ),
-    };
+    const [ox, oy] = shipAt(L),
+      cells = new Map<string, PixelCell>();
+    for (const [x, y] of shipDots(L.a)) {
+      const px = ox + x,
+        py = oy + y,
+        col = Math.floor(px / 2),
+        row = Math.floor(py / 4),
+        key = col + "," + row;
+      if (!cells.has(key)) cells.set(key, { col, row, bits: 0 });
+      cells.get(key)!.bits |= 1 << ((py - row * 4) * 2 + (px - col * 2));
+    }
+    return { cells };
   }
 
   let accumulator = 0;
@@ -849,6 +837,9 @@ export function create(options: Options) {
     get cameraY() {
       return cameraY;
     },
+    get cameraStill() {
+      return cameraStill;
+    },
     game,
     keys,
     get lander() {
@@ -875,10 +866,9 @@ export function create(options: Options) {
     settled,
     tick,
     face,
-    insidePoly,
+    shipAt,
+    shipDots,
     shipCells,
-    shipShape,
-    shipParts,
     cellOf,
     tilt,
     press,

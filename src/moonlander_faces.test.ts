@@ -91,3 +91,17 @@ test("the graphical passenger follows the camera above the original viewport", (
   Object.assign(engine.lander!, L);
   expect(faces.placements(engine, atlas)).toEqual(panned);
 });
+
+test("the passenger moves with the hull, a whole dot at a time", () => {
+  const engine = moonlander.create({ size: () => ({ cols: 80, rows: 24 }), aspect: 2.2 });
+  engine.launch(1);
+  const L = engine.lander!,
+    atlas = faces.layout(10, 22),
+    at = (x: number) => {
+      Object.assign(L, { x, a: 0.36 });
+      return faces.placements(engine, atlas);
+    };
+  const rest = at(80);
+  expect(at(80.3)).toEqual(rest);
+  expect(at(80.7)).toEqual(rest.map(p => ({ ...p, x: p.x + atlas.cw / 2 })));
+});

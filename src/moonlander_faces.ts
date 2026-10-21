@@ -131,7 +131,7 @@ async function compress(raw: Uint8Array): Promise<Uint8Array> {
 }
 /** A single RGB color, palette alpha, packed 2/4/8-bit indices, and filter 0. */
 export async function encode(
-  atlas: Atlas,
+  atlas: Pick<Atlas, "width" | "height">,
   alpha: Uint8Array,
   color: Rgb,
   bits: Bits = 4,
@@ -174,14 +174,14 @@ export async function encode(
   }
   return out;
 }
-function intersect(a: Rect, b: Rect): Rect | null {
+export function intersect(a: Rect, b: Rect): Rect | null {
   const x = Math.max(a.x, b.x),
     y = Math.max(a.y, b.y),
     w = Math.min(a.x + a.w, b.x + b.w) - x,
     h = Math.min(a.y + a.h, b.y + b.h) - y;
   return w > 0 && h > 0 ? { x, y, w, h } : null;
 }
-function subtract(a: Rect, b: Rect): Rect[] {
+export function subtract(a: Rect, b: Rect): Rect[] {
   const cut = intersect(a, b);
   if (!cut) return [a];
   return [
@@ -191,18 +191,35 @@ function subtract(a: Rect, b: Rect): Rect[] {
     { x: cut.x + cut.w, y: cut.y, w: a.x + a.w - cut.x - cut.w, h: cut.h },
   ].filter(r => r.w > 0 && r.h > 0);
 }
-/** All destinations and source crops are whole pixels, as Kitty requires. */
-export function placements(engine: moonlander.Engine, atlas: Atlas, occludes: Rect[] = []): Placement[] {
+/** The ship's origin on whole pixels, where the hull image sits and the face
+ * with it; on the hull's whole dots (`onDots`) when the hull is braille. */
+export function origin(engine: moonlander.Engine, cw: number, ch: number, onDots: boolean): [number, number] {
+  const L = engine.lander!,
+    [x, y] = onDots ? engine.shipAt(L, engine.cameraY) : [L.x, (L.y - engine.cameraY) / engine.world.K];
+  return [Math.round((x * cw) / 2), Math.round((y * ch) / 4)];
+}
+/** All destinations and source crops are whole pixels, as Kitty requires.
+ * The face turns to `a`, the angle the hull is drawn at, and each glyph keeps
+ * a whole-pixel offset from the hull's origin for that angle, so the face and
+ * the hull move as one piece. */
+export function placements(
+  engine: moonlander.Engine,
+  atlas: Atlas,
+  occludes: Rect[] = [],
+  onDots = true,
+  a = engine.lander?.a ?? 0,
+): Placement[] {
   const L = engine.lander,
     face = engine.face();
   if (!L || !face) return [];
   const { cw, ch, side, cols, turns } = atlas,
-    cos = Math.cos(L.a),
-    sin = Math.sin(L.a),
+    cos = Math.cos(a),
+    sin = Math.sin(a),
     glyphs = [...face];
-  const turn = moonlander.clamp(Math.round(((L.a * 180) / Math.PI + 90) / step), 0, turns - 1);
-  const fx = ((L.x - moonlander.SHIP.face * sin) * cw) / 2,
-    fy = ((L.y + moonlander.SHIP.face * cos - engine.cameraY) * ch) / (4 * engine.world.K);
+  const turn = moonlander.clamp(Math.round(((a * 180) / Math.PI + 90) / step), 0, turns - 1);
+  const [px, py] = origin(engine, cw, ch, onDots),
+    fx = (-moonlander.SHIP.face * sin * cw) / 2,
+    fy = (moonlander.SHIP.face * cos * ch) / (4 * engine.world.K);
   const bounds = { x: 0, y: 0, w: engine.world.cols * cw, h: engine.world.rows * ch };
   const hidden = occludes.map(r => ({
     x: Math.floor(r.x * cw),
@@ -216,8 +233,8 @@ export function placements(engine: moonlander.Engine, atlas: Atlas, occludes: Re
       const first = atlas.tiles.find(tile => tile.glyph === glyph)!,
         tile = first.first + (first.count === 1 ? 0 : turn);
       const along = (k - glyphs.length / 2 + 0.5) * cw,
-        x = Math.round(fx + along * cos - side / 2 + shift),
-        y = Math.round(fy + along * sin - side / 2);
+        x = px + Math.round(fx + along * cos - side / 2) + shift,
+        y = py + Math.round(fy + along * sin - side / 2);
       const clip = intersect({ x, y, w: side, h: side }, bounds);
       if (!clip) return;
       let pieces = [clip];

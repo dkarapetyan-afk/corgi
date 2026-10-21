@@ -1,10 +1,12 @@
 //! Moonlander cell rendering, shared by the terminal and website.
 import * as moonlander from "./moonlander";
+import * as hull from "./moonlander_hull";
 import type { Token } from "./palette";
 
 const displayWidth = (text: string) => [...text].length;
 
-export type Cell = { glyph: string; fg: Token; bg: Token; dots: number; bold: boolean };
+/** `alpha` is how much of `fg` shows over `bg`: less on a gray hull's edges. */
+export type Cell = { glyph: string; fg: Token; bg: Token; dots: number; bold: boolean; alpha: number };
 const BRAILLE = [1, 8, 2, 16, 4, 32, 64, 128];
 const hash = (x: number, y: number, seed: number) => {
   let h = Math.imul(x, 374761393) + Math.imul(y, 668265263) + seed;
@@ -57,12 +59,16 @@ export class Screen {
       bg: "bg",
       dots: 0,
       bold: false,
+      alpha: 1,
     }));
   }
   put(col: number, row: number, glyph: string, fg: Token = "text", bg: Token = "bg", bold = false) {
-    row = Math.floor(row - this.cameraY / 4);
+    this.set(col, Math.floor(row - this.cameraY / 4), glyph, fg, bg, bold);
+  }
+  /** A glyph in a cell on screen, whatever the camera. */
+  set(col: number, row: number, glyph: string, fg: Token = "text", bg: Token = "bg", bold = false, alpha = 1) {
     if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return;
-    this.cells[row * this.cols + col] = { glyph, fg, bg, dots: 0, bold };
+    this.cells[row * this.cols + col] = { glyph, fg, bg, dots: 0, bold, alpha };
   }
   text(col: number, row: number, value: string, fg: Token = "text", bg: Token = "bg", bold = false) {
     for (const glyph of value) {
@@ -81,11 +87,29 @@ export class Screen {
     cell.dots |= BRAILLE[(y % 4) * 2 + (x % 2)];
     cell.glyph = String.fromCodePoint(0x2800 + cell.dots);
     cell.fg = color;
+    cell.alpha = 1;
   }
 }
 
 type Terrain = Pick<moonlander.World, "W" | "rows" | "K" | "ground" | "pads" | "seed">;
-function terrain(s: Screen, w: Terrain, padColor: Token = "accent", multipliers = true) {
+/** A thin line at each eighth of a cell, top to bottom. */
+const lines = ["▔", ...Array.from({ length: 6 }, (_, i) => String.fromCodePoint(0x1fb76 + i)), "▁"];
+/** Where a pad's line sits on screen, in eighths of a cell from the top:
+ * an eighth into the cell its surface dot starts in, level with the ground
+ * beside it, with the camera `camera` dots down the world. */
+const padEighth = (p: moonlander.Pad, K: number, camera: number) => 2 * Math.floor(Math.round(p.y / K) - camera) + 1;
+/** `slide` draws pads as thin lines that move an eighth of a cell at a time
+ * with the ground's dots as the camera pans, rather than jump a cell, and
+ * blurs each multiplier across the rows it passes while the camera has been
+ * still under `still` seconds. */
+function terrain(
+  s: Screen,
+  w: Terrain,
+  padColor: Token = "accent",
+  multipliers = true,
+  slide = true,
+  still = Infinity,
+) {
   const R = 4 * w.K;
   const surface = Array.from({ length: w.W }, (_, x) => Math.floor(w.ground(x + 0.5) / w.K));
   for (let x = 0; x < w.W; x++) {
@@ -95,10 +119,61 @@ function terrain(s: Screen, w: Terrain, padColor: Token = "accent", multipliers 
       if (hash(x, y, w.seed) < 0.06 + 0.3 * Math.exp(-(y - surface[x]) / 5)) s.dot(x, y, "line");
   }
   for (const p of w.pads) {
-    const row = Math.round(p.y / R);
-    s.text(Math.ceil(p.x0 / 2), row, "━".repeat(Math.floor(p.x1 / 2) - Math.ceil(p.x0 / 2)), padColor);
-    if (multipliers) s.text(Math.round((p.x0 + p.x1) / 4 - 1), row + 1, `×${p.mult}`, padColor, "bg", true);
+    const from = Math.ceil(p.x0 / 2),
+      to = Math.floor(p.x1 / 2);
+    if (!slide) {
+      s.text(from, Math.round(p.y / R), "━".repeat(to - from), padColor);
+      continue;
+    }
+    const eighth = padEighth(p, w.K, s.cameraY);
+    for (let col = from; col < to; col++)
+      s.set(col, Math.floor(eighth / 8), lines[moonlander.mod(eighth, 8)], padColor);
+    if (!multipliers) continue;
+    // A cell under the line at rest, so never in the line's row. While the
+    // camera pans, a label between rows shows in both, each as bright as it
+    // is near, lifted so the split doesn't read as dim; once the camera has
+    // held still a moment it settles into the nearer row.
+    const at = (eighth - 1) / 8 + 1,
+      row = Math.floor(at),
+      past = at - row,
+      settled = Math.min(1, still / 0.2),
+      lower = past < 0.5 ? 0 : 1;
+    for (const [offset, share] of [
+      [0, (1 - settled) * (1 - past) + settled * (1 - lower)],
+      [1, (1 - settled) * past + settled * lower],
+    ])
+      if (share > 0)
+        [...`×${p.mult}`].forEach((glyph, i) =>
+          s.set(Math.round((p.x0 + p.x1) / 4 - 1) + i, row + offset, glyph, padColor, "bg", true, share ** 0.6),
+        );
   }
+}
+
+// The hull's dots on screen at the ship's whole-dot origin, each cell as
+// bright as its dots are on average, lifted so a gray edge split across two
+// rows doesn't read as dim.
+function brailleHull(
+  s: Screen,
+  engine: moonlander.Engine,
+  L: moonlander.Lander,
+  style: hull.Braille,
+  ox: number,
+  oy: number,
+) {
+  const W = engine.world.W,
+    light = new Map<number, { sum: number; n: number }>();
+  for (const dot of hull.dots(engine, style, L.a)) {
+    const x = moonlander.mod(ox + dot.x, W),
+      y = oy + dot.y;
+    s.dot(x, y, "text");
+    const col = Math.floor(x / 2),
+      row = Math.floor(y / 4);
+    if (row < 0 || row >= s.rows) continue;
+    const at = row * s.cols + col,
+      cell = light.get(at) ?? { sum: 0, n: 0 };
+    light.set(at, { sum: cell.sum + dot.level, n: cell.n + 1 });
+  }
+  for (const [at, { sum, n }] of light) s.cells[at].alpha = Math.round((sum / n) ** 0.6 * 16) / 16;
 }
 
 let landingShip: moonlander.Engine | null = null;
@@ -121,7 +196,7 @@ export function landing(cols: number, rows: number): Screen {
         pad.y - (rows - 2) * 4 * K * Math.pow(slope, 0.55) + (Math.sin(x * 0.43) + Math.sin(x * 0.91) * 0.4) * slope * 2
       );
     };
-  terrain(s, { W, rows, K, ground, pads: [pad], seed: 7302 }, "text", false);
+  terrain(s, { W, rows, K, ground, pads: [pad], seed: 7302 }, "text", false, false);
   const L = { ...landingShip.lander!, x: center, y: pad.y - 10 * K };
   for (const e of landingShip.shipCells(L).cells.values())
     for (let b = 0; b < 8; b++)
@@ -135,7 +210,8 @@ export function landing(cols: number, rows: number): Screen {
   return s;
 }
 
-export function render(engine: moonlander.Engine, smoothFace = false): Screen {
+/** `style` draws the hull as braille, or leaves it to the image. */
+export function render(engine: moonlander.Engine, smoothFace = false, style: hull.Style = hull.fallback): Screen {
   const { world: w, game, lander: L, wreck, corgi } = engine,
     s = new Screen(w.cols, w.rows);
   const R = 4 * w.K,
@@ -159,7 +235,7 @@ export function render(engine: moonlander.Engine, smoothFace = false): Screen {
         s.dot(x, moonlander.mod(y - skyY, w.rows * 4), hash(x >> 1, y >> 1, w.seed) < 0.45 ? "text" : "faint");
     }
   s.cameraY = engine.cameraY / w.K;
-  terrain(s, w);
+  terrain(s, w, "accent", true, true, game.paused ? Infinity : engine.cameraStill);
   for (const p of engine.particles) {
     const k = p.age / p.life;
     const color =
@@ -260,20 +336,21 @@ export function render(engine: moonlander.Engine, smoothFace = false): Screen {
       s.put(col - offset, row - 1, "+", "warm");
     }
   }
+  // The ship and its passenger, on screen rather than in the world, so a
+  // camera that follows the ship doesn't jostle it.
+  s.cameraY = 0;
   if (L) {
-    for (const e of engine.shipCells(L).cells.values())
-      for (let b = 0; b < 8; b++)
-        if (e.bits & (1 << b)) s.dot(moonlander.mod(e.col * 2 + (b % 2), w.W), e.row * 4 + Math.floor(b / 2), "text");
+    const [ox, oy] = engine.shipAt(L, engine.cameraY);
+    if (style !== "image") brailleHull(s, engine, L, style, ox, oy);
     const face = engine.face();
     if (face && !smoothFace)
       s.text(
-        Math.round((L.x - moonlander.SHIP.face * Math.sin(L.a)) / 2 - 2),
-        (L.y + moonlander.SHIP.face * Math.cos(L.a)) / R,
+        Math.round((ox - moonlander.SHIP.face * Math.sin(L.a)) / 2 - 2),
+        (oy * w.K + moonlander.SHIP.face * Math.cos(L.a)) / R,
         face,
         "strong",
       );
   }
-  s.cameraY = 0;
   const scores = `${game.state === "title" ? "" : `moon ${game.round}   score ${game.score}   `}best ${game.best}`;
   s.text(w.cols - scores.length - 2, 0, scores, "strong");
   if (L && game.state !== "title") {

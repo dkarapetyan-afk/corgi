@@ -1,6 +1,7 @@
 import * as moonlander from "../src/moonlander";
 import * as scene from "../src/moonlander_scene";
 import * as faces from "../src/moonlander_faces";
+import * as hull from "../src/moonlander_hull";
 
 const css = getComputedStyle(document.documentElement);
 const C = Object.fromEntries(["bg", "surface", "selected", "line", "faint", "muted", "text", "strong", "accent", "warm", "hot"].map(n => [n, css.getPropertyValue("--"+n).trim()]));
@@ -10,6 +11,24 @@ const touch = matchMedia("(pointer: coarse)").matches;
 const room = () => innerHeight - (touch ? 100 : 0);
 const clamp = moonlander.clamp;
 let EM = {w:0.6,h:1.32,ascent:1.02}, engine, atlas = null, image = null, atlasKey = "", atlasGeneration = 0;
+// ?hull= and ?levels= pick the hull as tools/moonlander.ts's switches do.
+const query = new URLSearchParams(location.search);
+const HULL = hull.parseStyle(query.get("hull") ?? "") ?? "image", LEVELS = query.get("levels") === "4" ? 4 : 16;
+// The hull image's tiles, drawn when the ship first takes each tilt.
+const hullTiles = new Map();
+function hullTile(index) {
+  const {cw,ch,dpr} = view, key = `${cw*dpr}/${ch*dpr}/${engine.world.K}/${index}`;
+  if (!hullTiles.has(key)) {
+    const sprite = hull.sprite(engine,Math.round(cw*dpr),Math.round(ch*dpr),index), tile = document.createElement("canvas");
+    tile.width = sprite.w; tile.height = sprite.h;
+    const c = tile.getContext("2d"), img = c.createImageData(sprite.w,sprite.h), rgb = [1,3,5].map(i => parseInt(C.text.slice(i,i+2),16));
+    // Quantized to the alpha levels a terminal would get.
+    sprite.alpha.forEach((a,i) => { img.data.set([...rgb,Math.round(Math.round(a/255*(LEVELS-1))/(LEVELS-1)*255)],i*4); });
+    c.putImageData(img,0,0);
+    hullTiles.set(key,{sprite,tile});
+  }
+  return hullTiles.get(key);
+}
 const view = {cw:0,ch:0,dpr:1,lw:1,ascent:0,ox:0,oy:0,font:"",bold:"",ds:1};
 const widths = new Map();
 function measure() {
@@ -76,6 +95,9 @@ const BLOCKS = {
 };
 const EIGHTHS = "▁▂▃▄▅▆▇█";
 [...EIGHTHS].slice(0, 7).forEach((g, i) => (BLOCKS[g] = [[0, 1 - (i + 1) / 8, 1, 1]]));
+// Thin lines at each eighth of a cell, as the pads slide when the camera pans.
+BLOCKS["▔"] = [[0, 0, 1, 1 / 8]];
+for (let i = 1; i < 7; i++) BLOCKS[String.fromCodePoint(0x1fb76 + i - 1)] = [[0, i / 8, 1, (i + 1) / 8]];
 const DIAGS = { "╱": [[0, 1, 1, 0]], "╲": [[0, 0, 1, 1]] };
 // An octant: two pixels across and four down, bit 0 top left. Since Unicode
 // 16 every one of the 256 patterns is a character, and kitty and Ghostty draw
@@ -138,22 +160,36 @@ function glyph(c, g, x, y, color) {
 }
 
 const BRAILLE = [1,8,2,16,4,32,64,128];
+// A cell's color at its alpha over its background, as the terminal mixes it.
+const blends = new Map();
+function blend(cell) {
+  if (cell.alpha >= 1) return C[cell.fg];
+  const key = `${cell.fg}/${cell.bg}/${cell.alpha}`;
+  if (!blends.has(key)) {
+    const rgb = (hex) => [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)), fg = rgb(C[cell.fg]), bg = rgb(C[cell.bg]);
+    blends.set(key,`rgb(${fg.map((v,i) => Math.round(bg[i]+(v-bg[i])*cell.alpha)).join(",")})`);
+  }
+  return blends.get(key);
+}
 function draw() {
-  const {cw,ch,dpr,ox,oy} = view, screen = scene.render(engine,!!image);
+  const {cw,ch,dpr,ox,oy} = view, L = engine.lander, tile = HULL === "image" && L ? hullTile(hull.tile(L.a)) : null;
+  const style = tile ? "image" : HULL === "image" ? hull.fallback : HULL, screen = scene.render(engine,!!image,style);
   ctx.setTransform(dpr,0,0,dpr,0,0); ctx.fillStyle = C.bg; ctx.fillRect(0,0,innerWidth,innerHeight);
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
   for (let row = 0; row < screen.rows; row++) for (let col = 0; col < screen.cols; col++) {
     const cell = screen.cells[row*screen.cols+col], x = ox+col*cw, y = oy+row*ch;
     if (cell.bg !== "bg") {ctx.fillStyle=C[cell.bg];ctx.fillRect(x,y,cw,ch);}
     if (cell.dots) {
-      ctx.fillStyle = C[cell.fg];
+      ctx.fillStyle = blend(cell);
       for (let b=0;b<8;b++) if (cell.dots&BRAILLE[b]) {
         const dx = x+(b%2+0.5)*cw/2-view.ds/2, dy = y+(Math.floor(b/2)+0.5)*ch/4-view.ds/2;
         ctx.fillRect(Math.round(dx*dpr)/dpr,Math.round(dy*dpr)/dpr,view.ds,view.ds);
       }
-    } else if (cell.glyph !== " ") {ctx.font=cell.bold?view.bold:view.font;glyph(ctx,cell.glyph,x,y,C[cell.fg]);}
+    } else if (cell.glyph !== " ") {ctx.font=cell.bold?view.bold:view.font;glyph(ctx,cell.glyph,x,y,blend(cell));}
   }
-  if (image && atlas) for (const p of faces.placements(engine,atlas,screen.occludes))
+  if (tile) for (const p of hull.placements(engine,tile.sprite,Math.round(cw*dpr),Math.round(ch*dpr),screen.occludes))
+    ctx.drawImage(tile.tile,p.sx,p.sy,p.w,p.h,ox+p.x/dpr,oy+p.y/dpr,p.w/dpr,p.h/dpr);
+  if (image && atlas) for (const p of faces.placements(engine,atlas,screen.occludes,!tile,hull.drawn(style,L?.a ?? 0)))
     ctx.drawImage(image,p.sx,p.sy,p.w,p.h,ox+p.x/dpr,oy+p.y/dpr,p.w/dpr,p.h/dpr);
   if (touch) document.querySelector('[data-key="up"]').classList.toggle("down",engine.keys.up);
 }
