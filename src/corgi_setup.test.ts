@@ -76,12 +76,13 @@ test("setup keeps its options while aiming diagonally across list rows and gaps"
   hover(36, 7, 1500);
   expect(await menu.poll(no_setup_rpc, 100, 30, 2000)).toBe(false);
   expect(menu.item).toBe("clever_corgi");
-  hover(25, 7, 2100);
-  expect(menu.item).toBe("theme");
-  hover(30, 5, 2200);
-  expect(menu.item).toBe("theme");
-  hover(36, 3, 2300);
-  expect(menu.item).toBe("theme");
+  // Up and to the right, toward Keymap's options, crosses Shell.
+  hover(25, 9, 2100);
+  expect(menu.item).toBe("keyboard");
+  hover(30, 8, 2200);
+  expect(menu.item).toBe("keyboard");
+  hover(36, 7, 2300);
+  expect(menu.item).toBe("keyboard");
 });
 
 test("setup selects the crossed row when the pointer pauses", async () => {
@@ -113,16 +114,104 @@ test("vertical setup browsing selects every row immediately in both directions",
   expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
 });
 
-test("turning straight down cancels a diagonal setup guard immediately", async () => {
+test("setup keeps its options across the single-cell steps a terminal reports", () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  let now = 0;
+  menu.hover(100, 30, 15, 3, s, prefs, now);
+  // Two columns right, then a row straight down, until the options.
+  for (let x = 16, y = 3; x <= 36; x++) {
+    menu.hover(100, 30, x, y, s, prefs, (now += 16));
+    if (x % 2 === 1 && x < 35) menu.hover(100, 30, x, ++y, s, prefs, (now += 16));
+    expect(menu.item).toBe("clever_corgi");
+  }
+});
+
+test("setup tells a column of drift down the list from a turn toward the options", () => {
+  const s = status(),
+    prefs = new Preferences();
+  for (const [steps, item] of [
+    // Drifting a column right on the way down the list keeps browsing.
+    [
+      [
+        [16, 4, 45],
+        [16, 5, 60],
+      ],
+      "readings",
+    ],
+    // Pausing on the row first, or moving two columns right, turns toward the options.
+    [
+      [
+        [16, 4, 500],
+        [16, 5, 516],
+      ],
+      "flourishes",
+    ],
+    [
+      [
+        [16, 4, 40],
+        [17, 4, 50],
+        [17, 5, 60],
+      ],
+      "flourishes",
+    ],
+  ] as const) {
+    const menu = Menu.open();
+    menu.hover(100, 30, 15, 3, s, prefs, 0);
+    menu.hover(100, 30, 15, 4, s, prefs, 30);
+    for (const [x, y, now] of steps) menu.hover(100, 30, x, y, s, prefs, now);
+    expect(menu.item).toBe(item);
+  }
+});
+
+test("turning straight down drops the setup guard on the second row", async () => {
   const menu = Menu.open(),
     s = status(),
     prefs = new Preferences();
   menu.hover(100, 30, 15, 3, s, prefs, 0);
-  menu.hover(100, 30, 22, 4, s, prefs, 100);
+  menu.hover(100, 30, 16, 3, s, prefs, 100);
+  // One step straight down may be the path bending toward the options.
+  menu.hover(100, 30, 16, 4, s, prefs, 150);
   expect(menu.item).toBe("clever_corgi");
-  menu.hover(100, 30, 22, 5, s, prefs, 150);
+  menu.hover(100, 30, 16, 5, s, prefs, 200);
   expect(menu.item).toBe("readings");
   expect(await menu.poll(no_setup_rpc, 100, 30, 500)).toBe(false);
+});
+
+/** A pointer's single-cell reports along a straight line between two cells. */
+function walk(x0: number, y0: number, x1: number, y1: number): [number, number][] {
+  const out: [number, number][] = [],
+    n = 64 * Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  for (let i = 1; i <= n; i++) {
+    const x = Math.floor(x0 + 0.5 + ((x1 - x0) * i) / n),
+      y = Math.floor(y0 + 0.5 + ((y1 - y0) * i) / n),
+      [lx, ly] = out.at(-1) ?? [x0, y0];
+    if (x !== lx || y !== ly) out.push([x, y]);
+  }
+  return out;
+}
+
+test("setup aims only at the options a click acts on", () => {
+  const s = status(),
+    prefs = new Preferences();
+  // Visual flourishes' Intensity sits on rows 7 and 8, its preview below.
+  for (const [y, kept] of [
+    [8, true],
+    [15, false],
+  ] as const) {
+    const menu = Menu.open();
+    menu.hover(100, 30, 15, 4, s, prefs, 0);
+    menu.hover(100, 30, 16, 4, s, prefs, 200);
+    let now = 200;
+    for (const [x, row] of walk(16, 4, 35, y)) menu.hover(100, 30, x, row, s, prefs, (now += 16));
+    expect(menu.item === "flourishes").toBe(kept);
+  }
+  // Terminal capabilities has nothing to click, so nothing guards it.
+  const menu = Menu.open();
+  menu.hover(100, 30, 15, 12, s, prefs, 0);
+  menu.hover(100, 30, 22, 10, s, prefs, 100);
+  expect(menu.item).toBe("source_control");
 });
 
 test("setup stops guarding when moving away, leaving the frame, or resizing", async () => {

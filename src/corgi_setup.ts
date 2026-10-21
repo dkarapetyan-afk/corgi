@@ -263,6 +263,19 @@ type Line =
   | { tag: "option"; option: Option; index: number }
   /** The import picker, down to the bottom of the pane. */
   | { tag: "picker" };
+/** Lines a click acts on; a field's box stands for its field. */
+function clickable(line: Line): boolean {
+  switch (line.tag) {
+    case "option":
+    case "art":
+    case "intensity":
+    case "box":
+    case "picker":
+      return true;
+    default:
+      return false;
+  }
+}
 
 let panel: string, border: string, text: string, bright: string, warm: string, graph: string, hint_key: string;
 let row_resting: settingRow.Row;
@@ -301,6 +314,9 @@ function duration(ms: number, sd?: number): string {
 }
 
 const list_w = 26;
+/** A pointer that reached the row this recently and drifts a column right is
+ * still sliding down the list, not turning toward the options. */
+const aim_settle_ms = 100;
 /** The source of a commit the top border names. */
 const commit_url = "https://github.com/tals/corgi/commit/";
 const spaceship_rows = 8;
@@ -452,11 +468,16 @@ export class Menu {
   private dropdown: { option: number; at: number } | null = null;
   /** Pointer adjustments preview until release, then save once. */
   private intensity_drag: number | null = null;
-  /** The selected row's exit point while the pointer aims for its options. */
+  /** The selected row's exit point while the pointer aims for its options,
+   * where and when it reached the row, and whether its last step moved right:
+   * one step straight down after that may still be on the way. */
   private aim: {
     x: number;
     y: number;
+    entry_x: number;
+    since: number;
     last_x: number;
+    rightward: boolean;
     at: number | null;
     item: Item;
     cols: number;
@@ -808,7 +829,12 @@ export class Menu {
     this.pending_item = null;
     if (l && !l.single && l.list > 0 && this.focus === "list" && this.dropdown === null) {
       if (hit && "item" in hit && hit.item === this.item) {
-        this.aim = { x, y, last_x: x, at: null, item: this.item, cols, rows };
+        const on = from !== null && from.at === null && from.item === this.item && from.y === y;
+        // With no motion tracked before it, the pointer was resting.
+        const entry_x = on ? from.entry_x : x,
+          since = on ? from.since : from === null ? -Infinity : now,
+          rightward = from !== null && x > from.last_x && (x >= entry_x + 2 || now - since >= aim_settle_ms);
+        this.aim = { x, y, entry_x, since, last_x: x, rightward, at: null, item: this.item, cols, rows };
         return;
       }
       if (
@@ -817,16 +843,18 @@ export class Menu {
         from.cols === cols &&
         from.rows === rows &&
         (from.at === null || now - from.at < menuAim.aim_ms) &&
-        x > from.last_x &&
-        menuAim.aimed(new Rect(l.options.x, l.b.y + 2, l.options.w, l.body), from, x, y)
+        (x > from.last_x || (x === from.last_x && from.rightward)) &&
+        this.aimed(l, s, prefs, from, x, y)
       ) {
+        from.rightward = x > from.last_x;
         from.last_x = x;
         from.at = now;
         this.pending_item = hit && "item" in hit ? hit.item : null;
         return;
       }
       this.clearAim();
-      if (hit && "item" in hit) this.aim = { x, y, last_x: x, at: null, item: hit.item, cols, rows };
+      if (hit && "item" in hit)
+        this.aim = { x, y, entry_x: x, since: now, last_x: x, rightward: false, at: null, item: hit.item, cols, rows };
     } else this.clearAim();
     if (hit === null) return;
     if ("choice" in hit) {
@@ -836,6 +864,22 @@ export class Menu {
       if (this.focus === "list") this.item = hit.item;
     } else if ("option" in hit && this.focus === "options" && !this.options(s, prefs)[hit.option]?.disabled)
       this.cursor = hit.option;
+  }
+  /** Whether (x, y) is on the way from the row's exit point to the options a
+   * click acts on, past previews and notes; never when there are none. */
+  private aimed(
+    l: Layout,
+    s: Status,
+    prefs: Preferences,
+    from: { x: number; y: number },
+    x: number,
+    y: number,
+  ): boolean {
+    const lines = this.lines(s, prefs, l),
+      first = lines.findIndex(clickable),
+      last = lines.some(line => line.tag === "picker") ? l.body - 1 : lines.findLastIndex(clickable);
+    if (first < 0) return false;
+    return menuAim.grazed(new Rect(l.options.x, l.b.y + 2 + first, l.options.w, last - first + 1), from, x, y);
   }
   /** The frame as it rests after the current change. */
   private rest(cols: number, rows: number): Layout | null {

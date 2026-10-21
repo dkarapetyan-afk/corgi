@@ -16,3 +16,19 @@ export function aimed(rect: Rect, from: { x: number; y: number }, x: number, y: 
   const slope = (y - ay) * (edge - ax);
   return slope >= top && slope <= bottom;
 }
+
+/** The same triangle toward a target a few rows tall, from the exit cell's
+ * center. Near the apex it is thinner than a cell, so a cell counts when any
+ * part of it lies inside. */
+export function grazed(rect: Rect, from: { x: number; y: number }, x: number, y: number): boolean {
+  const ax = from.x + 0.5 - 2;
+  const ay = from.y + 0.5;
+  const edge = rect.x;
+  const left = Math.max(x, ax);
+  const right = Math.min(x + 1, edge);
+  if (left >= right) return false;
+  const at = (col: number, row: number) => ay + ((row - ay) * (col - ax)) / (edge - ax);
+  const top = Math.min(at(left, rect.y), at(right, rect.y));
+  const bottom = Math.max(at(left, rect.y + rect.h), at(right, rect.y + rect.h));
+  return y < bottom && y + 1 > top;
+}
