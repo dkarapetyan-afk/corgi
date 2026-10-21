@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>moonlander</title>
+<meta name="description" content="Help the corgi land on the moon.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* A page of its own: nothing here is shared with the landing page. The
+   colors are corgi's palette; the screen is a grid of terminal cells, with
+   braille dots for the ground, stars and exhaust. The ship and wreck stay on the cell grid; the
+   corgi's cockpit face uses a shared indexed PNG atlas, placed as kitty images. */
+:root {
+  --bg: #181b20;
+  --surface: #23282f;
+  --selected: #333941;
+  --line: #505a65;
+  --faint: #83909e;
+  --muted: #a5aeb8;
+  --text: #d1d6db;
+  --strong: #eef1f4;
+  --accent: #7bf1a8;
+  --warm: #e5c38b;
+  --hot: #eda398;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+.touch { position: fixed; inset: auto 0 0 0; display: none; justify-content: space-between; padding: 0 16px max(16px, env(safe-area-inset-bottom)); pointer-events: none; }
+.touch.on { display: flex; }
+.touch div { display: flex; gap: 12px; }
+.touch button { pointer-events: auto; width: 68px; height: 68px; border: 1px solid var(--line); border-radius: 12px; background: rgb(35 40 47 / .8); color: var(--text); font: 700 22px var(--mono); touch-action: none; -webkit-tap-highlight-color: transparent; }
+.touch button.down { background: var(--selected); color: var(--strong); }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Moonlander. Land the corgi's ship gently on a pad: up arrow toggles the engine, left and right tilt."></canvas>
+<div class="touch" id="touch" aria-hidden="true">
+  <div><button data-key="left" type="button">◀</button><button data-key="right" type="button">▶</button></div>
+  <div><button data-key="up" type="button">▲</button></div>
+</div>
+<script type="module" src="./moonlander.js"></script>
+</body>
+</html>

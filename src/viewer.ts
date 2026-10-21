@@ -82,6 +82,7 @@ function incompatible(error: Error): Error {
     : error;
 }
 export function close(view: Controller): void {
+  view.closeMoonlander();
   view.launch_previews.disconnect();
   if (view.onboarding) view.onboarding.close();
   view.dismissName();
@@ -292,6 +293,7 @@ export async function run(
     });
     try {
       while (view.input_state.attached) {
+        for (const reply of probe.graphics.splice(0)) view.graphicsReply(reply);
         openers.reap();
         for (const byte of probe.expire(Date.now())) input.push(byte);
         await answerClipboard(view, probe.clipboard);
@@ -426,6 +428,10 @@ export async function run(
       host?.destroy();
       if (probe.badge.uploaded) writeAll(corgiBadge.remove);
       if (view.name_dialog?.hero.motion) writeAll(forkMotion.remove);
+      if (view.moonlander) {
+        writeAll(view.moonlander.close());
+        view.moonlander = null;
+      }
     }
   } finally {
     close(view);

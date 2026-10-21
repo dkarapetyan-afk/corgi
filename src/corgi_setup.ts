@@ -15,6 +15,7 @@ import { Provider, byProvider } from "./providers";
 import type { ByProvider } from "./providers";
 import { Model } from "./providers/model";
 import * as corgiAnimation from "./corgi_animation";
+import * as moonlanderScene from "./moonlander_scene";
 import * as sidebar from "./sidebar";
 import * as km from "./keymap";
 import * as bindings from "./bindings";
@@ -89,6 +90,7 @@ export type Item =
   | "keyboard"
   | "source_control"
   | "terminal"
+  | "about"
   | ImportItem
   | "detach";
 type ImportItem = "import_tmux" | "import_herdr" | "import_cmux";
@@ -117,6 +119,7 @@ const list: ListRow[] = [
     catalog.available_sources.includes(import_sources[item]),
   ),
   null,
+  "about",
   "detach",
 ];
 export const items = list.filter((row): row is Item => typeof row === "string");
@@ -129,6 +132,7 @@ const labels: Record<Item, string> = {
   keyboard: "Keymap",
   source_control: "Source control",
   terminal: "Terminal capabilities",
+  about: "About",
   import_tmux: "tmux",
   import_herdr: "Herdr",
   import_cmux: "cmux",
@@ -162,6 +166,7 @@ export type Apply =
   | { kind: "imported"; workspace: number | null }
   /** Leave Corgi running and close this viewer. */
   | { kind: "detach" }
+  | { kind: "moonlander" }
   /** A link the user clicked. */
   | { kind: "open"; url: string };
 /** A list row, an option, a choice in the open dropdown, the import picker
@@ -198,6 +203,7 @@ interface Option {
   /** A text field, in a box, that takes typing while it has the cursor. */
   edit?: boolean;
   slider?: number;
+  art?: number;
 }
 /** What the viewer found out about its terminal, for Terminal capabilities. */
 export interface Terminal {
@@ -242,6 +248,7 @@ type Line =
   | { tag: "rule" }
   | { tag: "intensity" | "intensity_ends" }
   | { tag: "corgi_preview"; row: number }
+  | { tag: "art"; option: Option; index: number; row: number }
   /** A row of a setting's mini keymap: what a key does, and the key. */
   | { tag: "binding"; job: string; key: string; dim: boolean }
   | { tag: "keys"; keys: [string, string][] }
@@ -294,6 +301,15 @@ function duration(ms: number, sd?: number): string {
 const list_w = 26;
 /** The source of a commit the top border names. */
 const commit_url = "https://github.com/tals/corgi/commit/";
+const spaceship_rows = 8;
+const acknowledgements = [
+  { label: "Ghostty", detail: "our terminal engine", url: "https://ghostty.org" },
+  { label: "Kitty", detail: "terminal graphics", url: "https://sw.kovidgoyal.net/kitty/" },
+  { label: "herdr", detail: "inspiration and sound cues", url: "https://github.com/herdrdev/herdr" },
+  { label: "herdr-reviewr", detail: "review panel design", url: "https://github.com/persiyanov/herdr-reviewr" },
+  { label: "Pi", detail: "the wonderful pi-tui", url: "https://github.com/earendil-works/pi/tree/main/packages/tui" },
+  { label: "Bun", detail: "our TypeScript runtime", url: "https://bun.sh" },
+] as const;
 const build_prefix = "Build: ";
 /** The frame's height on a tall terminal. */
 const height_max = 40;
@@ -800,7 +816,7 @@ export class Menu {
     const box = lines[row]?.tag === "box" ? (lines[row] as { edge: string }).edge : null,
       line = box === "top" ? lines[row + 1] : box === "bottom" ? lines[row - 1] : lines[row];
     if (line?.tag === "intensity") return { intensity: this.intensityAt(l, x) };
-    return line && line.tag === "option" ? { option: line.index } : null;
+    return line && (line.tag === "option" || line.tag === "art") ? { option: line.index } : null;
   }
   draw(w: Writer, s: Status, prefs: Preferences, cols: number, rows: number): void {
     return this.drawAt(w, s, prefs, cols, rows, Date.now());
@@ -959,6 +975,8 @@ export class Menu {
           return;
         case "corgi_preview":
           return this.drawCorgiPreview(w, x0, y, Math.min(28, right - x0), line.row, prefs, now_ms);
+        case "art":
+          return this.drawArt(w, line.option, line.index, line.row, x, width, y);
         case "binding": {
           // The full keymap's rows: the job, and its key at the column's end.
           const end = Math.min(x0 + 4 + binding_w, right),
@@ -1188,6 +1206,7 @@ export class Menu {
       here = this.focus === "options" && line.index === this.cursor,
       x0 = x + 2,
       right = x + width - 1;
+    if (o.art) return this.drawArt(w, o, line.index, 0, x, width, y);
     if (o.slider !== undefined) {
       const value = o.slider === 0 ? "Off" : `${o.slider}%`;
       w.write(at(x0, y) + (here ? bright : text) + o.label + at(right - value.length, y) + bright + value);
@@ -1207,7 +1226,9 @@ export class Menu {
     if (o.mark !== "none")
       w.write(at(x0 + 2, y) + (o.mark === "on" && !o.disabled ? p.accent : p.quiet) + (o.mark === "on" ? "●" : "○"));
     w.write(at(x0 + 4, y) + (o.disabled ? p.quiet : p.label));
+    if (o.apply?.kind === "open") w.write(`\x1b]8;;${o.apply.url}\x1b\\`);
     writeEllipsis(w, o.label, Math.min(label_w, sat(right, x0 + 4)));
+    if (o.apply?.kind === "open") w.write("\x1b]8;;\x1b\\");
     let dx = x0 + 4 + label_w + 3;
     if (o.swatch && right - dx >= 7) {
       w.write(
@@ -1219,6 +1240,26 @@ export class Menu {
     w.write(at(dx, y) + (o.disabled ? p.quiet : o.warn ? p.warn : p.muted));
     writeEllipsis(w, o.detail, sat(right - (o.arrow ? 3 : 0), dx));
     if (o.arrow) w.write(at(right - 2, y) + p.muted + "→");
+  }
+  private about_scene: moonlanderScene.Screen | null = null;
+  private drawArt(w: Writer, option: Option, index: number, row: number, x: number, width: number, y: number) {
+    const cols = Math.max(1, width - 4),
+      rows = option.art ?? 0,
+      here = this.focus === "options" && index === this.cursor;
+    if (this.about_scene?.cols !== cols || this.about_scene.rows !== rows)
+      this.about_scene = moonlanderScene.landing(cols, rows);
+    w.write(at(x, y) + palette.bg("surface"));
+    w.splat(" ", width);
+    w.write(at(x + 2, y));
+    let previous = "";
+    for (const cell of this.about_scene.cells.slice(row * cols, (row + 1) * cols)) {
+      const focused = here && (cell.fg === "text" || cell.fg === "strong"),
+        style = palette.fg(focused ? "strong" : cell.fg) + (focused ? "\x1b[1m" : "\x1b[22m");
+      if (style !== previous) w.write(style);
+      w.write(cell.glyph);
+      previous = style;
+    }
+    w.write("\x1b[22m");
   }
   /** The open dropdown's box, under its setting's row with ✓ under the ›;
    * null while it is closed. */
@@ -1236,6 +1277,18 @@ export class Menu {
   private lines(s: Status, prefs: Preferences, l: Layout): Line[] {
     const fit = { keys: !l.room, brief: l.options.w < 42, chart: true };
     let out = this.wrapped(s, prefs, l, fit);
+    if (this.item === "about") {
+      const start = out.findIndex(line => line.tag === "option" && line.option.art),
+        art = out.slice(start).slice(-Math.max(1, l.body - 1)),
+        room = l.body - art.length,
+        cursor = out.findIndex(line => line.tag === "option" && line.index === this.cursor),
+        top = clamp(cursor < start ? cursor - room + 1 : 0, 0, Math.max(0, start - room)),
+        credits = out.slice(top, Math.min(start, top + room));
+      return credits.concat(
+        Array.from({ length: room - credits.length }, (): Line => ({ tag: "blank" })),
+        art,
+      );
+    }
     if (this.item === "flourishes" && out.length > l.body)
       return out.filter(line => line.tag !== "blank" && line.tag !== "lead").slice(0, l.body);
     // A short frame draws the answer-time chart as one row.
@@ -1243,13 +1296,15 @@ export class Menu {
       out = this.wrapped(s, prefs, l, { ...fit, chart: false });
     if (out.length <= l.body) return out;
     const first = out.findIndex(line => line.tag === "option"),
-      last = out.findLastIndex(line => line.tag === "option"),
+      last = out.findLastIndex(line => line.tag === "option" || line.tag === "art"),
       kept = first < 0 ? out : out.slice(0, last + 1);
     if (kept.length <= l.body || first < 0) return kept.slice(0, l.body);
     const head = kept.slice(0, Math.min(first, l.body - 1)),
       options = kept.slice(first),
       span = l.body - head.length,
-      cursor = options.findIndex(line => line.tag === "option" && line.index === this.cursor),
+      cursor = options.findLastIndex(
+        line => (line.tag === "option" || line.tag === "art") && line.index === this.cursor,
+      ),
       start = Math.min(Math.max(0, cursor - span + 1), options.length - span);
     return head.concat(options.slice(start, start + span));
   }
@@ -1296,8 +1351,12 @@ export class Menu {
         for (const part of wrap(line.text, room)) out.push({ tag: line.tag, text: part });
       else if (line.tag === "problem")
         for (const part of wrap(line.text, sat(room, 2))) out.push({ tag: "problem", text: part });
-      else if (line.tag === "option") out.push({ ...line, index: index++ });
-      else out.push(line);
+      else if (line.tag === "option") {
+        const at = index++;
+        out.push({ ...line, index: at });
+        if (line.option.art)
+          for (let row = 1; row < line.option.art; row++) out.push({ tag: "art", option: line.option, index: at, row });
+      } else out.push(line);
     return out;
   }
   private options(s: Status, prefs: Preferences): Option[] {
@@ -1315,6 +1374,37 @@ export class Menu {
       title = (text: string): Line => ({ tag: "title", text }),
       blank: Line = { tag: "blank" };
     switch (this.item) {
+      case "about":
+        return [
+          title("About Corgi"),
+          option({
+            label: "GitHub",
+            detail: "tals/corgi",
+            mark: "none",
+            apply: { kind: "open", url: "https://github.com/tals/corgi" },
+            action: "open",
+          }),
+          blank,
+          title("Acknowledgements"),
+          ...acknowledgements.map(link =>
+            option({
+              label: link.label,
+              detail: link.detail,
+              mark: "none",
+              apply: { kind: "open", url: link.url },
+              action: "open",
+            }),
+          ),
+          blank,
+          option({
+            label: "Moonlander",
+            detail: "",
+            mark: "none",
+            apply: { kind: "moonlander" },
+            action: "play",
+            art: spaceship_rows,
+          }),
+        ];
       case "flourishes":
         return [
           title("Visual flourishes"),
@@ -1617,6 +1707,7 @@ export class Menu {
           ? { text: "", tone: "faint" }
           : { text: "custom", tone: "muted" };
       case "terminal":
+      case "about":
         return { text: "", tone: "faint" };
       case "detach":
         return { text: detachKey(prefs), tone: "faint" };

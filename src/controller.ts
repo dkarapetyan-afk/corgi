@@ -84,6 +84,7 @@ import { Provider } from "./providers";
 import { rank } from "./agent_order";
 import { sat, byteLength, type Writer } from "./text";
 import * as errors from "./errors";
+import * as moonlanderTerminal from "./moonlander_terminal";
 
 /** A conversation a pane stopped running, and when, in seconds. */
 interface Stopped {
@@ -235,6 +236,7 @@ export class Controller {
   onboarding: onboarding.State | null = null;
   help = Object.assign(new shortcutHelp.State(), { command_mode: true });
   help_visible = false;
+  moonlander: moonlanderTerminal.State | null = null;
   clipboard: string | null = null;
   menu_page = 0;
   menu_highlight: string | null = null;
@@ -1043,6 +1045,7 @@ export class Controller {
   private hasMenu(): boolean {
     return (
       this.worktree_card.pinned ||
+      this.moonlander !== null ||
       this.onboarding !== null ||
       this.prefix ||
       this.resize_mode ||
@@ -1341,13 +1344,35 @@ export class Controller {
   }
   /** Whether a full-screen view hides every pane, so nothing on them was seen. */
   coversPanes(): boolean {
-    return this.onboarding !== null || (this.prefix && this.help_visible);
+    return this.moonlander !== null || this.onboarding !== null || (this.prefix && this.help_visible);
   }
   private openHelp(): void {
     this.beginPrefix();
     this.help_visible = true;
   }
+  private openMoonlander(): void {
+    const setup = this.corgi_setup;
+    this.corgi_setup = null;
+    this.closeMenu();
+    this.corgi_setup = setup;
+    this.moonlander = new moonlanderTerminal.State(this.width, this.height, () => {
+      this.dirty = true;
+      this.wake?.();
+    });
+    this.dirty = true;
+  }
+  closeMoonlander(): void {
+    if (!this.moonlander) return;
+    this.queueEffect({ write_terminal: this.moonlander.close() });
+    this.moonlander = null;
+    this.ui_mouse_down = false;
+    this.dirty = true;
+  }
+  graphicsReply(sequence: string): void {
+    this.moonlander?.reply(sequence, this.width, this.height);
+  }
   closeMenu(): void {
+    this.closeMoonlander();
     this.leaveSidebar();
     this.worktree_card.clear();
     this.help_visible = false;
@@ -1814,6 +1839,9 @@ export class Controller {
         break;
       case "setup":
         this.openSetup();
+        break;
+      case "moonlander":
+        this.openMoonlander();
         break;
       case "help":
         this.openHelp();
@@ -2682,6 +2710,8 @@ export class Controller {
     this.dirty = true;
     if (apply === null) return;
     switch (apply.kind) {
+      case "moonlander":
+        return this.perform({ name: "moonlander" });
       case "shell":
         return this.chooseShell(apply.entry);
       case "import": {
@@ -2943,6 +2973,11 @@ export class Controller {
   private async key(byte: number): Promise<void> {
     const cl = this.input_state;
     this.repeat_until = 0;
+    if (this.moonlander) {
+      if (this.moonlander.key(byte)) this.closeMoonlander();
+      this.dirty = true;
+      return;
+    }
     if (this.worktreeDetail() !== null) {
       // Esc stops a removal under way; otherwise it closes the overview.
       if (byte === 27)
@@ -3753,10 +3788,14 @@ export class Controller {
         cl.watched = true;
       } else if (parsed_key === "focus_out") {
         cl.watched = false;
+        this.moonlander?.release();
         this.pointer = null;
         this.dirty = true;
       } else if (text.startsWith("\x1b[<")) await this.mouse(text);
-      else if (this.repeats(again)) await this.perform(again);
+      else if (this.moonlander) {
+        if (this.moonlander.sequence(text)) this.closeMoonlander();
+        this.dirty = true;
+      } else if (this.repeats(again)) await this.perform(again);
       else if (this.worktree_card.pinned) {
         if (parsed_key === "up") await this.perform({ name: "worktree-prev" });
         else if (parsed_key === "down") await this.perform({ name: "worktree-next" });
@@ -3931,6 +3970,11 @@ export class Controller {
     const x = sat(xs, 1);
     const y = sat(ys, 1);
     const release = seq[seq.length - 1] === "m";
+    if (this.moonlander) {
+      if (!release && button === 0 && this.moonlander.click(x, y)) this.closeMoonlander();
+      this.dirty = true;
+      return;
+    }
     if (this.onboarding) {
       const wizard = this.onboarding;
       if (!release && button === 0) {
@@ -5281,6 +5325,11 @@ export class Controller {
   }
   frame(): string {
     palette.use(this.corgi_setup?.previewTheme(this.prefs) ?? this.prefs.theme, this.terminal_colors);
+    if (this.moonlander) {
+      const frame = this.moonlander.frame(this.width, this.height, this.cell_pixels, this.supports_kitty_graphics);
+      for (const write of this.moonlander.takeWrites()) this.queueEffect({ write_terminal: write });
+      return corgiBadge.hide + frame;
+    }
     if (this.onboarding) return this.onboarding.frame(this.width, this.height);
     if (this.prefix && this.help_visible) {
       const hand =

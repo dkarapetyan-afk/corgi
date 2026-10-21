@@ -4,7 +4,8 @@
  *   bun site/serve.ts --dev   bundle on request and reload on save
  *   bun site/serve.ts         serve the build in site/dist
  *
- * PORT picks the port (4400).
+ * PORT picks the port (4400). /moonlander serves the moonlander easter egg,
+ * a page of its own.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -12,10 +13,11 @@ import { join } from "node:path";
 const port = Number(process.env.PORT ?? 4400);
 const dev = process.argv.includes("--dev");
 const built = join(import.meta.dir, "dist", "index.html");
+const { default: moonlander } = await import("./moonlander.html");
 
 if (dev) {
   const { default: page } = await import("./index.html");
-  Bun.serve({ port, routes: { "/": page }, development: { hmr: true, console: true } });
+  Bun.serve({ port, routes: { "/": page, "/moonlander": moonlander }, development: { hmr: true, console: true } });
 } else {
   if (!existsSync(built)) {
     console.error("No build in site/dist; run bun run landingpage:build");
@@ -24,7 +26,7 @@ if (dev) {
   Bun.serve({
     port,
     // Read on each request, so a rebuild shows without a restart.
-    routes: { "/": () => new Response(Bun.file(built)) },
+    routes: { "/": () => new Response(Bun.file(built)), "/moonlander": moonlander },
     fetch: () => new Response("Not found", { status: 404 }),
   });
 }

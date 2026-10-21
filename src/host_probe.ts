@@ -14,6 +14,8 @@ const paste_start = "\x1b[200~",
 export class Probe {
   theme = new Theme();
   badge = new corgi_badge.State();
+  /** Replies for viewer-owned images other than the badge. */
+  graphics: string[] = [];
   clipboard = new host_clipboard.State();
   pacer = new frame_pacing.Pacer();
   changed = false;
@@ -67,7 +69,7 @@ export class Probe {
       if (corgi_badge.reply_prefix.startsWith(sequence)) return;
       if (sequence.startsWith(corgi_badge.reply_prefix)) {
         if (sequence.endsWith("\x1b\\")) {
-          this.badge.accept(sequence);
+          if (!this.badge.accept(sequence) && this.graphics.length < 128) this.graphics.push(sequence);
           this.pending = "";
           return;
         }

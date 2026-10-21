@@ -978,3 +978,62 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
     setSystemTime();
   }
 });
+
+test("About enters Moonlander without sending game input to panes and returns to the same spaceship", async () => {
+  const s = controller();
+  s.input_state.attached = true;
+  s.receiveSnapshot(folders("/a"));
+  s.width = 100;
+  s.height = 30;
+  const setup = SetupMenu.open();
+  setup.item = "about";
+  setup.openOptions(s.runtime.inference, s.prefs);
+  setup.move(false, s.runtime.inference, s.prefs);
+  s.corgi_setup = setup;
+  await s.input(bytes("\r"));
+  expect(s.moonlander).not.toBeNull();
+  expect(s.coversPanes()).toBe(true);
+  expect(s.overlayOpen()).toBe(true);
+  expect(s.frame()).toContain("moonlander");
+  await viewer.presented(s);
+  await s.input(bytes(" \x1b[D "));
+  expect(s.moonlander.engine.game.state).toBe("flying");
+  expect(s.moonlander.engine.keys.up).toBe(true);
+  expect(s.moonlander.engine.lander.a).toBe(-0.12);
+  await s.input(bytes("\x1b[O"));
+  expect(s.moonlander.engine.game.paused).toBe(true);
+  expect(s.moonlander.engine.keys.up).toBe(false);
+  await s.input(bytes("q"));
+  expect(s.moonlander).toBeNull();
+  expect(s.corgi_setup).toBe(setup);
+  expect(setup.item).toBe("about");
+  expect(setup.enter(s.runtime.inference, s.prefs)).toEqual({ kind: "moonlander" });
+});
+
+test("the About spaceship responds to a click and the game back button restores About", async () => {
+  const s = controller();
+  s.input_state.attached = true;
+  s.receiveSnapshot(folders("/a"));
+  s.width = 100;
+  s.height = 30;
+  const setup = SetupMenu.open();
+  setup.item = "about";
+  setup.openOptions(s.runtime.inference, s.prefs);
+  setup.move(false, s.runtime.inference, s.prefs);
+  s.corgi_setup = setup;
+  let target: { x: number; y: number } | null = null;
+  for (let y = 0; y < 30 && !target; y++)
+    for (let x = 0; x < 100; x++) {
+      const hit = setup.hit(100, 30, x, y, s.runtime.inference, s.prefs);
+      if (hit && "option" in hit && hit.option === setup.cursor) {
+        target = { x, y };
+        break;
+      }
+    }
+  expect(target).not.toBeNull();
+  await s.input(bytes(`\x1b[<0;${target!.x + 1};${target!.y + 1}M\x1b[<0;${target!.x + 1};${target!.y + 1}m`));
+  expect(s.moonlander).not.toBeNull();
+  await s.input(bytes("\x1b[<0;4;1M\x1b[<0;4;1m"));
+  expect(s.moonlander).toBeNull();
+  expect(s.corgi_setup).toBe(setup);
+});

@@ -611,3 +611,45 @@ test("Source control's box takes the worktree folder, shows where it leads, and 
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("│ $PROJECT_ROOT/.worktrees/$NAME");
   expect(menu.enter(s, prefs)).toEqual({ kind: "worktree_folder", template: "$PROJECT_ROOT/.worktrees/$NAME" });
 });
+
+test("About links its acknowledgements and makes the whole spaceship a keyboard and pointer target", () => {
+  const s = status(),
+    prefs = new Preferences();
+  for (const [cols, rows] of [
+    [100, 30],
+    [56, 24],
+    [80, 20],
+  ]) {
+    const menu = Menu.open();
+    menu.item = "about";
+    menu.enter(s, prefs);
+    expect(menu.enter(s, prefs)).toEqual({ kind: "open", url: "https://github.com/tals/corgi" });
+    const initial = draw(menu, cols, rows, 0, s, prefs).join("\n");
+    if (rows >= 24) expect(initial).toContain("Acknowledgements");
+    expect(initial).toContain("ᐯ•ᴥ•ᐯ");
+    expect(initial).not.toContain("With thanks");
+    expect(initial).not.toContain("Play Moonlander");
+    menu.move(false, s, prefs);
+    const scene = draw(menu, cols, rows, 0, s, prefs),
+      bottom = scene.findLastIndex(row => row.includes("esc back"));
+    expect(scene[bottom - 3]).toMatch(/━{16,}/);
+    expect(scene.join("\n")).not.toContain("×2");
+    expect(menu.enter(s, prefs)).toEqual({ kind: "moonlander" });
+    const ship = hits(menu, cols, rows, s, prefs).filter(hit => "option" in hit && hit.option === menu.cursor);
+    expect(ship.length).toBe(8);
+    for (const hit of ship) expect(menu.click(hit, s, prefs)).toEqual({ kind: "moonlander" });
+  }
+  const menu = Menu.open();
+  menu.item = "about";
+  const w = new Writer();
+  menu.draw(w, s, prefs, 100, 30);
+  for (const url of [
+    "https://ghostty.org",
+    "https://sw.kovidgoyal.net/kitty/",
+    "https://github.com/herdrdev/herdr",
+    "https://github.com/persiyanov/herdr-reviewr",
+    "https://github.com/earendil-works/pi/tree/main/packages/tui",
+    "https://bun.sh",
+  ])
+    expect(w.s).toContain(`\x1b]8;;${url}\x1b\\`);
+});

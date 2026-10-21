@@ -70,3 +70,13 @@ test("clipboard packets and their questions' answers never reach the keys", () =
   const pasted = "\x1b[200~\x1b]5522;type=read:status=OK\x07\x1b[?5522;1$y\x1b[201~";
   expect(p.feed(pasted).toString()).toBe(pasted);
 });
+
+test("Moonlander image replies reach the viewer across fragments and stay out of keys and pastes", () => {
+  const p = new Probe(),
+    reply = "\x1b_Gi=730202;OK\x1b\\";
+  expect(fragmented(p, "x" + reply + "y")).toBe("xy");
+  expect(p.graphics).toEqual([reply]);
+  const paste = "\x1b[200~" + reply + "\x1b[201~";
+  expect(fragmented(p, paste)).toBe(paste);
+  expect(p.graphics).toEqual([reply]);
+});
