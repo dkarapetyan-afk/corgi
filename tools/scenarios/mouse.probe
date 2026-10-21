@@ -1,4 +1,4 @@
-# Mouse: tab clicks and drags, workspace drags, sidebar edge and pane dividers.
+# Mouse: tab clicks and drags, workspace drags, sidebar resizing and menus.
 key ctrl+b c
 key t
 settle
@@ -14,7 +14,8 @@ settle
 snap dragged-tab
 key ctrl+b 'N'
 type beta
-key enter
+waittext "hold to create"
+holdclicktext "hold to create" 3200
 settle
 dragtext beta project
 settle
@@ -36,7 +37,7 @@ settle
 scroll 10 20 down
 settle
 snap sidebar-scroll
-clicktext +
+clicktext + 2
 settle
 snap plus-tab
 key esc

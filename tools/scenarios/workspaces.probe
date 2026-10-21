@@ -1,12 +1,14 @@
-# Several workspaces: create, rename, switch, choose, close.
+# Several workspaces: create, switch, open the editor and chooser, hover.
 key ctrl+b 'N'
 type alpha
-key enter
+waittext "hold to create"
+holdclicktext "hold to create" 3200
 settle
 snap alpha
 key ctrl+b 'N'
 type beta
-key enter
+waittext "hold to create"
+holdclicktext "hold to create" 3200
 settle
 snap beta
 key ctrl+b {

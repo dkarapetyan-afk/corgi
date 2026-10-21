@@ -1,11 +1,15 @@
 /**
  * UI probe: drives a real `corgi` viewer in a PTY with isolated state and
- * renders what it wrote through Ghostty, so the Zig and Bun viewers can be
- * compared screen by screen.
+ * renders what it wrote through Ghostty. Compare any two builds screen by screen.
  *
- *   bun tools/probe.ts run bun  script.probe     # snapshots from one binary
- *   bun tools/probe.ts compare  script.probe     # both, diffed per snapshot
- *   bun tools/probe.ts compare -e 'key ctrl+b c; snap'
+ *   bun tools/probe.ts run current script.probe
+ *   bun tools/probe.ts run ./dist/corgi -e 'key ctrl+b c; snap'
+ *   bun tools/probe.ts compare --left /path/to/baseline --right current script.probe
+ *   bun tools/probe.ts suite --left /path/to/baseline --right current [names...]
+ *
+ * `current` is PROBE_BINARY or dist/corgi. Executable paths are resolved from
+ * the calling directory. Each viewer starts its own daemon unless --daemon
+ * (run), --left-daemon or --right-daemon (compare/suite) selects another build.
  *
  * Script commands (one per line, or `;`-separated with -e):
  *   size 100x30              terminal size (before the first command that starts)
@@ -20,6 +24,7 @@
  *   dragtext <from> <to>     drag between the first matches of two texts
  *   paste <text>             bracketed paste; \n becomes a line break
  *   clicktext <text> [n]     click the n-th (1-based) screen match of text
+ *   holdclicktext <text> <ms> hold the left mouse button on the first screen match
  *   hovertext <text> [n]
  *   rclicktext <text> [n]
  *   resize <cols>x<rows>
@@ -46,10 +51,7 @@ import * as ghostty from "./ghostty_themes";
 import { Scope } from "../scripts/process_scope";
 
 const ROOT = resolve(import.meta.dir, "..");
-export const BINARIES: Record<string, string> = {
-  zig: process.env.PROBE_ZIG ?? join(ROOT, "../corgi-zig/zig-out/bin/corgi"),
-  bun: process.env.PROBE_BUN ?? join(ROOT, "dist/corgi"),
-};
+export const BINARY = resolve(process.env.PROBE_BINARY ?? join(ROOT, "dist/corgi"));
 
 export interface Record_ {
   kind: "snap" | "style" | "bytes" | "raw";
@@ -335,6 +337,16 @@ export class Session {
       case "scroll":
         this.write(`\x1b[<${args[2] === "up" ? 64 : 65};${+args[0]};${+args[1]}M`);
         break;
+      case "holdclicktext": {
+        const ms = Number(args[1]);
+        if (!Number.isFinite(ms) || ms <= 0)
+          throw new Error("holdclicktext expects text and a positive duration in ms");
+        const [x, y] = this.find(args[0]);
+        this.mouse(0, x, y, false);
+        await Bun.sleep(ms);
+        this.write(`\x1b[<0;${x};${y}m`);
+        break;
+      }
       case "clicktext":
       case "hovertext":
       case "rclicktext": {
@@ -492,13 +504,13 @@ export function normalize(text: string): string {
 }
 /** Snapshots match after normalizing; byte rates match within 25% (or
  * 200 B/s), since animations draw a little more or less at random. */
-function matches(z: Record_, b: Record_): boolean {
-  if (z.kind === "bytes" && b.kind === "bytes") {
+function matches(a: Record_, b: Record_): boolean {
+  if (a.kind === "bytes" && b.kind === "bytes") {
     const rate = (r: Record_) => Number(/\((\d+) B\/s\)/.exec(r.text)?.[1] ?? NaN);
-    const [x, y] = [rate(z), rate(b)];
+    const [x, y] = [rate(a), rate(b)];
     return Math.abs(x - y) <= Math.max(200, 0.25 * Math.max(x, y));
   }
-  return normalize(z.text) === normalize(b.text);
+  return normalize(a.text) === normalize(b.text);
 }
 function sideBySide(a: string, b: string, width: number): string {
   const al = a.split("\n"),
@@ -529,15 +541,26 @@ async function main() {
     return v;
   };
   const inline = pick("-e");
-  // A side is <viewer>[/<daemon>], e.g. zig, bun, zig/bun (Zig viewer on a Bun daemon).
-  const side = (spec: string) => {
-    const [viewer, daemon = viewer] = spec.split("/");
-    return [BINARIES[viewer] ?? viewer, BINARIES[daemon] ?? daemon];
+  const binary = (spec: string) => (spec === "current" ? BINARY : resolve(spec));
+  const leftSpec = pick("--left");
+  const rightSpec = pick("--right");
+  const leftDaemon = pick("--left-daemon");
+  const rightDaemon = pick("--right-daemon");
+  const runDaemon = pick("--daemon");
+  const usage = () => {
+    console.error(
+      "usage: probe.ts run <current|path> [--daemon path] <script>|-e '...'\n" +
+        "       probe.ts compare --left path --right path [--left-daemon path] [--right-daemon path] <script>|-e '...'\n" +
+        "       probe.ts suite --left path --right path [--left-daemon path] [--right-daemon path] [names...]\n" +
+        "current selects PROBE_BINARY or dist/corgi; paths are relative to the calling directory",
+    );
+    process.exit(2);
   };
-  const left = pick("--left") ?? "zig";
-  const right = pick("--right") ?? "bun";
   if (mode === "run") {
-    const [exe, daemon] = side(argv.shift()!);
+    const spec = argv.shift();
+    if (!spec || (inline === undefined && !argv[0])) return usage();
+    const exe = binary(spec);
+    const daemon = runDaemon ? binary(runDaemon) : exe;
     source = inline ?? readFileSync(argv[0], "utf8");
     const result = await runScript(exe, source, daemon);
     for (const r of result.records) console.log(`── ${r.kind} ${r.name}\n${r.text}`);
@@ -547,29 +570,35 @@ async function main() {
     }
     return;
   }
+  if (mode !== "compare" && mode !== "suite") return usage();
+  if (!leftSpec || !rightSpec || (mode === "compare" && inline === undefined && !argv[0])) return usage();
+  const left = binary(leftSpec);
+  const right = binary(rightSpec);
+  const leftServer = leftDaemon ? binary(leftDaemon) : left;
+  const rightServer = rightDaemon ? binary(rightDaemon) : right;
   if (mode === "compare") {
     source = inline ?? readFileSync(argv[0], "utf8");
-    const [zig, bun] = await Promise.all([
-      runScript(side(left)[0], source, side(left)[1]),
-      runScript(side(right)[0], source, side(right)[1]),
+    const [leftResult, rightResult] = await Promise.all([
+      runScript(left, source, leftServer),
+      runScript(right, source, rightServer),
     ]);
     let differ = 0;
-    const n = Math.max(zig.records.length, bun.records.length);
+    const n = Math.max(leftResult.records.length, rightResult.records.length);
     for (let i = 0; i < n; i++) {
-      const z = zig.records[i],
-        b = bun.records[i];
-      const same = z && b && matches(z, b);
+      const a = leftResult.records[i],
+        b = rightResult.records[i];
+      const same = a && b && matches(a, b);
       if (!same) differ++;
-      const width = Math.max(...(z?.text ?? "").split("\n").map(l => Bun.stringWidth(l)), 10);
+      const width = Math.max(...(a?.text ?? "").split("\n").map(l => Bun.stringWidth(l)), 10);
       console.log(
-        `── ${z?.kind ?? b?.kind} ${z?.name ?? b?.name}: ${same ? "SAME" : "DIFFERENT"}  (left ${left}, right ${right})`,
+        `── ${a?.kind ?? b?.kind} ${a?.name ?? b?.name}: ${same ? "SAME" : "DIFFERENT"}  (left ${left}, right ${right})`,
       );
-      if (!same || process.env.PROBE_ALL) console.log(sideBySide(z?.text ?? "(none)", b?.text ?? "(none)", width));
+      if (!same || process.env.PROBE_ALL) console.log(sideBySide(a?.text ?? "(none)", b?.text ?? "(none)", width));
     }
-    if (zig.error) console.log(`${left} ERROR: ${zig.error}`);
-    if (bun.error) console.log(`${right} ERROR: ${bun.error}`);
+    if (leftResult.error) console.log(`${left} ERROR: ${leftResult.error}`);
+    if (rightResult.error) console.log(`${right} ERROR: ${rightResult.error}`);
     console.log(`${differ ? `${differ} of ${n} differ` : `all ${n} match`}`);
-    if (differ || zig.error || bun.error) process.exitCode = 1;
+    if (differ || leftResult.error || rightResult.error) process.exitCode = 1;
     return;
   }
   if (mode === "suite") {
@@ -583,18 +612,22 @@ async function main() {
     const compare = async (name: string) => {
       const source = readFileSync(join(dir, `${name}.probe`), "utf8");
       const failure = (e: unknown) => ({ records: [] as Record_[], error: String(e), log: "" });
-      const [zig, bun] = await Promise.all([
-        runScript(side(left)[0], source, side(left)[1]).catch(failure),
-        runScript(side(right)[0], source, side(right)[1]).catch(failure),
+      const [leftResult, rightResult] = await Promise.all([
+        runScript(left, source, leftServer).catch(failure),
+        runScript(right, source, rightServer).catch(failure),
       ]);
-      const n = Math.max(zig.records.length, bun.records.length);
+      const n = Math.max(leftResult.records.length, rightResult.records.length);
       const bad: string[] = [];
       for (let i = 0; i < n; i++)
-        if (!zig.records[i] || !bun.records[i] || !matches(zig.records[i], bun.records[i]))
-          bad.push(zig.records[i]?.name ?? bun.records[i]?.name ?? `#${i}`);
-      const errors = `${zig.error ? `  ${left} error: ${zig.error.split("\n")[0]}` : ""}${bun.error ? `  ${right} error: ${bun.error.split("\n")[0]}` : ""}`;
+        if (
+          !leftResult.records[i] ||
+          !rightResult.records[i] ||
+          !matches(leftResult.records[i], rightResult.records[i])
+        )
+          bad.push(leftResult.records[i]?.name ?? rightResult.records[i]?.name ?? `#${i}`);
+      const errors = `${leftResult.error ? `  ${left} error: ${leftResult.error.split("\n")[0]}` : ""}${rightResult.error ? `  ${right} error: ${rightResult.error.split("\n")[0]}` : ""}`;
       return {
-        ok: bad.length === 0 && !zig.error && !bun.error,
+        ok: bad.length === 0 && !leftResult.error && !rightResult.error,
         detail: `${bad.length ? `  differs: ${bad.join(", ")}` : ""}${errors}`,
       };
     };
@@ -628,10 +661,6 @@ async function main() {
     if (failed) process.exitCode = 1;
     return;
   }
-  console.error(
-    "usage: probe.ts run <zig|bun|path> <script>|-e '...'\n       probe.ts compare <script>|-e '...'\n       probe.ts suite [names...]",
-  );
-  process.exit(2);
 }
 
 if (import.meta.main) {

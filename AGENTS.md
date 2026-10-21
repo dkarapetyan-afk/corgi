@@ -20,7 +20,7 @@ See [HACKING.md](HACKING.md) for development workflows and architecture.
 - **Try a feature by hand:** `./go.ts --sandbox NAME` opens a seeded world
   with fake agents, apart from your own Corgi (`tools/sandboxes/`). Add one
   when a feature needs a particular world to poke at.
-- **UI probe:** `bun tools/probe.ts run bun -e 'key ctrl+b c; snap'` drives a
+- **UI probe:** `bun tools/probe.ts run current -e 'key ctrl+b c; snap'` drives a
   viewer in a PTY and records its screens. See `tools/probe.ts`.
 - **Landing page:** `bun run landingpage:dev` serves `site/` and reloads on
   save; `landingpage:build` writes one self-contained `site/dist/index.html`

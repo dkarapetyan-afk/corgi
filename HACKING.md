@@ -62,7 +62,7 @@ evals; live model checks consume provider usage.
 
 ```sh
 ./go.ts --sandbox review
-bun tools/probe.ts run bun -e 'key ctrl+b c; snap'
+bun tools/probe.ts run current -e 'key ctrl+b c; snap'
 ```
 
 The sandbox supplies a seeded repository and fake agents with separate HOME,

@@ -11,13 +11,13 @@
  * queries, reports a color scheme change) and records the styled screen.
  * Writes JSON with the frames, each theme's colors and the derived tokens,
  * and with --html the browser page (theme_browser.html filled with them).
- * --from rebuilds the page from earlier JSON. Runs the binary in PROBE_BUN
+ * --from rebuilds the page from earlier JSON. Runs the binary in PROBE_BINARY
  * (default dist/corgi).
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { BINARIES, Session, begin, parseScript } from "./probe";
+import { BINARY, Session, begin, parseScript } from "./probe";
 import * as ghostty from "./ghostty_themes";
 import * as palette from "../src/palette";
 import { ORDINARY_PROVIDER } from "../tests/provider_sim";
@@ -71,7 +71,7 @@ async function record(
   script: string,
   names: string[],
 ): Promise<Record<string, string[]>> {
-  const s = new Session(BINARIES.bun, BINARIES.bun, cols, rows);
+  const s = new Session(BINARY, BINARY, cols, rows);
   const frames: Record<string, string[]> = {};
   try {
     writeFileSync(

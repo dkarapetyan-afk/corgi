@@ -1,9 +1,11 @@
-# A new workspace from the dialog, then switching back.
+# A tap leaves the new workspace dialog open; a hold creates, then switch back.
 key ctrl+b 'N'
 snap dialog
 type second
 snap typed
 key enter
+snap tapped
+holdclicktext "hold to create" 3200
 snap created
 clicktext project
 snap switched-back
