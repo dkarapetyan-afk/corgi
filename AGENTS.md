@@ -138,6 +138,20 @@ viewer: size shared panes for the last-used viewer
 build: skip the native layer with --no-native
 ```
 
+Polish to one part of something says it is polish, and to which part. Its
+details are small and several, and a subject that names some of them reads
+like a feature and leaves the rest out; the body can list them:
+
+```
+site: touchup to review section
+```
+
+not
+
+```
+site: review moonlander's thrusters with the rest dimmed
+```
+
 **Body.** Say how it was and what was wrong with that. Then start a new
 paragraph with how it is now, and stop there. Name the component ("The
 daemon used to send…"), not "we". Keep each paragraph to a few short lines;
