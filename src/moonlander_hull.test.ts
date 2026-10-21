@@ -69,6 +69,29 @@ test("--hull and --levels choose the hull, and bad values are usage errors", () 
   expect(options(["--help"])).toEqual({ error: "" });
 });
 
+test("with autoland the game skips the title, and its first flight waits for the terminal", () => {
+  const state = new terminal.State(100, 30, () => {}, undefined, { autoland: true }),
+    cell = { width: 10, height: 25 };
+  expect(state.engine.game.state).toBe("flying");
+  expect(state.frame(100, 30, null, false, 0)).not.toContain("space / enter to launch");
+  // The cell size rebuilds the moon for it, as it would the title's.
+  state.frame(100, 30, cell, false, 100);
+  expect(state.engine.world.K).toBe(1.25);
+  expect(state.engine.game.since).toBe(0);
+  let now = 300;
+  state.frame(100, 30, cell, false, now);
+  while (state.engine.game.state === "flying" && now < 3000) state.frame(100, 30, cell, false, (now += 1000 / 30));
+  expect(state.engine.game.result?.soft).toBe(true);
+  expect(now - 300).toBeGreaterThan(900);
+  expect(now - 300).toBeLessThan(1100);
+});
+
+test("--autoland lands every flight by itself, beside the other switches", () => {
+  expect(options(["--autoland"])).toEqual({ autoland: true });
+  expect(options(["--autoland", "--hull", "fixed"])).toEqual({ autoland: true, hull: "fixed" });
+  expect(options(["--autoland=yes"])).toEqual({ error: "unknown option: --autoland" });
+});
+
 // A terminal that answers every upload, so frames can be read for what they send.
 function playing(style: hull.Style = "image") {
   const state = new terminal.State(100, 30, () => {}, undefined, { hull: style }),

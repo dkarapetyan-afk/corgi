@@ -2,6 +2,33 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as terminal from "./moonlander_terminal";
+import * as cli from "../tools/moonlander";
+
+test("--speed accepts integer multipliers from 2 through 10", () => {
+  expect(cli.options([])).toEqual({});
+  for (let speed = 2; speed <= 10; speed++) {
+    expect(cli.options(["--speed", String(speed)])).toEqual({ speed });
+    expect(cli.options([`--speed=${speed}`, "--autoland"])).toEqual({ speed, autoland: true });
+  }
+  for (const value of ["", "1", "0", "11", "-2", "2.5", "NaN", "Infinity", "fast"])
+    expect(cli.options(["--speed", value])).toHaveProperty("error");
+  expect(cli.options(["--speed"])).toHaveProperty("error");
+});
+
+test("the terminal advances at the selected speed and still pauses", () => {
+  for (const speed of [undefined, 2, 10]) {
+    const state = new terminal.State(100, 30, () => {}, undefined, { hull: "fixed", speed });
+    for (let frame = 0; frame <= 30; frame++) state.frame(100, 30, null, false, (frame * 1000) / 30);
+    expect(state.engine.game.t).toBeCloseTo(speed ?? 1, 1);
+    state.engine.launch(1);
+    state.engine.press("pause");
+    const before = state.engine.game.t;
+    state.frame(100, 30, null, false, 1034);
+    expect(state.engine.game.t).toBe(before);
+    state.close();
+  }
+});
 
 // Model Ghostty's ED2 eviction and its upload/placement acknowledgements.
 // The face must survive a full repaint, restart, and a resize warning.

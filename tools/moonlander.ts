@@ -24,7 +24,7 @@ export async function rasterize(atlas: faces.Atlas): Promise<Uint8Array> {
   return faces.pack(atlas, tiles);
 }
 
-const usage = `usage: bun tools/moonlander.ts [--hull STYLE] [--levels 4|16]
+const usage = `usage: bun tools/moonlander.ts [--hull STYLE] [--levels 4|16] [--autoland] [--speed 2..10]
 
   --hull STYLE  how to draw the ship's hull:
                   image        Kitty graphics, turned smoothly (default);
@@ -34,14 +34,21 @@ const usage = `usage: bun tools/moonlander.ts [--hull STYLE] [--levels 4|16]
                   turned       the same, without gray
                   fixed        braille: the outline redrawn at each tilt
   --levels N    alpha levels in the hull image: 4 or 16 (default 16)
+  --speed N     game speed multiplier: an integer from 2 to 10 (default 1)
+  --autoland    skip the title, and start each flight just above a pad,
+                to land softly about a second in
 `;
 const levels: Record<string, faces.Bits> = { "4": 2, "16": 4 };
 /** Options from the command line, or a usage error. */
 export function options(argv: string[]): terminal.Options | { error: string } {
   const out: terminal.Options = {};
   for (let i = 0; i < argv.length; i++) {
-    const [flag, inline] = argv[i].split(/=(.*)/s, 2),
-      value = inline ?? argv[++i] ?? "";
+    const [flag, inline] = argv[i].split(/=(.*)/s, 2);
+    if (flag === "--autoland" && inline === undefined) {
+      out.autoland = true;
+      continue;
+    }
+    const value = inline ?? argv[++i] ?? "";
     if (flag === "--hull") {
       const style = hull.parseStyle(value);
       if (!style) return { error: `unknown hull style: ${value}` };
@@ -49,6 +56,9 @@ export function options(argv: string[]): terminal.Options | { error: string } {
     } else if (flag === "--levels") {
       if (!Object.hasOwn(levels, value)) return { error: `--levels takes 4 or 16, not ${value}` };
       out.bits = levels[value];
+    } else if (flag === "--speed") {
+      if (!/^(?:[2-9]|10)$/.test(value)) return { error: `--speed takes an integer from 2 to 10, not ${value}` };
+      out.speed = Number(value);
     } else return { error: flag === "--help" || flag === "-h" ? "" : `unknown option: ${flag}` };
   }
   return out;

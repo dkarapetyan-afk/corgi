@@ -130,7 +130,8 @@ test("a soft landing awards pad and fuel points, saves the best, then advances a
   const score = engine.game.score;
   engine.advance();
   expect(engine.game.state).toBe("landed");
-  for (let i = 0; i < 65; i++) engine.tick(0.1);
+  for (let i = 0; i < 200 && !engine.settled(); i++) engine.tick(0.1);
+  expect(engine.settled()).toBe(true);
   expect(engine.corgi?.air).toBe(false);
   engine.advance();
   expect(engine.game.state).toBe("flying");
@@ -211,4 +212,216 @@ test("while panned, the camera keeps the ship's top within four rows below its f
   }
   expect(up).toBeGreaterThan(10);
   expect(down).toBeGreaterThan(10);
+});
+
+function landOn(seed: number) {
+  const engine = moonlander.create({
+    size: () => ({ cols: 100, rows: 40 }),
+    aspect: 2.2,
+    random: () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    },
+  });
+  approach(engine);
+  return engine;
+}
+
+test("after a landing the corgi digs a bone up off the pad, piles the dirt behind it and eats it", () => {
+  let dug = 0,
+    infront = 0,
+    beside = 0;
+  for (let seed = 1; seed <= 12; seed++) {
+    let ship = 0;
+    const engine = landOn(seed * 7919),
+      { world } = engine,
+      before = Float64Array.from(world.g);
+    let bone: moonlander.Bone | null = null;
+    for (let i = 0; i < 20 / moonlander.STEP; i++) {
+      engine.tick(moonlander.STEP);
+      bone = engine.bone ?? bone;
+      const d = engine.corgi;
+      if (!d?.pose || d.air) continue;
+      // On its legs, never in the ground or over it.
+      const length = [...d.pose].length,
+        [from, to] = length < 7 ? [-2, 2] : d.facing > 0 ? [-2, 1] : [-1, 2],
+        col = engine.cellOf(d.x);
+      let floor = Infinity,
+        heaped = Infinity;
+      for (let o = from; o <= to; o++) {
+        const c = moonlander.mod(col + o, world.cols);
+        floor = Math.min(floor, engine.pile![c]);
+        heaped = Math.min(
+          heaped,
+          Math.round(Math.min(...[0, 1, 2].map(i => world.g[2 * c + i])) / (4 * world.K) - 0.77),
+        );
+      }
+      expect(d.row).toBe(floor);
+      // Chewing, it sits on solid ground, level with the bone.
+      if (d.pose === moonlander.POSE.chew && engine.bone && !engine.bone.held) {
+        expect(engine.bone.row).toBe(d.row);
+        for (let o = from; o <= to; o++) expect(engine.pile![moonlander.mod(col + o, world.cols)]).toBe(d.row);
+      }
+      // In front of the dirt it dug, not on it.
+      if (heaped < floor) infront++;
+      // Hardly ever in front of the ship while it digs and eats.
+      const L = engine.lander!,
+        span = [...d.pose].length,
+        start = col + (d.facing > 0 ? -3 : 4 - span);
+      // Never off the edge of the screen.
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(start + span).toBeLessThanOrEqual(world.cols);
+      let cells = 0;
+      for (let k = 0; k < span; k++) {
+        const x = moonlander.mod(start + k, world.cols) * 2 + 1;
+        if (Math.abs(moonlander.mod(x - L.x + world.W / 2, world.W) - world.W / 2) < moonlander.SHIP.body) cells++;
+      }
+      if (engine.bone) ship = Math.max(ship, cells);
+    }
+    expect(ship).toBeLessThanOrEqual(3);
+    if (ship) beside++;
+    // These moons have room to dig off the pads, though dirt may land on one.
+    for (const pad of world.pads) for (let x = pad.x0; x <= pad.x1; x++) expect(world.g[x]).toBeLessThanOrEqual(pad.y);
+    if (!bone) {
+      expect(engine.corgi?.pose).toBe(moonlander.POSE.sit);
+      continue;
+    }
+    dug++;
+    expect(bone.eaten).toBe(3);
+    expect(engine.bone).toBeNull();
+    expect([moonlander.POSE.sit, moonlander.POSE.blink]).toContain(engine.corgi!.pose!);
+    let carved = 0,
+      piled = 0;
+    for (let i = 0; i < world.W; i++) {
+      const change = world.g[i] - before[i];
+      if (change > 0) carved += change;
+      else piled -= change;
+    }
+    // No pillar a row tall left standing where it dug, as under its head.
+    for (let i = 1; i < world.W - 1; i++)
+      if (world.g[i] !== before[i] || world.g[i - 1] !== before[i - 1] || world.g[i + 1] !== before[i + 1])
+        expect(Math.min(world.g[i - 1], world.g[i + 1]) - world.g[i]).toBeLessThan(4 * world.K);
+    // A row or so of it, all piled up behind.
+    expect(carved).toBeGreaterThan(3 * 4 * world.K - 1e-6);
+    expect(piled).toBeCloseTo(carved, 6);
+  }
+  expect(dug).toBeGreaterThanOrEqual(9);
+  expect(infront).toBeGreaterThan(0);
+  expect(beside).toBeLessThanOrEqual(2);
+});
+
+test("with autoland each flight starts over a pad and lands softly about a second in", () => {
+  const engine = moonlander.create({ size: () => ({ cols: 100, rows: 40 }), aspect: 2.2, autoland: true });
+  for (const round of [1, 2, 9]) {
+    engine.launch(round);
+    let t = 0;
+    for (; engine.game.state === "flying" && t < 2; t += moonlander.STEP) engine.tick(moonlander.STEP);
+    expect(engine.game.state).toBe("landed");
+    expect(engine.game.result?.soft).toBe(true);
+    expect(t).toBeGreaterThan(0.8);
+    expect(t).toBeLessThan(1.2);
+  }
+});
+
+test("advance and thrust cannot skip the wait for the corgi to eat its bone", () => {
+  const patient = landOn(7919);
+  patient.tick(0.1);
+  expect(patient.game.state).toBe("landed");
+  let dug = false;
+  for (let i = 0; i < 20 / 0.1 && !patient.settled(); i++) {
+    patient.press("advance");
+    patient.press("thrust");
+    expect(patient.settled()).toBe(false);
+    expect(patient.game.state).toBe("landed");
+    patient.tick(0.1);
+    dug ||= patient.bone !== null;
+  }
+  expect(dug).toBe(true);
+  expect(patient.settled()).toBe(true);
+  expect(patient.bone).toBeNull();
+  expect(patient.game.state).toBe("landed");
+  patient.press("advance");
+  expect(patient.game.state).toBe("flying");
+  expect(patient.game.round).toBe(2);
+});
+
+/** A moon whose pads stand on mesas over a chasm too deep to climb out of:
+ * the corgi can dig nowhere but into its own pad. */
+function mesa() {
+  const engine = moonlander.create({ size: () => ({ cols: 100, rows: 40 }), aspect: 2.2, random: () => 0.5 });
+  engine.launch(1);
+  const { world } = engine,
+    pad = world.pads.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a));
+  for (const p of world.pads) {
+    p.y = world.H * 0.5;
+    for (let i = p.x0; i <= p.x1; i++) world.g[i] = p.y;
+  }
+  for (let i = 0; i <= world.W; i++) if (!world.pads.some(p => i >= p.x0 && i <= p.x1)) world.g[i] = world.H - world.K;
+  Object.assign(engine.lander!, { x: (pad.x0 + pad.x1) / 2, y: pad.y - 10 * world.K - 0.1, vx: 0, vy: 2, a: 0 });
+  return { engine, pad };
+}
+
+test("with nowhere else to dig, the corgi digs into the end of its own pad", () => {
+  const { engine, pad } = mesa(),
+    { world } = engine;
+  let dug = false;
+  for (let i = 0; i < 25 / 0.05 && !(dug && !engine.bone); i++) {
+    engine.tick(0.05);
+    dug ||= engine.bone !== null;
+  }
+  expect(dug).toBe(true);
+  expect(engine.bone).toBeNull();
+  const holes = [];
+  for (let x = pad.x0; x <= pad.x1; x++) if (world.g[x] > pad.y + 1e-9) holes.push(x);
+  expect(holes.length).toBeGreaterThan(0);
+  // At one end of it, and nowhere else.
+  expect(Math.min(holes[0] - pad.x0, pad.x1 - holes.at(-1)!)).toBeLessThanOrEqual(4);
+  for (const other of world.pads.filter(p => p !== pad))
+    for (let x = other.x0; x <= other.x1; x++) expect(world.g[x]).toBe(other.y);
+});
+
+test("with a hill beside the pad, the corgi digs into it, the hillside slides in, and it never walks off the screen", () => {
+  // A hill rising from the pad's left end, and ground falling away to the
+  // right, toward the edge of the screen.
+  const engine = moonlander.create({ size: () => ({ cols: 80, rows: 40 }), aspect: 2.2, random: () => 0.5 });
+  engine.launch(1);
+  const { world } = engine,
+    R = 4 * world.K,
+    pad = { x0: world.W - 70, x1: world.W - 36, y: 24 * R, mult: 3 };
+  world.pads.splice(0, world.pads.length, pad);
+  for (let i = 0; i <= world.W; i++)
+    world.g[i] =
+      i < pad.x0
+        ? pad.y - Math.min(9 * R, (pad.x0 - i) * 0.35 * R)
+        : i <= pad.x1
+          ? pad.y
+          : pad.y + Math.min(9 * R, (i - pad.x1) * 0.25 * R);
+  const before = Float64Array.from(world.g);
+  Object.assign(engine.lander!, { x: (pad.x0 + pad.x1) / 2, y: pad.y - 10 * world.K - 0.1, vx: 0, vy: 2, a: 0 });
+  let dug = false,
+    buried = false;
+  for (let i = 0; i < 25 / 0.05 && !(dug && !engine.bone); i++) {
+    engine.tick(0.05);
+    const d = engine.corgi;
+    if (d?.pose) {
+      const span = [...d.pose].length,
+        from = engine.cellOf(d.x) + (d.facing > 0 ? -3 : 4 - span);
+      expect(from).toBeGreaterThanOrEqual(0);
+      expect(from + span).toBeLessThanOrEqual(world.cols);
+    }
+    dug ||= engine.bone !== null;
+    buried ||= !!engine.bone && engine.bone.shown.some(at => at !== null) && engine.bone.shown.some(at => at === null);
+  }
+  expect(engine.bone).toBeNull();
+  // Into the hill, at the pad's left, its face slumped no steeper than dirt stands.
+  let deepest = 0,
+    steepest = 0;
+  for (let i = 1; i < pad.x0; i++) {
+    deepest = Math.max(deepest, world.g[i] - before[i]);
+    if (world.g[i] > before[i] + 1e-6 && world.g[i - 1] > before[i - 1] + 1e-6)
+      steepest = Math.max(steepest, world.g[i] - world.g[i - 1]);
+  }
+  expect(deepest).toBeGreaterThan(R);
+  expect(steepest).toBeLessThanOrEqual(3.1 * world.K + 1e-6);
+  for (let i = pad.x1 + 1; i < world.W; i++) expect(world.g[i]).toBeLessThanOrEqual(before[i] + 1e-6);
 });

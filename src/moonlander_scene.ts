@@ -16,6 +16,15 @@ const hash = (x: number, y: number, seed: number) => {
 const heat = (age: number): Token =>
   age < 0.12 ? "strong" : age < 0.5 ? "warm" : age < 1.1 ? "hot" : age < 2.2 ? "muted" : "faint";
 const judge = (v: number, soft: number, safe: number): Token => (v <= soft ? "accent" : v <= safe ? "warm" : "hot");
+/** A bone comes out the ground's color and brightens. */
+const unearthed = (age: number): Token => (age < 0.1 ? "line" : age < 0.2 ? "faint" : age < 0.3 ? "muted" : "text");
+const turned: Record<string, string> = { "[": "]", "]": "[", "/": "\\", "\\": "/", ">": "‹", "›": "‹" };
+/** A pose facing left. */
+export const mirror = (pose: string) =>
+  [...pose]
+    .reverse()
+    .map(glyph => turned[glyph] ?? glyph)
+    .join("");
 
 function fuelBar(s: Screen, col: number, row: number, lander: moonlander.Lander, time: number) {
   const width = 12,
@@ -98,6 +107,102 @@ const lines = ["▔", ...Array.from({ length: 6 }, (_, i) => String.fromCodePoin
  * an eighth into the cell its surface dot starts in, level with the ground
  * beside it, with the camera `camera` dots down the world. */
 const padEighth = (p: moonlander.Pad, K: number, camera: number) => 2 * Math.floor(Math.round(p.y / K) - camera) + 1;
+/** Cells as rectangles, one for each run of them along a row. */
+function runs(cells: Set<number>, cols: number) {
+  const out: { x: number; y: number; w: number; h: number }[] = [];
+  for (const at of [...cells].sort((a, b) => a - b)) {
+    const x = at % cols,
+      y = Math.floor(at / cols),
+      last = out.at(-1);
+    if (last && last.y === y && last.x + last.w === x) last.w++;
+    else out.push({ x, y, w: 1, h: 1 });
+  }
+  return out;
+}
+
+const cardFrame = 0.24,
+  cardReveal = 0.4;
+const dashes: Record<string, string[]> = { "─": ["┈", "┄", "╌"], "│": ["┊", "┆", "╎"] };
+
+/** Draw from the bottom center, then build the message in rising braille grains. */
+function revealCard(s: Screen, behind: Cell[], rect: Screen["occludes"][number], age: number) {
+  const { x: left, y: top, w: width, h: height } = rect,
+    final = s.cells.slice(),
+    at = (x: number, y: number) => (top + y) * s.cols + left + x,
+    visible = (x: number, y: number) => left + x >= 0 && left + x < s.cols && top + y >= 0 && top + y < s.rows,
+    covered = new Set<number>(),
+    edge: [number, number][] = [];
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) if (visible(x, y)) s.cells[at(x, y)] = behind[at(x, y)];
+  for (let x = 0; x < width; x++) edge.push([x, 0]);
+  for (let y = 1; y < height - 1; y++) edge.push([width - 1, y]);
+  for (let x = width - 1; x >= 0; x--) edge.push([x, height - 1]);
+  for (let y = height - 2; y > 0; y--) edge.push([0, y]);
+  const progress = moonlander.clamp(age / cardFrame, 0, 1),
+    eased = 0.5 * progress + 0.5 * (1 - (1 - progress) ** 3),
+    start = edge.findIndex(([x, y]) => x === Math.floor(width / 2) && y === height - 1),
+    n = edge.length;
+  for (let i = 0; i < n; i++) {
+    const [x, y] = edge[i],
+      along = moonlander.mod(i - start, n),
+      amount = progress >= 1 ? 1 : moonlander.clamp((eased * n) / 2 - Math.min(along, n - along), 0, 1);
+    if (amount <= 0 || !visible(x, y)) continue;
+    const index = at(x, y),
+      cell = final[index],
+      glyph = amount < 1 ? (dashes[cell.glyph]?.[Math.min(2, Math.floor(amount * 3))] ?? cell.glyph) : cell.glyph;
+    s.set(left + x, top + y, glyph, amount < 1 ? "muted" : "line");
+    covered.add(index);
+  }
+  const fill = moonlander.clamp((age - cardFrame) / (cardReveal - cardFrame), 0, 1),
+    front = fill * ((height - 2) * 4 + 2) - 1;
+  for (let y = 1; y < height - 1; y++)
+    for (let x = 1; x < width - 1; x++) {
+      if (!visible(x, y)) continue;
+      const index = at(x, y),
+        cell = final[index];
+      let dots = 0;
+      for (let dy = 0; dy < 4; dy++)
+        for (let dx = 0; dx < 2; dx++) {
+          const column = (x - 1) * 2 + dx,
+            grain =
+              (height - 2) * 4 - 1 - ((y - 1) * 4 + dy) + 0.6 * Math.sin(column * 0.75) + 0.25 * Math.sin(column * 1.7);
+          if (front > grain) dots |= BRAILLE[dy * 2 + dx];
+        }
+      if (dots === 255) s.cells[index] = cell;
+      else if (dots) {
+        s.set(left + x, top + y, String.fromCodePoint(0x2800 + dots), cell.glyph === " " ? "line" : cell.fg);
+        s.cells[index].dots = dots;
+      } else continue;
+      covered.add(index);
+    }
+  s.occludes.push(...runs(covered, s.cols));
+}
+
+/** The dot row of the ground's surface at each dot column. */
+const surfaces = (w: Pick<moonlander.World, "W" | "K" | "ground">) =>
+  Array.from({ length: w.W }, (_, x) => Math.floor(w.ground(x + 0.5) / w.K));
+const texture = (x: number, y: number, surface: number, seed: number) =>
+  hash(x, y, seed) < 0.06 + 0.3 * Math.exp(-(y - surface) / 5);
+/** A dot column's surface, joined down steep ground to its neighbors'. */
+function outline(s: Screen, surface: number[], x: number) {
+  const W = surface.length,
+    top = Math.min(surface[x], surface[moonlander.mod(x - 1, W)] + 1, surface[moonlander.mod(x + 1, W)] + 1);
+  for (let y = top; y <= surface[x]; y++) s.dot(x, y, "muted");
+  return top;
+}
+/** The dirt the corgi dug out, drawn again over the ship, and the cells it covers. */
+function heaped(s: Screen, w: moonlander.World, heap: Float64Array, cover: (col: number, row: number) => void) {
+  const surface = surfaces(w);
+  for (let x = 0; x < w.W; x++) {
+    const dirt = (heap[x] + heap[moonlander.mod(x + 1, w.W)]) / 2,
+      under = Math.floor((w.ground(x + 0.5) + dirt) / w.K);
+    if (under <= surface[x]) continue;
+    const top = outline(s, surface, x);
+    for (let y = surface[x] + 1; y < under; y++) if (texture(x, y, surface[x], w.seed)) s.dot(x, y, "line");
+    for (let row = Math.floor((top - s.cameraY) / 4); row <= Math.floor((under - 1 - s.cameraY) / 4); row++)
+      cover(x >> 1, row);
+  }
+}
 /** `slide` draws pads as thin lines that move an eighth of a cell at a time
  * with the ground's dots as the camera pans, rather than jump a cell, and
  * blurs each multiplier across the rows it passes while the camera has been
@@ -111,12 +216,12 @@ function terrain(
   still = Infinity,
 ) {
   const R = 4 * w.K;
-  const surface = Array.from({ length: w.W }, (_, x) => Math.floor(w.ground(x + 0.5) / w.K));
+  const surface = surfaces(w);
   for (let x = 0; x < w.W; x++) {
-    const top = Math.min(surface[x], surface[moonlander.mod(x - 1, w.W)] + 1, surface[moonlander.mod(x + 1, w.W)] + 1);
-    if (!w.pads.some(p => x >= p.x0 && x < p.x1)) for (let y = top; y <= surface[x]; y++) s.dot(x, y, "muted");
-    for (let y = surface[x] + 1; y < w.rows * 4; y++)
-      if (hash(x, y, w.seed) < 0.06 + 0.3 * Math.exp(-(y - surface[x]) / 5)) s.dot(x, y, "line");
+    // A pad draws as its line, unless dirt is on it or a pit dug into it.
+    const pad = w.pads.find(p => x >= p.x0 && x < p.x1);
+    if (!pad || surface[x] !== Math.floor(pad.y / w.K)) outline(s, surface, x);
+    for (let y = surface[x] + 1; y < w.rows * 4; y++) if (texture(x, y, surface[x], w.seed)) s.dot(x, y, "line");
   }
   for (const p of w.pads) {
     const from = Math.ceil(p.x0 / 2),
@@ -125,9 +230,11 @@ function terrain(
       s.text(from, Math.round(p.y / R), "━".repeat(to - from), padColor);
       continue;
     }
-    const eighth = padEighth(p, w.K, s.cameraY);
+    const eighth = padEighth(p, w.K, s.cameraY),
+      dug = (x: number) => surface[x] > Math.floor(p.y / w.K);
     for (let col = from; col < to; col++)
-      s.set(col, Math.floor(eighth / 8), lines[moonlander.mod(eighth, 8)], padColor);
+      if (!dug(2 * col) && !dug(2 * col + 1))
+        s.set(col, Math.floor(eighth / 8), lines[moonlander.mod(eighth, 8)], padColor);
     if (!multipliers) continue;
     // A cell under the line at rest, so never in the line's row. While the
     // camera pans, a label between rows shows in both, each as bright as it
@@ -236,14 +343,16 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
     }
   s.cameraY = engine.cameraY / w.K;
   terrain(s, w, "accent", true, true, game.paused ? Infinity : engine.cameraStill);
-  for (const p of engine.particles) {
+  // With the ship down, dust and clods draw over it; its exhaust under it.
+  const kicked = (p: moonlander.Particle) => !!L && (p.kind === "dust" || p.kind === "clod");
+  const particle = (p: moonlander.Particle) => {
     const k = p.age / p.life;
     const color =
       p.kind === "dust"
         ? k < 0.5
           ? "faint"
           : "line"
-        : p.kind === "puff"
+        : p.kind === "puff" || p.kind === "clod"
           ? "muted"
           : k < 0.3
             ? "warm"
@@ -252,7 +361,8 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
               : "faint";
     dot(p.x, p.y, color);
     if (p.kind === "spark") dot(p.x - p.vx * 0.03, p.y - p.vy * 0.03, color);
-  }
+  };
+  for (const p of engine.particles) if (!kicked(p)) particle(p);
   if (wreck) {
     const age = game.t - wreck.t0;
     for (const d of engine.debris)
@@ -315,27 +425,6 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
     for (let b = 0; b < 8; b++)
       if (bits & (1 << b)) s.dot(col * 2 + (b % 2), row * 4 + Math.floor(b / 2), heat(game.t - wreck!.t0 - d.cool));
   }
-  if (corgi) {
-    const col = engine.cellOf(corgi.x),
-      row = corgi.y / R,
-      since = corgi.down === null ? 0 : corgi.t - corgi.down;
-    const face = corgi.air
-      ? corgi.crashed
-        ? moonlander.FACE.scared
-        : moonlander.FACE.burn
-      : corgi.crashed
-        ? moonlander.FACE.dizzy
-        : since < 0.6 || corgi.t % 3.1 < 0.13
-          ? moonlander.FACE.blink
-          : moonlander.FACE.calm;
-    s.text(col - 2, row, face, "strong");
-    if (!corgi.air && !corgi.crashed) s.put(col - 3, row, moonlander.TAIL[Math.floor(since * 8) % 4], "strong");
-    if (!corgi.air && corgi.crashed) {
-      const offset = [-2, -1, 0, 1, 2, 1, 0, -1][Math.floor(corgi.t * 10) % 8];
-      s.put(col + offset, row - 1, "*", "warm");
-      s.put(col - offset, row - 1, "+", "warm");
-    }
-  }
   // The ship and its passenger, on screen rather than in the world, so a
   // camera that follows the ship doesn't jostle it.
   s.cameraY = 0;
@@ -351,6 +440,54 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
         "strong",
       );
   }
+  // Over the ship, the dirt the corgi dug out, then the corgi and its bone,
+  // each cutting its cells out of a hull drawn as an image.
+  s.cameraY = engine.cameraY / w.K;
+  const covered = new Set<number>(),
+    cover = (col: number, row: number) => {
+      if (row >= 0 && row < s.rows) covered.add(row * s.cols + moonlander.mod(col, s.cols));
+    },
+    ink = (col: number, row: number, glyph: string, color: Token) => {
+      s.put(moonlander.mod(col, w.cols), row, glyph, color);
+      cover(col, Math.floor(row - s.cameraY / 4));
+    };
+  if (L && engine.heap) heaped(s, w, engine.heap, cover);
+  for (const p of engine.particles) if (kicked(p)) particle(p);
+  const bone = engine.bone;
+  if (bone)
+    [...moonlander.BONE].forEach((glyph, k) => {
+      const at = bone.shown[k],
+        eaten = bone.facing > 0 ? k < bone.eaten : k >= 3 - bone.eaten;
+      if (at !== null && !eaten) ink(bone.col + k, bone.row, glyph, unearthed(game.t - at));
+    });
+  if (corgi?.pose) {
+    const glyphs = [...(corgi.facing > 0 ? corgi.pose : mirror(corgi.pose))],
+      from = engine.cellOf(corgi.x) + (corgi.facing > 0 ? -3 : 4 - glyphs.length),
+      tail = moonlander.TAIL[Math.floor(corgi.t * 8 * corgi.wag) % 4];
+    glyphs.forEach((glyph, i) => ink(from + i, corgi.y / R, glyph === "~" && corgi.wag ? tail : glyph, "strong"));
+  } else if (corgi) {
+    const col = engine.cellOf(corgi.x),
+      row = corgi.y / R,
+      since = corgi.down === null ? 0 : corgi.t - corgi.down;
+    const face = corgi.air
+      ? corgi.crashed
+        ? moonlander.FACE.scared
+        : moonlander.FACE.burn
+      : corgi.crashed
+        ? moonlander.FACE.dizzy
+        : since < 0.6 || corgi.t % 3.1 < 0.13
+          ? moonlander.FACE.blink
+          : moonlander.FACE.calm;
+    [...face].forEach((glyph, i) => ink(col - 2 + i, row, glyph, "strong"));
+    if (!corgi.air && !corgi.crashed) ink(col - 3, row, moonlander.TAIL[Math.floor(since * 8) % 4], "strong");
+    if (!corgi.air && corgi.crashed) {
+      const offset = [-2, -1, 0, 1, 2, 1, 0, -1][Math.floor(corgi.t * 10) % 8];
+      ink(col + offset, row - 1, "*", "warm");
+      ink(col - offset, row - 1, "+", "warm");
+    }
+  }
+  if (L) s.occludes.push(...runs(covered, s.cols));
+  s.cameraY = 0;
   const scores = `${game.state === "title" ? "" : `moon ${game.round}   score ${game.score}   `}best ${game.best}`;
   s.text(w.cols - scores.length - 2, 0, scores, "strong");
   if (L && game.state !== "title") {
@@ -394,7 +531,7 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
   else if (engine.settled() && r) {
     if (game.state === "landed") {
       card = [
-        r.soft ? "good boy!" : "bumpy, but good boy.",
+        r.soft ? "who's a good boy?!" : "bumpy, but good boy.",
         "",
         `+${r.points! + r.bonus!}   ×${r.pad!.mult} pad · ${r.bonus} fuel bonus`,
         `score ${game.score}${r.best ? "   new best" : ""}`,
@@ -412,23 +549,33 @@ export function render(engine: moonlander.Engine, smoothFace = false, style: hul
       height = card.length + 4;
     const left = Math.floor((w.cols - width) / 2),
       top = Math.min(Math.max(10, Math.floor(w.rows * 0.24)), w.rows - height - 2);
+    const success = game.state === "landed" && !game.paused,
+      background: Token = success ? "bg" : "surface",
+      materializing = success && engine.resultAge < cardReveal,
+      behind = materializing ? s.cells.slice() : null;
     for (let row = 0; row < height; row++) {
-      s.text(left, top + row, " ".repeat(width), "text", "surface");
-      s.put(left, top + row, row === 0 ? "╭" : row === height - 1 ? "╰" : "│", "line", "surface");
-      s.put(left + width - 1, top + row, row === 0 ? "╮" : row === height - 1 ? "╯" : "│", "line", "surface");
-      if (row === 0 || row === height - 1) s.text(left + 1, top + row, "─".repeat(width - 2), "line", "surface");
+      s.text(left, top + row, " ".repeat(width), "text", background);
+      s.put(left, top + row, row === 0 ? "╭" : row === height - 1 ? "╰" : "│", "line", background);
+      s.put(left + width - 1, top + row, row === 0 ? "╮" : row === height - 1 ? "╯" : "│", "line", background);
+      if (row === 0 || row === height - 1) s.text(left + 1, top + row, "─".repeat(width - 2), "line", background);
     }
-    s.occludes.push({ x: left, y: top, w: width, h: height });
     card.forEach((line, i) =>
       s.text(
         left + Math.floor((width - displayWidth(line)) / 2),
         top + 2 + i,
         line,
         i === 0 ? color : "muted",
-        "surface",
+        background,
         i === 0,
       ),
     );
+    if (success && r?.best) {
+      const col = left + Math.floor((width - displayWidth(card[3])) / 2) + displayWidth(`score ${game.score}   `);
+      s.text(col, top + 5, "new best", "warm", background);
+    }
+    const rect = { x: left, y: top, w: width, h: height };
+    if (behind) revealCard(s, behind, rect, engine.resultAge);
+    else s.occludes.push(rect);
   }
   const footer = "← → tilt   ↑/space thrust   ↓ cut   p pause   r restart   q quit";
   s.text(Math.floor((w.cols - footer.length) / 2), w.rows - 1, footer, "faint");

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import * as moonlander from "./moonlander";
 import * as hull from "./moonlander_hull";
 import * as scene from "./moonlander_scene";
+import * as animation from "./corgi_animation";
 
 function create() {
   const engine = moonlander.create({ size: () => ({ cols: 72, rows: 40 }), aspect: 2.2, random: () => 0.5 });
@@ -16,6 +17,67 @@ function hud(engine: moonlander.Engine) {
 
 const flameDots = (engine: moonlander.Engine) =>
   hud(engine).reduce((n, cell) => n + cell.dots.toString(2).replaceAll("0", "").length, 0);
+
+test("the success card builds upward in 400ms after the bone, with sky background and matching occlusion", () => {
+  const engine = create(),
+    pad = engine.world.pads[0];
+  Object.assign(engine.lander!, { x: (pad.x0 + pad.x1) / 2, y: pad.y - 10 * engine.world.K - 0.1, vx: 0, vy: 2 });
+  engine.tick(moonlander.STEP);
+  for (let i = 0; i < 30 / moonlander.STEP && !engine.settled(); i++) engine.tick(moonlander.STEP);
+  expect(engine.settled()).toBe(true);
+  expect(engine.bone).toBeNull();
+  expect(engine.resultAge).toBe(0);
+  const result = engine.game.result;
+  engine.game.result = null;
+  const background = scene.render(engine);
+  engine.game.result = result;
+  expect(scene.render(engine).cells).toEqual(background.cells);
+  const at = (resultAge: number) => scene.render({ ...engine, resultAge }),
+    complete = at(0.4),
+    card = complete.occludes.find(r => r.h === 10)!,
+    cell = (screen: scene.Screen, x: number, y: number) => screen.cells[(card.y + y) * screen.cols + card.x + x],
+    covers = (screen: scene.Screen, x: number, y: number) =>
+      screen.occludes.some(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  expect(complete.cells.map(cell => cell.glyph).join("")).toContain("who's a good boy?!");
+  const first = at(0.01),
+    frame = at(0.24);
+  expect(cell(first, Math.floor(card.w / 2), card.h - 1).glyph).toBe("─");
+  expect(cell(first, Math.floor(card.w / 2), 0)).toEqual(cell(background, Math.floor(card.w / 2), 0));
+  let goldGrains = false,
+    greenGrains = false;
+  for (let ms = 0; ms <= 400; ms += 5) {
+    const screen = at(ms / 1000);
+    for (let y = 0; y < card.h; y++)
+      for (let x = 0; x < card.w; x++) {
+        const current = cell(screen, x, y),
+          final = cell(complete, x, y),
+          border = x === 0 || y === 0 || x === card.w - 1 || y === card.h - 1;
+        expect(current.bg).toBe("bg");
+        if (!covers(screen, card.x + x, card.y + y)) expect(current).toEqual(cell(background, x, y));
+        if (border) {
+          expect(cell(frame, x, y)).toEqual(final);
+          expect(final.fg).toBe("line");
+        } else if (ms <= 240) expect(current).toEqual(cell(background, x, y));
+        else if (current.dots && final.glyph !== " ") {
+          expect(current.fg).toBe(final.fg);
+          goldGrains ||= current.fg === "warm";
+          greenGrains ||= current.fg === "accent";
+        }
+      }
+  }
+  expect(goldGrains).toBe(true);
+  expect(greenGrains).toBe(true);
+  const middle = at(0.3);
+  expect(middle.cells.map(cell => cell.glyph).join("")).toContain("space / enter for next moon");
+  expect(middle.cells.map(cell => cell.glyph).join("")).not.toContain("who's a good boy?!");
+  expect(at(0.3).cells).toEqual(middle.cells);
+  for (let i = 0; i < 49; i++) engine.tick(moonlander.STEP);
+  expect(engine.resultAge).toBeCloseTo(49 * moonlander.STEP);
+  expect(scene.render(engine).occludes).toContainEqual(card);
+  engine.press("advance");
+  expect(engine.resultAge).toBe(0);
+  expect(scene.render(engine).occludes).not.toContainEqual(card);
+});
 
 test("the camera pans foreground graphics while the HUD and controls stay fixed", () => {
   const engine = create(),
@@ -279,4 +341,102 @@ test("as the camera pans, a pad slides with the ground's dots and its label blur
   expect(engine.cameraY).toBe(camera);
   const settled = scene.render(engine, true).cells.filter(cell => cell.glyph === "×");
   expect(settled.every(cell => cell.alpha === 1)).toBe(true);
+});
+
+test("facing left, a pose is the sidebar's corgi mirrored", () => {
+  expect(moonlander.POSE.trot.map(scene.mirror)).toEqual(animation.walk_left);
+  expect(scene.mirror(moonlander.POSE.dig[0])).toBe("‹o[\\/]~");
+  expect(scene.mirror(moonlander.POSE.sit)).toBe("ᐯ•ᴥ•ᐯ~");
+});
+
+test("the bone shows as it is dug clear and goes from the corgi's side as it chews", () => {
+  let seed = 7919;
+  const engine = moonlander.create({
+    size: () => ({ cols: 100, rows: 40 }),
+    aspect: 2.2,
+    random: () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    },
+  });
+  engine.launch(1);
+  const pad = engine.world.pads[0];
+  Object.assign(engine.lander!, { x: (pad.x0 + pad.x1) / 2, y: pad.y - 10 * engine.world.K - 0.1, vx: 0, vy: 2, a: 0 });
+  const seen: string[] = [];
+  for (let i = 0; i < 20 / moonlander.STEP; i++) {
+    engine.tick(moonlander.STEP);
+    const bone = engine.bone;
+    if (!bone || bone.held) continue;
+    const screen = scene.render(engine),
+      row = screen.cells.slice(bone.row * screen.cols, (bone.row + 1) * screen.cols),
+      // Crumbs aside.
+      text = [0, 1, 2]
+        .map(k => row[moonlander.mod(bone.col + k, screen.cols)])
+        .map(cell => (cell.dots ? " " : cell.glyph))
+        .join("");
+    if (seen.at(-1) !== text) seen.push(text);
+  }
+  const chewed = seen.slice(seen.indexOf("ε=з"));
+  expect(seen).toContain("ε=з");
+  expect(chewed.slice(1)).toEqual(engine.corgi!.facing > 0 ? [" =з", "  з", "   "] : ["ε= ", "ε  ", "   "]);
+});
+
+/** Pads on mesas over a chasm too deep to climb out of. */
+function mesa() {
+  const engine = moonlander.create({ size: () => ({ cols: 100, rows: 40 }), aspect: 2.2, random: () => 0.5 });
+  engine.launch(1);
+  const { world } = engine,
+    pad = world.pads.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a));
+  for (const p of world.pads) {
+    p.y = world.H * 0.5;
+    for (let i = p.x0; i <= p.x1; i++) world.g[i] = p.y;
+  }
+  for (let i = 0; i <= world.W; i++) if (!world.pads.some(p => i >= p.x0 && i <= p.x1)) world.g[i] = world.H - world.K;
+  Object.assign(engine.lander!, { x: (pad.x0 + pad.x1) / 2, y: pad.y - 10 * world.K - 0.1, vx: 0, vy: 2, a: 0 });
+  return { engine, pad };
+}
+
+test("over the ship come the dirt the corgi dug, then the corgi, cut out of the hull's image", () => {
+  // On a mesa over a chasm, the corgi digs into its pad's end beside the ship.
+  const { engine, pad } = mesa(),
+    { world } = engine,
+    R = 4 * world.K;
+  let checked = 0,
+    beside = 0;
+  for (let i = 0; i < 20 / 0.05 && checked < 20; i++) {
+    engine.tick(0.05);
+    const d = engine.corgi;
+    if (!engine.bone || !d?.pose || d.air) continue;
+    const glyphs = [...(d.facing > 0 ? d.pose : scene.mirror(d.pose))],
+      from = engine.cellOf(d.x) + (d.facing > 0 ? -3 : 4 - glyphs.length),
+      covered = (screen: scene.Screen, col: number, row: number) =>
+        screen.occludes.some(r => col >= r.x && col < r.x + r.w && row >= r.y && row < r.y + r.h);
+    const image = scene.render(engine, false, "image"),
+      braille = scene.render(engine, false, "turned-gray");
+    glyphs.forEach((glyph, k) => {
+      if (Math.abs((from + k) * 2 + 1 - engine.lander!.x) < moonlander.SHIP.body) beside++;
+      expect(covered(image, from + k, d.row)).toBe(true);
+      if (glyph !== "~") expect(braille.cells[d.row * braille.cols + from + k].glyph).toBe(glyph);
+    });
+    const heap = engine.heap;
+    if (heap)
+      for (let x = 0; x < world.W; x++)
+        if (heap[x] > 2 * world.K) expect(covered(image, x >> 1, Math.floor(world.ground(x) / R))).toBe(true);
+    checked++;
+  }
+  expect(checked).toBe(20);
+  expect(beside).toBeGreaterThan(0);
+  // The pad's line breaks over the pit dug into it.
+  while (engine.bone) engine.tick(0.05);
+  const screen = scene.render(engine),
+    row = screen.cells.slice(0, screen.cols * screen.rows);
+  let pit = 0;
+  for (let x = pad.x0; x < pad.x1; x += 2) {
+    const col = x >> 1,
+      dug = world.ground(x + 0.5) > pad.y + world.K && world.ground(x + 1.5) > pad.y + world.K,
+      lined = row.some((c, at) => at % screen.cols === col && /[\u{1fb76}-\u{1fb7b}▔▁]/u.test(c.glyph));
+    if (dug) expect(lined).toBe(false);
+    if (dug) pit++;
+  }
+  expect(pit).toBeGreaterThan(0);
 });

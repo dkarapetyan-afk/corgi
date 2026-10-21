@@ -87,6 +87,10 @@ export interface Options {
   hull?: hull.Style;
   /** Bits per pixel of the hull's tiles: 2 for 4 alpha levels, 4 for 16. */
   bits?: faces.Bits;
+  /** Each flight lands itself on a pad about a second in. */
+  autoland?: boolean;
+  /** Simulation ticks per frame; defaults to normal speed. */
+  speed?: number;
 }
 
 export class State {
@@ -121,6 +125,10 @@ export class State {
   /** The hull tile and pieces the terminal shows, when known. */
   private hullShown: { tile: number | null; pieces: string[] } | null = null;
   private shownSize = { cols: 0, rows: 0 };
+  /** With autoland the first flight, rather than the title, waits for the
+   * terminal before it starts. */
+  private holding: boolean;
+  private speed: number;
   /** Every frame reaches the terminal, so the hull is sent only when it
    * changes. The viewer drops frames when its host falls behind, so there
    * each frame states the whole hull. */
@@ -134,10 +142,13 @@ export class State {
   ) {
     this.hullStyle = options.hull ?? "image";
     this.hullBits = options.bits ?? 4;
+    this.speed = options.speed ?? 1;
     this.size = { cols: Math.max(72, Math.min(200, cols)), rows: Math.max(24, Math.min(70, rows)) };
-    this.options = { size: () => this.size, aspect: 2.2 };
+    this.options = { size: () => this.size, aspect: 2.2, autoland: options.autoland };
     this.engine = moonlander.create(this.options);
-    this.engine.title();
+    this.holding = options.autoland ?? false;
+    if (this.holding) this.engine.launch(1);
+    else this.engine.title();
     this.rasterize = rasterize ?? (atlas => faces.rasterize(atlas, masks));
   }
   static query() {
@@ -319,12 +330,10 @@ export class State {
     this.supported = supported;
     this.size = { cols: Math.max(72, Math.min(200, cols)), rows: Math.max(24, Math.min(70, rows)) };
     if (cell) this.options.aspect = cell.height / cell.width;
-    const w = this.engine.world;
-    if (
-      this.engine.game.state === "title" &&
-      (w.cols !== this.size.cols || w.rows !== this.size.rows || w.K !== this.options.aspect / 2)
-    )
-      this.engine.title();
+    const w = this.engine.world,
+      resized = w.cols !== this.size.cols || w.rows !== this.size.rows || w.K !== this.options.aspect / 2;
+    if (resized && this.holding) this.engine.launch(1);
+    else if (resized && this.engine.game.state === "title") this.engine.title();
     if (supported && cell) void this.prepare(cell);
     if (cols !== this.shownSize.cols || rows !== this.shownSize.rows) this.hullShown = null;
     this.shownSize = { cols, rows };
@@ -338,7 +347,8 @@ export class State {
           : `Resize to ${w.cols} × ${w.rows} to continue, or r to restart.`;
       return out + this.placeHull(null, []) + `\x1b[1;1H${palette.fg("text")}${message.slice(0, cols)}\x1b[?2026l`;
     }
-    this.engine.tick(dt);
+    // Repeat ticks so the engine's stall cap still allows the full multiplier.
+    if (!this.holding) for (let i = 0; i < this.speed; i++) this.engine.tick(dt);
     // The hull image shows the ship's tilt once the terminal has its tile;
     // until the terminal has any, braille does.
     const L = this.engine.lander;
@@ -366,6 +376,7 @@ export class State {
         now - this.started < 1000
       : !this.answered && now - this.started < 250;
     if (waiting) tile = null;
+    else this.holding = false;
     const screen = scene.render(this.engine, waiting || (this.ready && supported), waiting ? "image" : style),
       rendered = lines(screen),
       ox = Math.floor((cols - this.engine.world.cols) / 2),
