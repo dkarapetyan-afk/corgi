@@ -20,6 +20,10 @@ pub export fn frame_diff_free(host: *Host) void {
     host.out.deinit();
     a.destroy(host);
 }
+/// Image writes outside a frame require its placements to be replayed.
+pub export fn frame_diff_invalidate_images(host: *Host) void {
+    host.differ.images_stale = true;
+}
 /// Diffs `frame` against what the host shows; returns the output's length,
 /// which `frame_diff_take` copies out, or -1.
 pub export fn frame_diff_diff(host: *Host, frame: [*]const u8, len: usize) i64 {

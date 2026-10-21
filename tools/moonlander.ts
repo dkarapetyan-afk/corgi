@@ -5,6 +5,7 @@ import { join } from "node:path";
 import * as terminal from "../src/moonlander/terminal";
 import * as faces from "../src/moonlander/faces";
 import * as hull from "../src/moonlander/hull";
+import { Differ } from "../src/frame_diff";
 export { clearText, upload } from "../src/moonlander/terminal";
 
 export async function rasterize(atlas: faces.Atlas): Promise<Uint8Array> {
@@ -72,16 +73,16 @@ export async function run(argv = process.argv.slice(2)) {
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("Run Moonlander in an interactive terminal");
   const state = new terminal.State(process.stdout.columns, process.stdout.rows, () => {}, rasterize, chosen);
-  // Every frame is written whole, so unchanged graphics needn't be resent.
-  state.incremental = true;
   let input = "",
     inputAt = 0,
     closed = false,
+    host: Differ | null = null,
     timer: ReturnType<typeof setInterval>;
   const close = () => {
     if (closed) return;
     closed = true;
     clearInterval(timer);
+    host?.destroy();
     process.stdin.off("data", onData);
     process.stdin.setRawMode(false);
     process.stdin.pause();
@@ -127,8 +128,18 @@ export async function run(argv = process.argv.slice(2)) {
     if (input === "\x1b" && performance.now() - inputAt > 40) close();
     if (closed) return;
     if (performance.now() - inputAt > 1000) input = "";
-    process.stdout.write(state.frame(process.stdout.columns, process.stdout.rows));
-    for (const write of state.takeWrites()) process.stdout.write(write);
+    const cols = process.stdout.columns,
+      rows = process.stdout.rows;
+    if (host && (host.cols !== cols || host.rows !== rows)) {
+      host.destroy();
+      host = null;
+    }
+    host ??= Differ.create(cols, rows);
+    process.stdout.write(host.diff(state.frame(cols, rows)));
+    for (const write of state.takeWrites()) {
+      process.stdout.write(write);
+      host.invalidateImages();
+    }
   };
   process.stdin.setRawMode(true);
   process.stdin.resume();

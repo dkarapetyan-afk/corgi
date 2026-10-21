@@ -1,7 +1,6 @@
 //! The host terminal's screen as the viewer last left it. A frame that changes
-//! only cells is written as the spans that differ, so a busy pane costs a few
-//! rows instead of the whole screen. Anything else a frame says (images,
-//! pointer shape, mouse modes, a full clear) sends the whole frame again.
+//! only cells is written as the runs that differ. Kitty commands that leave
+//! the cursor in place travel separately; other controls keep the full-frame fallback.
 const std = @import("std");
 const vt = @import("ghostty-vt");
 const os = @import("os.zig");
@@ -18,6 +17,10 @@ pub const Differ = struct {
     next: []u64,
     /// The frame's non-cell sequences, which must match to send only cells.
     controls: u64 = 0,
+    images: u64 = 0,
+    images_stale: bool = false,
+    has_images: bool = false,
+    image_fallback: bool = false,
     cursor: Cursor = .{},
     /// The host shows something else: the next frame goes whole.
     stale: bool = true,
@@ -56,6 +59,11 @@ pub const Differ = struct {
     /// screen. Empty when the host already shows it.
     pub fn diff(d: *Differ, out: *std.Io.Writer, frame: []const u8) !void {
         var hasher = std.hash.Wyhash.init(0);
+        var images: std.Io.Writer.Allocating = .init(a);
+        defer images.deinit();
+        var image_fallback = false;
+        var chunks = false;
+        var resets_images = std.mem.indexOfAny(u8, frame, "\n\x0b\x0c") != null;
         var start: usize = 0;
         var i: usize = 0;
         while (std.mem.indexOfScalarPos(u8, frame, i, 0x1b)) |at| {
@@ -63,16 +71,28 @@ pub const Differ = struct {
             i = at + sequence.len;
             if (sequence.kind == .cells) continue;
             d.stream.nextSlice(frame[start..at]);
-            hasher.update(frame[at..i]);
-            // Images are placed at the cursor; nothing else depends on it.
             if (sequence.kind == .image) {
+                if (!imageCommand(frame[at..i], &chunks)) image_fallback = true;
+                // Placements and cursor-relative deletes use the cursor at
+                // this point in the original frame, including save/restore.
                 const cursor = d.vt.screens.active.cursor;
-                hasher.update(std.mem.asBytes(&[2]u16{ @intCast(cursor.x), @intCast(cursor.y) }));
-            } else d.stream.nextSlice(frame[at..i]);
+                try images.writer.print("\x1b[{d};{d}H", .{ cursor.y + 1, cursor.x + 1 });
+                try images.writer.writeAll(frame[at..i]);
+            } else {
+                if (sequence.kind == .reset) resets_images = true;
+                hasher.update(frame[at..i]);
+                d.stream.nextSlice(frame[at..i]);
+            }
             start = i;
         }
         d.stream.nextSlice(frame[start..]);
         const controls = hasher.final();
+        const image_bytes = images.written();
+        const image_hash = std.hash.Wyhash.hash(0, image_bytes);
+        // Never split an upload across independently replaceable frames, or
+        // move graphics past a clear that removes their placements or data.
+        image_fallback = image_fallback or chunks or
+            (resets_images and (image_bytes.len > 0 or d.has_images));
         try d.render.update(a, &d.vt);
         d.hashCells(d.next);
         const screen = d.vt.screens.active;
@@ -80,22 +100,46 @@ pub const Differ = struct {
         defer {
             std.mem.swap([]u64, &d.cells, &d.next);
             d.controls = controls;
+            d.images = image_hash;
+            d.images_stale = false;
+            d.has_images = image_bytes.len > 0;
+            d.image_fallback = image_fallback;
             d.cursor = cursor;
             d.stale = false;
         }
-        if (d.stale or controls != d.controls) return out.writeAll(frame);
+        if (d.stale or controls != d.controls or image_fallback or d.image_fallback) return out.writeAll(frame);
         const changed = !std.mem.eql(u64, d.cells, d.next);
-        if (!changed and std.meta.eql(cursor, d.cursor)) return;
+        const images_changed = d.images_stale or image_hash != d.images;
+        if (!changed and !images_changed and std.meta.eql(cursor, d.cursor)) return;
         try out.writeAll("\x1b[?2026h\x1b[?25l");
+        var paint: Paint = .{};
         if (changed) for (0..d.rows) |row| {
             const line = row * d.cols;
             const old = d.cells[line..][0..d.cols];
             const new = d.next[line..][0..d.cols];
-            const first = std.mem.indexOfDiff(u64, old, new) orelse continue;
-            var last: usize = d.cols - 1;
-            while (old[last] == new[last]) last -= 1;
-            try d.writeSpan(out, row, first, last);
+            var first = std.mem.indexOfDiff(u64, old, new) orelse continue;
+            const raw = d.render.row_data.items(.cells)[row].items(.raw);
+            while (first > 0 and raw[first].wide == .spacer_tail) first -= 1;
+            try out.print("\x1b[{d};{d}H", .{ row + 1, first + 1 });
+            while (first < d.cols) {
+                var end = first + 1;
+                while (end < d.cols and (old[end] != new[end] or raw[end].wide == .spacer_tail)) end += 1;
+                try d.writeCells(out, &paint, row, first, end);
+                var next = end;
+                while (next < d.cols and old[next] == new[next]) next += 1;
+                if (next == d.cols) break;
+                while (next > end and raw[next].wide == .spacer_tail) next -= 1;
+                if (d.bridgeGap(paint, row, end, next)) {
+                    try d.writeCells(out, &paint, row, end, next);
+                } else try out.print("\x1b[{d};{d}H", .{ row + 1, next + 1 });
+                first = next;
+            }
         };
+        if (paint.open != null) try out.writeAll("\x1b]8;;\x1b\\");
+        if (paint.style != null) try out.writeAll("\x1b[0m");
+        // Replay the image batch in order: a delete may invalidate a later
+        // placement, and a transmission's continuation chunks belong together.
+        if (images_changed) try out.writeAll(image_bytes);
         try out.print("\x1b[{d};{d}H", .{ cursor.y + 1, cursor.x + 1 });
         if (cursor.visible) try out.writeAll("\x1b[?25h");
         try out.writeAll("\x1b[?2026l");
@@ -124,33 +168,84 @@ pub const Differ = struct {
         }
     }
 
-    fn writeSpan(d: *Differ, out: *std.Io.Writer, row: usize, from: usize, to: usize) !void {
+    const Paint = struct { style: ?vt.Style = null, open: ?Link = null };
+
+    // Only short gaps can beat a cursor move. Compare the actual bytes,
+    // including the next cell's style/link transition, in bounded stack space.
+    fn bridgeGap(d: *Differ, paint: Paint, row: usize, from: usize, to: usize) bool {
+        const move_bytes = 4 + digits(row + 1) + digits(to + 1);
+        if (to - from > move_bytes) return false;
+        const cells = d.render.row_data.items(.cells)[row];
+        const raw = cells.items(.raw);
+        // A uniform gap leaves the next cell's style transition unchanged.
+        // Count its UTF-8 bytes directly instead of formatting it twice.
+        if (paint.open == null) if (paint.style) |style| {
+            var bytes: usize = 0;
+            var col = from;
+            while (col < to) : (col += 1) {
+                const cell = raw[col];
+                if (cell.wide == .spacer_tail) continue;
+                if (cell.hyperlink or !style.eql(cellStyle(cells, col))) break;
+                bytes += if (cell.wide == .spacer_head or cell.codepoint() == 0)
+                    1
+                else
+                    std.unicode.utf8CodepointSequenceLength(cell.codepoint()) catch 1;
+                if (cell.content_tag == .codepoint_grapheme) for (cells.items(.grapheme)[col]) |extra| {
+                    bytes += std.unicode.utf8CodepointSequenceLength(extra) catch 1;
+                };
+                if (bytes > move_bytes) return false;
+            }
+            if (col == to) return true;
+        };
+        var across_bytes: [256]u8 = undefined;
+        var jump_bytes: [256]u8 = undefined;
+        var across: std.Io.Writer = .fixed(&across_bytes);
+        var jump: std.Io.Writer = .fixed(&jump_bytes);
+        var across_paint = paint;
+        var jump_paint = paint;
+        d.writeCells(&across, &across_paint, row, from, to + 1) catch return false;
+        jump.print("\x1b[{d};{d}H", .{ row + 1, to + 1 }) catch return false;
+        d.writeCells(&jump, &jump_paint, row, to, to + 1) catch return false;
+        return across.end <= jump.end;
+    }
+
+    fn cellStyle(cells: anytype, col: usize) vt.Style {
+        const cell = cells.items(.raw)[col];
+        return switch (cell.content_tag) {
+            .bg_color_palette => .{ .bg_color = .{ .palette = cell.content.color_palette.data } },
+            .bg_color_rgb => .{ .bg_color = .{ .rgb = .{ .r = cell.content.color_rgb.r, .g = cell.content.color_rgb.g, .b = cell.content.color_rgb.b } } },
+            else => if (cell.style_id == 0) .{} else cells.items(.style)[col],
+        };
+    }
+
+    fn digits(value: usize) usize {
+        var n = value;
+        var count: usize = 1;
+        while (n >= 10) : (n /= 10) count += 1;
+        return count;
+    }
+
+    fn writeCells(d: *Differ, out: *std.Io.Writer, paint: *Paint, row: usize, first: usize, end: usize) !void {
         const cells = d.render.row_data.items(.cells)[row];
         const pin = d.render.row_data.items(.pin)[row];
         const raw = cells.items(.raw);
-        var first = from;
-        while (first > 0 and raw[first].wide == .spacer_tail) first -= 1;
-        const last = if (raw[to].wide == .wide and to + 1 < raw.len) to + 1 else to;
-        try out.print("\x1b[{d};{d}H", .{ row + 1, first + 1 });
-        var style: ?vt.Style = null;
-        var open: ?Link = null;
-        for (first..last + 1) |col| {
+        for (first..end) |col| {
             const cell = raw[col];
             if (cell.wide == .spacer_tail) continue;
-            const current: vt.Style = switch (cell.content_tag) {
-                .bg_color_palette => .{ .bg_color = .{ .palette = cell.content.color_palette.data } },
-                .bg_color_rgb => .{ .bg_color = .{ .rgb = .{ .r = cell.content.color_rgb.r, .g = cell.content.color_rgb.g, .b = cell.content.color_rgb.b } } },
-                else => if (cell.style_id == 0) .{} else cells.items(.style)[col],
-            };
+            const current = cellStyle(cells, col);
             const target = if (cell.hyperlink) link(pin, col) else null;
-            if (!sameLink(open, target)) {
-                if (open != null) try out.writeAll("\x1b]8;;\x1b\\");
+            if (!sameLink(paint.open, target)) {
+                if (paint.open != null) try out.writeAll("\x1b]8;;\x1b\\");
                 if (target) |t| try out.print("\x1b]8;{s}{s};{s}\x1b\\", .{ if (t.id != null) "id=" else "", t.id orelse "", t.uri });
-                open = target;
+                paint.open = target;
             }
-            if (style == null or !style.?.eql(current)) {
-                try out.print("{f}", .{current.formatterVt()});
-                style = current;
+            if (paint.style == null or !paint.style.?.eql(current)) {
+                if (paint.style) |previous| {
+                    try writeStyle(out, previous, current);
+                } else {
+                    try out.print("{f}", .{current.formatterVt()});
+                }
+                paint.style = current;
             }
             const text = cell.codepoint();
             if (cell.wide == .spacer_head or text == 0 or cell.content_tag == .bg_color_palette or cell.content_tag == .bg_color_rgb) {
@@ -160,10 +255,74 @@ pub const Differ = struct {
             try writeCodepoint(out, text);
             if (cell.content_tag == .codepoint_grapheme) for (cells.items(.grapheme)[col]) |extra| try writeCodepoint(out, extra);
         }
-        if (open != null) try out.writeAll("\x1b]8;;\x1b\\");
-        try out.writeAll("\x1b[0m");
     }
 };
+
+/// Only detach graphics whose execution cannot change the text cursor.
+/// Ghostty parses the header; payload bytes are forwarded without decoding.
+fn imageCommand(bytes: []const u8, chunks: *bool) bool {
+    if (!std.mem.startsWith(u8, bytes, "\x1b_G") or !std.mem.endsWith(u8, bytes, "\x1b\\")) return false;
+    const body = bytes[3 .. bytes.len - 2];
+    const header = body[0 .. std.mem.indexOfScalar(u8, body, ';') orelse body.len];
+    const command = vt.kitty.graphics.CommandParser.parseString(a, header) catch return false;
+    defer command.deinit(a);
+    if (chunks.* and command.control != .transmit) return false;
+    switch (command.control) {
+        .display, .transmit_and_display => {
+            if (command.display().?.cursor_movement != .none) return false;
+        },
+        .transmit, .delete => {},
+        else => return false,
+    }
+    chunks.* = if (command.transmission()) |t| t.more_chunks else false;
+    return true;
+}
+
+/// A frame starts with a complete style; later cells only change attributes
+/// that differ. SGR 22 clears both bold and faint, so restore either survivor.
+fn writeStyle(out: *std.Io.Writer, previous: vt.Style, next: vt.Style) !void {
+    if (next.default()) return out.writeAll("\x1b[0m");
+    const old = previous.flags;
+    const new = next.flags;
+    if ((old.bold and !new.bold) or (old.faint and !new.faint)) {
+        try out.writeAll("\x1b[22m");
+        if (new.bold) try out.writeAll("\x1b[1m");
+        if (new.faint) try out.writeAll("\x1b[2m");
+    } else {
+        if (!old.bold and new.bold) try out.writeAll("\x1b[1m");
+        if (!old.faint and new.faint) try out.writeAll("\x1b[2m");
+    }
+    inline for (.{
+        .{ "italic", 3, 23 },
+        .{ "blink", 5, 25 },
+        .{ "inverse", 7, 27 },
+        .{ "invisible", 8, 28 },
+        .{ "strikethrough", 9, 29 },
+        .{ "overline", 53, 55 },
+    }) |flag| {
+        if (@field(old, flag[0]) != @field(new, flag[0]))
+            try out.print("\x1b[{d}m", .{if (@field(new, flag[0])) @as(u8, flag[1]) else @as(u8, flag[2])});
+    }
+    if (old.underline != new.underline) try out.writeAll(switch (new.underline) {
+        .none => "\x1b[24m",
+        .single => "\x1b[4m",
+        .double => "\x1b[4:2m",
+        .curly => "\x1b[4:3m",
+        .dotted => "\x1b[4:4m",
+        .dashed => "\x1b[4:5m",
+    });
+    if (!previous.fg_color.eql(next.fg_color)) try writeColor(out, 38, next.fg_color);
+    if (!previous.bg_color.eql(next.bg_color)) try writeColor(out, 48, next.bg_color);
+    if (!previous.underline_color.eql(next.underline_color)) try writeColor(out, 58, next.underline_color);
+}
+
+fn writeColor(out: *std.Io.Writer, prefix: u8, color: vt.Style.Color) !void {
+    switch (color) {
+        .none => try out.print("\x1b[{d}m", .{prefix + 1}),
+        .palette => |index| try out.print("\x1b[{d};5;{d}m", .{ prefix, index }),
+        .rgb => |rgb| try out.print("\x1b[{d};2;{d};{d};{d}m", .{ prefix, rgb.r, rgb.g, rgb.b }),
+    }
+}
 
 const Link = struct { uri: []const u8, id: ?[]const u8 };
 fn link(pin: vt.Pin, col: usize) ?Link {
@@ -200,7 +359,7 @@ fn writeCodepoint(out: *std.Io.Writer, cp: u21) !void {
 
 const Sequence = struct {
     len: usize,
-    kind: enum { cells, image, control },
+    kind: enum { cells, image, control, reset },
 };
 /// Sorts the escape sequence at the start of `bytes`. Cells are what the
 /// mirror can redraw: text, styles, links, cursor moves and erases within
@@ -228,15 +387,22 @@ fn scan(bytes: []const u8) Sequence {
             const kind: @FieldType(Sequence, "kind") = switch (bytes[end]) {
                 // Cursor visibility is the cursor's; the frame's own
                 // synchronized update is replaced by the diff's.
-                'h', 'l' => if (std.mem.eql(u8, params, "?25") or std.mem.eql(u8, params, "?2026")) .cells else .control,
+                'h', 'l' => if (std.mem.eql(u8, params, "?25") or std.mem.eql(u8, params, "?2026"))
+                    .cells
+                else if (std.mem.eql(u8, params, "?1049") or std.mem.eql(u8, params, "?1047") or std.mem.eql(u8, params, "?47"))
+                    .reset
+                else
+                    .control,
                 // A full clear also drops the host's images.
-                'J' => if (std.mem.eql(u8, params, "2") or std.mem.eql(u8, params, "3")) .control else .cells,
+                'J' => if (std.mem.eql(u8, params, "2") or std.mem.eql(u8, params, "3")) .reset else .cells,
+                // Scrolling can move image anchors along with the text.
+                'S', 'T', 'L', 'M' => .reset,
                 'q' => .control,
                 else => .cells,
             };
             return .{ .len = end + 1, .kind = kind };
         },
-        'c' => return .{ .len = 2, .kind = .control },
+        'c', 'D', 'E', 'M' => return .{ .len = 2, .kind = .reset },
         else => return .{ .len = 2, .kind = .cells },
     }
 }

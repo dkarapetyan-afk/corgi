@@ -1,6 +1,7 @@
 //! The host terminal's screen as the viewer last left it. The differ is
 //! Corgi's own `frame_diff.zig` behind the native boundary: a frame that
-//! changes only cells is written as the spans that differ.
+//! changes cells is written as the spans that differ. Cursor-preserving Kitty
+//! commands travel separately, so moving an image doesn't repaint the text.
 import type { Pointer } from "bun:ffi";
 import { n, ptr } from "./native_ffi";
 
@@ -17,6 +18,10 @@ export class Differ {
   }
   destroy(): void {
     n.frame_diff_free(this.handle);
+  }
+  /** Replay placements after an image upload or deletion outside the frame. */
+  invalidateImages(): void {
+    n.frame_diff_invalidate_images(this.handle);
   }
   /** What to write so the host shows `frame`, which starts from a clear
    * screen. Empty when the host already shows it. */

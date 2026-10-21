@@ -41,7 +41,7 @@ const hideHull = `\x1b_Ga=d,d=r,x=${hullFirst},y=${hullLast},q=2\x1b\\`;
 const removeHull = `\x1b_Ga=d,d=R,x=${hullFirst},y=${hullLast},q=2\x1b\\`;
 /** Ghostty's ED2 also deletes stored images, including an unplaced atlas. */
 export function clearText(cols: number, rows: number): string {
-  let out = hideFace + `\x1b[0m${palette.bg("bg")}`;
+  let out = `\x1b[0m${palette.bg("bg")}`;
   for (let row = 0; row < rows; row++) out += `\x1b[${row + 1};1H${" ".repeat(cols)}`;
   return out;
 }
@@ -58,16 +58,14 @@ export function upload(png: Uint8Array, id = imageId): string {
   }
   return out;
 }
-function place(items: faces.Placement[], atlas: faces.Atlas, ox: number, oy: number): string {
-  let out = hideFace;
-  items.forEach((p, i) => {
+function facePieces(items: faces.Placement[], atlas: faces.Atlas, ox: number, oy: number): string[] {
+  return items.map((p, i) => {
     const x = p.x + ox * atlas.cw,
       y = p.y + oy * atlas.ch,
       col = Math.floor(x / atlas.cw),
       row = Math.floor(y / atlas.ch);
-    out += `\x1b[${row + 1};${col + 1}H\x1b_Ga=p,i=${imageId},p=${i + 1},x=${p.sx},y=${p.sy},w=${p.w},h=${p.h},X=${x - col * atlas.cw},Y=${y - row * atlas.ch},z=1,C=1,q=1\x1b\\`;
+    return `\x1b[${row + 1};${col + 1}H\x1b_Ga=p,i=${imageId},p=${i + 1},x=${p.sx},y=${p.sy},w=${p.w},h=${p.h},X=${x - col * atlas.cw},Y=${y - row * atlas.ch},z=1,C=1,q=1\x1b\\`;
   });
-  return out;
 }
 
 /** Each piece of the hull keeps its placement id, so placing it again moves
@@ -122,17 +120,10 @@ export class State {
   private lastTile: number | null = null;
   /** The terminal refused a tile, so the hull stays braille. */
   private hullRefused = false;
-  /** The hull tile and pieces the terminal shows, when known. */
-  private hullShown: { tile: number | null; pieces: string[] } | null = null;
-  private shownSize = { cols: 0, rows: 0 };
   /** With autoland the first flight, rather than the title, waits for the
    * terminal before it starts. */
   private holding: boolean;
   private speed: number;
-  /** Every frame reaches the terminal, so the hull is sent only when it
-   * changes. The viewer drops frames when its host falls behind, so there
-   * each frame states the whole hull. */
-  incremental = false;
   constructor(
     cols: number,
     rows: number,
@@ -161,7 +152,6 @@ export class State {
     this.closed = true;
     this.generation++;
     this.writes = [];
-    this.hullShown = null;
     return removeFace + removeHull;
   }
   release(): void {
@@ -231,7 +221,6 @@ export class State {
       } else if (result[2].startsWith("ENOENT")) {
         // The terminal lost the tile; send it again.
         this.tiles.delete(tile);
-        this.hullShown = null;
       } else this.hullRefused = true;
       this.changed();
       return true;
@@ -281,7 +270,6 @@ export class State {
       this.tiles.clear();
       this.sprites.clear();
       this.lastTile = null;
-      this.hullShown = null;
     }
     if (this.tiles.has(index) || this.closed) return;
     this.tiles.set(index, "sent");
@@ -306,19 +294,6 @@ export class State {
         this.changed();
       });
   }
-  /** What the terminal needs to show `pieces` of tile `tile`, and nothing else of the hull. */
-  private placeHull(tile: number | null, pieces: string[]): string {
-    const shown = this.hullShown;
-    this.hullShown = this.incremental ? { tile, pieces } : null;
-    if (tile !== null) this.lastTile = tile;
-    if (!shown) return hideHull + pieces.join("");
-    if (shown.tile !== tile)
-      return (shown.tile === null ? "" : `\x1b_Ga=d,d=i,i=${hullFirst + shown.tile},q=2\x1b\\`) + pieces.join("");
-    let out = pieces.filter((piece, i) => piece !== shown.pieces[i]).join("");
-    for (let p = pieces.length + 1; p <= shown.pieces.length; p++)
-      out += `\x1b_Ga=d,d=i,i=${hullFirst + tile!},p=${p},q=2\x1b\\`;
-    return out;
-  }
   frame(
     cols: number,
     rows: number,
@@ -335,17 +310,17 @@ export class State {
     if (resized && this.holding) this.engine.launch(1);
     else if (resized && this.engine.game.state === "title") this.engine.title();
     if (supported && cell) void this.prepare(cell);
-    if (cols !== this.shownSize.cols || rows !== this.shownSize.rows) this.hullShown = null;
-    this.shownSize = { cols, rows };
     const dt = this.last === null ? 0 : (now - this.last) / 1000;
     this.last = now;
-    let out = "\x1b[?1003h\x1b[?2026h\x1b[?25l" + clearText(cols, rows);
+    let out = "\x1b[?2026h\x1b[?1003h\x1b[?25l" + clearText(cols, rows);
     if (cols < 72 || rows < 24 || cols < this.engine.world.cols || rows < this.engine.world.rows) {
       const message =
         cols < 72 || rows < 24
           ? "Moonlander needs 72 columns × 24 rows. Resize, or q to go back."
           : `Resize to ${w.cols} × ${w.rows} to continue, or r to restart.`;
-      return out + this.placeHull(null, []) + `\x1b[1;1H${palette.fg("text")}${message.slice(0, cols)}\x1b[?2026l`;
+      return (
+        out + `\x1b[1;1H${palette.fg("text")}${message.slice(0, cols)}` + hideHull + hideFace + "\x1b[0m\x1b[?2026l"
+      );
     }
     // Repeat ticks so the engine's stall cap still allows the full multiplier.
     if (!this.holding) for (let i = 0; i < this.speed; i++) this.engine.tick(dt);
@@ -385,8 +360,8 @@ export class State {
       out += `\x1b[${row + oy + 1};${ox + 1}H${line}`;
     });
     out += `\x1b[1;3H${palette.fg("muted")}[ back ]`;
-    out += this.placeHull(
-      tile,
+    if (tile !== null) this.lastTile = tile;
+    const pieces =
       tile === null || !cell
         ? []
         : hullPieces(
@@ -395,15 +370,16 @@ export class State {
             cell,
             ox,
             oy,
-          ),
-    );
-    if (this.ready && supported && this.atlas && !waiting)
-      out += place(
-        faces.placements(this.engine, this.atlas, screen.occludes, style !== "image", turned),
-        this.atlas,
-        ox,
-        oy,
-      );
-    return out + "\x1b[0m\x1b[?25l\x1b[?2026l";
+          );
+    const face =
+      this.ready && supported && this.atlas && !waiting
+        ? facePieces(
+            faces.placements(this.engine, this.atlas, screen.occludes, style !== "image", turned),
+            this.atlas,
+            ox,
+            oy,
+          )
+        : [];
+    return out + "\x1b[0m" + hideHull + pieces.join("") + hideFace + face.join("") + "\x1b[?2026l";
   }
 }

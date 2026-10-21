@@ -86,7 +86,7 @@ export function place(
     top = Math.round(y * cell.height),
     from = Math.max(0, clip.top * cell.height - top),
     to = Math.min(height, clip.bottom * cell.height - top),
-    // In 64 steps: each change sends the whole frame again.
+    // In 64 steps: each change uploads a new tint image.
     level = Math.round((Math.round(clamp01(alpha) * 64) * 255) / 64);
   if (width <= 0 || to <= from || level === 0) return "";
   const shown = top + from,

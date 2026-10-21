@@ -4,6 +4,154 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as terminal from "./terminal";
 import * as cli from "../../tools/moonlander";
+import * as native from "../native_ffi";
+import * as palette from "../palette";
+import { Differ } from "../frame_diff";
+
+// Kitty placements keyed by image and placement id, including their cursor anchor.
+function applyImages(output: string, placed: Map<string, string>) {
+  let cursor = "";
+  for (const match of output.matchAll(/\x1b\[(\d+);(\d+)H|\x1b_G([^\x1b]*)\x1b\\/g)) {
+    if (!match[3]) {
+      cursor = `${match[1]}/${match[2]}`;
+      continue;
+    }
+    const fields = Object.fromEntries(match[3].split(",").map(field => field.split("=")));
+    if (fields.a === "p") placed.set(`${fields.i}/${fields.p}`, cursor + "/" + match[3]);
+    if (fields.a === "d")
+      for (const key of placed.keys()) {
+        const [id, p] = key.split("/");
+        if (
+          (fields.d?.toLowerCase() === "r" && Number(id) >= Number(fields.x) && Number(id) <= Number(fields.y)) ||
+          (fields.d?.toLowerCase() === "i" && id === fields.i && (!fields.p || p === fields.p))
+        )
+          placed.delete(key);
+      }
+  }
+}
+
+test("deltas reproduce full frames through skipped frames, camera motion, resize, restart and recoloring", async () => {
+  const state = new terminal.State(100, 30),
+    whole = native.terminal(),
+    delta = native.terminal(),
+    fullImages = new Map<string, string>(),
+    diffImages = new Map<string, string>(),
+    cell = { width: 10, height: 22 };
+  let cols = 100,
+    rows = 30,
+    bytes = 0,
+    fullBytes = 0,
+    host: Differ | null = null;
+  const resize = (width: number, height: number) => {
+    cols = width;
+    rows = height;
+    whole.resize(cols, rows);
+    delta.resize(cols, rows);
+  };
+  resize(cols, rows);
+  whole.feed("\x1b[?7l");
+  delta.feed("\x1b[?7l");
+  try {
+    for (let i = 0; i < 120; i++) {
+      if (i === 4) state.engine.launch(1);
+      if (i > 4) state.engine.keys.up = true;
+      if (i === 40) state.engine.lander!.x = state.engine.world.W - 1;
+      if (i === 44) state.engine.lander!.x = 1;
+      if (i === 48) state.engine.press("right");
+      if (i === 60) resize(60, 20);
+      if (i === 68) resize(120, 40);
+      if (i === 76) state.engine.press("restart");
+      if (i === 100) palette.use("animal_style");
+      const frame = state.frame(cols, rows, cell, true, (i * 1000) / 30);
+      // The viewer generates intermediate frames without sending them.
+      if (i % 4 === 0) {
+        if (host && (host.cols !== cols || host.rows !== rows)) {
+          host.destroy();
+          host = null;
+        }
+        host ??= Differ.create(cols, rows);
+        const out = host.diff(frame).toString();
+        expect(host.diff(frame).length).toBe(0);
+        bytes += Buffer.byteLength(out);
+        fullBytes += Buffer.byteLength(frame);
+        whole.feed(frame);
+        delta.feed(out);
+        applyImages(frame, fullImages);
+        applyImages(out, diffImages);
+        expect([...diffImages].sort()).toEqual([...fullImages].sort());
+        // The cursor is hidden; compare the rendered text and colors at a common cursor.
+        whole.feed("\x1b[H\x1b[0m");
+        delta.feed("\x1b[H\x1b[0m");
+        expect(delta.snapshot()).toEqual(whole.snapshot());
+      }
+      await Bun.sleep(1);
+      for (const write of state.takeWrites()) {
+        applyImages(write, fullImages);
+        applyImages(write, diffImages);
+        host?.invalidateImages();
+        for (const id of write.matchAll(/a=t,t=d,f=100,i=(\d+)/g)) state.reply(`\x1b_Gi=${id[1]};OK\x1b\\`, cols, rows);
+      }
+    }
+    expect(bytes).toBeLessThan(fullBytes * 0.6);
+  } finally {
+    palette.use("corgi");
+    state.close();
+    host?.destroy();
+    whole.close();
+    delta.close();
+  }
+});
+
+test("text-only frames also use deltas and an unchanged frame sends nothing", () => {
+  const state = new terminal.State(100, 30, () => {}, undefined, { hull: "fixed" }),
+    host = Differ.create(100, 30);
+  try {
+    host.diff(state.frame(100, 30, null, false, 300));
+    const full = state.frame(100, 30, null, false, 334),
+      out = host.diff(full);
+    expect(Buffer.byteLength(out)).toBeLessThan(Buffer.byteLength(full) / 2);
+    expect(host.diff(full).length).toBe(0);
+  } finally {
+    state.close();
+    host.destroy();
+  }
+});
+
+test("an unchanged paused ship is placed again after a lost tile and skipped recovery frames", async () => {
+  const state = new terminal.State(100, 30),
+    host = Differ.create(100, 30),
+    cell = { width: 10, height: 22 };
+  const uploads = async () => {
+    await Bun.sleep(1);
+    for (const write of state.takeWrites()) {
+      host.invalidateImages();
+      for (const id of write.matchAll(/a=t,t=d,f=100,i=(\d+)/g)) state.reply(`\x1b_Gi=${id[1]};OK\x1b\\`, 100, 30);
+    }
+  };
+  try {
+    for (let i = 0; i < 6; i++) {
+      host.diff(state.frame(100, 30, cell, true, i * 34));
+      await uploads();
+    }
+    state.engine.game.paused = true;
+    const frame = state.frame(100, 30, cell, true, 250);
+    expect(frame).toContain("a=p,i=730223,p=1");
+    host.diff(frame);
+    expect(host.diff(frame).length).toBe(0);
+    state.reply("\x1b_Gi=730223,p=1;ENOENT: image not found\x1b\\", 100, 30);
+    state.frame(100, 30, cell, true, 250);
+    await uploads();
+    const recovered = state.frame(100, 30, cell, true, 250);
+    expect(recovered).toBe(frame);
+    const out = host.diff(recovered).toString();
+    expect(out).toContain("a=p,i=730223,p=1");
+    expect(out).not.toContain("[ back ]");
+    expect(host.diff(recovered).length).toBe(0);
+  } finally {
+    state.close();
+    host.destroy();
+  }
+});
 
 test("--speed accepts integer multipliers from 2 through 10", () => {
   expect(cli.options([])).toEqual({});

@@ -394,7 +394,14 @@ export async function run(
               } catch (error) {
                 view.notice((error as Error).message);
               }
-          } else writeAll(effect.write_terminal);
+          } else {
+            writeAll(effect.write_terminal);
+            if (effect.write_terminal.includes("\x1b_G")) {
+              host?.invalidateImages();
+              previous = "";
+              view.dirty = true;
+            }
+          }
         }
         view.clearEffects();
         // The host's answer wakes a viewer waiting on it; only a full terminal is polled.

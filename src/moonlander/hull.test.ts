@@ -1,10 +1,16 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as moonlander from "./moonlander";
 import * as faces from "./faces";
 import * as hull from "./hull";
 import * as palette from "../palette";
 import * as terminal from "./terminal";
 import { options } from "../../tools/moonlander";
+import { Differ } from "../frame_diff";
+
+const cleanup: (() => void)[] = [];
+afterEach(() => {
+  for (const close of cleanup.splice(0)) close();
+});
 
 function create() {
   const engine = moonlander.create({ size: () => ({ cols: 72, rows: 40 }), aspect: 2.2, random: () => 0.5 });
@@ -95,14 +101,19 @@ test("--autoland lands every flight by itself, beside the other switches", () =>
 // A terminal that answers every upload, so frames can be read for what they send.
 function playing(style: hull.Style = "image") {
   const state = new terminal.State(100, 30, () => {}, undefined, { hull: style }),
-    cell = { width: 10, height: 22 };
-  state.incremental = true;
+    cell = { width: 10, height: 22 },
+    host = Differ.create(100, 30);
+  cleanup.push(() => {
+    host.destroy();
+    state.close();
+  });
   let now = 0;
   const frame = async () => {
     now += 1000 / 30;
-    const out = state.frame(100, 30, cell, true, now);
+    const out = host.diff(state.frame(100, 30, cell, true, now)).toString();
     await Bun.sleep(1);
     const writes = state.takeWrites().join("");
+    if (writes) host.invalidateImages();
     for (const id of writes.matchAll(/a=t,t=d,f=100,i=(\d+)/g)) state.reply(`\x1b_Gi=${id[1]};OK\x1b\\`, 100, 30);
     return out + writes;
   };
@@ -123,7 +134,8 @@ test("the image hull sends each tilt's tile once, with the tilts either side ahe
   let turned = await frame();
   // The turn's tile was waiting, so it shows at once and the old one's placement goes.
   expect(turned).toContain("a=p,i=730224,p=1");
-  expect(turned).toContain("\x1b_Ga=d,d=i,i=730223,q=2\x1b\\");
+  expect(turned).toContain("\x1b_Ga=d,d=r,x=730210,y=730236,q=2\x1b\\");
+  expect(turned).not.toContain("a=p,i=730223");
   for (let i = 0; i < 5; i++) turned += await frame();
   expect(uploads(turned)).toEqual([730225]);
   state.engine.press("left");
