@@ -2356,10 +2356,10 @@ function drawHero(t) {
   simEl.classList.toggle("launching", !heroReady);
   simEl.tabIndex = heroReady ? 0 : -1;
   simEl.setAttribute("aria-label", !heroReady
-    ? "A terminal types $ corgi, then opens the Corgi environment."
+    ? "A terminal starting Corgi."
     : H.single
-      ? "A corgi session: tap an agent to show its pane, or open the Moonlander game."
-      : "A corgi session: Claude and Codex side by side. Hover the agents, click to switch, or type in moonlander's shell.");
+      ? "A Corgi session. Tap an agent to see its pane."
+      : "A Corgi session with Claude and Codex agents. Click an agent to switch to it.");
   if (heroReady) heroScreen.paint(crop(hero.compose(t), 0, 0, ROWS, H.cols));
   else {
     const g = blank(ROWS, H.cols);
@@ -2414,7 +2414,7 @@ function drawRunning(t) {
   const detached = ms >= 8000 && ms < 10500;
   runningWindow.classList.toggle("detached", detached);
   runningWindow.setAttribute("aria-hidden", String(detached));
-  runningStatus.textContent = detached ? "window closed · agents + dev server still running" : ms >= 12000 ? "reconnected · same environment, independent views" : "agents + dev server · running in the background";
+  runningStatus.textContent = detached ? "window closed · agents + dev server still running" : "agents + dev server · running in the background";
   for (const v of runningViews) {
     const start = v.name === "agent" && ms >= 10500 ? 10500 : v.at;
     const typed = Math.max(0, Math.min(5, Math.floor((ms - start) / 130)));
