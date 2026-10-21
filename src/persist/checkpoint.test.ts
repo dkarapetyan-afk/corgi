@@ -207,6 +207,31 @@ test("conversation checkpoint restores shared bindings and detached unread state
     r.destroy();
   }
 });
+test("cold recovery keeps a pane's unselected completion until it forgets that conversation", async () => {
+  using original = fresh();
+  using restored = new Runtime();
+  const earlier = original.conversations.get("codex", "earlier"),
+    selected = original.conversations.get("codex", "selected");
+  earlier.state.observation.finish("completed", "protocol");
+  show(original, earlier);
+  const binding = original.panes[0].attachment;
+  binding.select(selected);
+  binding.hook_seq = 50n;
+  binding.selection_hash = 123n;
+  await restore(restored, cp.capture(original, false), false);
+  expect(restored.conversations.byId(earlier.id)?.state.observation.completed).toBe(1n);
+  expect(restored.conversations.byId(earlier.id)?.state.observation.read).toBe(0n);
+  expect(restored.conversations.byId(earlier.id)?.state.state).toBe("unknown");
+  const recovered = restored.panes[0].attachment;
+  expect(recovered.actor?.id).toBe(selected.id);
+  expect(recovered.hook_seq).toBe(0n);
+  expect(recovered.selection_hash).toBe(0n);
+  expect(recovered.generation).toBe(binding.generation + 1n);
+  expect(restored.pruneConversations()).toBe(false);
+  recovered.detach();
+  expect(restored.pruneConversations()).toBe(true);
+  expect(restored.conversations.byId(earlier.id)).toBeNull();
+});
 test("a restore forgets the conversations nothing refers to, even a full registry's", async () => {
   const r = fresh(),
     shown = r.conversations.get("claude", "shown");

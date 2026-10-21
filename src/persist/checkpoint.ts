@@ -117,7 +117,7 @@ export function captureBinding(binding: Attachment, live: boolean) {
     generation: binding.generation,
     selection_hash: live ? binding.selection_hash : 0,
     hook_seq: live ? binding.hook_seq : 0,
-    known: live ? [...binding.known] : [],
+    known: [...binding.known],
     provisional: live ? binding.provisional : historicalAgent(binding.provisional),
   };
 }
@@ -130,7 +130,7 @@ export function restoreBinding(registry: Registry, value: any, live: boolean): A
   binding.selection_hash = live ? BigInt(value.selection_hash ?? 0) : 0n;
   binding.hook_seq = live ? BigInt(value.hook_seq ?? 0) : 0n;
   if (value.actor) binding.actor = registry.byId(value.actor) ?? invalid();
-  if (live) binding.known = (value.known ?? []).map((id: number) => (registry.byId(id) ?? invalid()).id);
+  binding.known = (value.known ?? []).map((id: number) => (registry.byId(id) ?? invalid()).id);
   return binding;
 }
 export function capture(r: Runtime, live: boolean) {

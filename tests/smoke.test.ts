@@ -342,6 +342,13 @@ class Smoke extends Runtime {
     await this.click(21, 1);
     await this.frame_with("New workspace");
     await this.input("Project\r");
+    this.assertEqual((await this.workspaces()).length, 1);
+    // Repeat on the viewer's clock without a wait that would release the key.
+    for (let repeat = 0; repeat < 80 && (await this.workspaces()).length === 1; repeat++) {
+      await this.client!.advance(0.05);
+      await this.input("\r");
+    }
+    this.assertEqual((await this.workspaces()).length, 2);
     await this.frame_with("No agents yet");
     const ws = (await this.workspaces()).find((w: any) => w.active);
     this.assertEqual([ws.name, ws.cwd], ["Project", realpathSync(this.temp.name)]);

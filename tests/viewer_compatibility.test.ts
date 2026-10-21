@@ -155,7 +155,7 @@ class ViewerCompatibility extends Runtime {
       (viewer.proc.stdin as Bun.FileSink).write('{"op":"poll"}\n');
       await (viewer.proc.stdin as Bun.FileSink).flush();
       const code = await viewer.proc.exited;
-      const stderr = await (viewer as any).stderr;
+      const stderr = await viewer.stderr;
       this.assert_explanation(code, stderr);
     }
   }
