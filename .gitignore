@@ -23,3 +23,6 @@ zig-pkg/
 # Repeatable live-model eval outputs; curated scorecards can be checked in separately.
 /evals/results/
 /playback
+
+# Local audio authoring workspace.
+/docs/sound-audition/

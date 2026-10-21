@@ -1,7 +1,6 @@
 # Integration tests
 
-Corgi, the test harness and the provider fixtures all run on Bun. The
-optional audio-authoring utilities in `docs/sound-audition/` remain Python.
+Corgi, the test harness and the provider fixtures all run on Bun.
 No integration test or generated provider program requires Python.
 
 Build the test-enabled binary, then run the suites:
