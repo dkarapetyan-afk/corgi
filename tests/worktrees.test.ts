@@ -44,6 +44,8 @@ class Worktrees extends Runtime {
     await a.advance(0.6);
     this.assertIn("Compared with local main", (await a.poll()).data);
     this.assertNotIn("Compared with local main", (await b.poll()).data);
+    // The overview sorts by last edit; the history belongs to this checkout.
+    await a.action("worktree-select", realpathSync(join(this.temp.name, ".worktrees/clipboard")));
     await this.until(async () => (await a.poll()).data.includes("Checkout history"), 15);
     this.assertNotIn("… more", (await a.poll()).data);
     this.assertIn("╭┄┄┄", (await a.poll()).data);
@@ -71,6 +73,7 @@ class Worktrees extends Runtime {
     this.assertNotIn("Compared with local main", (await a.poll()).data);
     this.assertIn("2 worktrees", a.state.data);
     await a.input("\x1b[<0;20;4M\x1b[<0;20;4m");
+    await a.action("worktree-select", realpathSync(join(this.temp.name, ".worktrees/clipboard")));
     await a.input("\r");
     this.assertNotIn("Compared with local main", (await a.poll()).data);
     // Entering the checkout brings its three newest conversations back asleep.
