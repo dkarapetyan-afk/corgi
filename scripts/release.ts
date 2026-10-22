@@ -315,17 +315,18 @@ async function smokeTest(binary: string) {
     if (code) throw new Error(`Smoke test failed: corgi ${args[0]}: ${err.trim() || code}`);
     return out;
   };
-  const rpc = async (command?: unknown) =>
-    JSON.parse(
-      await cli(
-        "rpc",
-        JSON.stringify(
-          command ? { op: "session.command", protocol: 1, command } : { op: "session.snapshot", protocol: 1 },
-        ),
-      ),
-    );
+  let protocol = 0;
+  const request = async (message: { op: string }) => {
+    const reply = JSON.parse(await cli("rpc", JSON.stringify(message)));
+    if (reply.err) throw new Error(`Smoke test failed: ${message.op}: ${reply.err}`);
+    return reply;
+  };
+  const rpc = (command?: unknown) =>
+    request(command ? { op: "session.command", protocol, command } : { op: "session.snapshot", protocol });
   try {
     await cli("start");
+    // The management protocol is stable; hello names the runtime protocol this build speaks.
+    protocol = (await request({ op: "hello", protocol: 1 })).protocol;
     const session = await rpc();
     await rpc({ "pane.create": { workspace: session.workspaces[0].id, cwd: home, command: "exec /bin/sh" } });
     const pane = (await rpc()).panes[0].id;
