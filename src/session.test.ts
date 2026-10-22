@@ -5,6 +5,8 @@ import { Workspace } from "./workspace";
 import { Terminal } from "./pane/terminal";
 import { execute, location, snapshot, viewerSnapshot } from "./session";
 import { stringify } from "./json";
+import * as worktrees from "./worktrees";
+import { parseInventory } from "./trackers/worktrees";
 const ctx = { socket: "/tmp/corgi-test", executable: "/bin/corgi", theme: {} };
 function setup() {
   const r = new Runtime(),
@@ -21,6 +23,50 @@ function pane(r: Runtime, w: Workspace, split: number | null = null) {
   return id;
 }
 const topology = (r: Runtime) => stringify(r.workspaces.items.map(w => w.model));
+test("the first snapshot places a reopened conversation without waiting for discovery", async () => {
+  const { r, home } = setup();
+  try {
+    home.worktrees = {
+      common_dir: "/tmp/project/.git",
+      base: null,
+      stale: false,
+      agents: [],
+      entries: parseInventory(
+        "worktree /tmp\0branch refs/heads/main\0\0worktree /tmp/linked\0branch refs/heads/feature\0\0",
+      ),
+    };
+    const id = pane(r, home),
+      actor = r.conversations.get("codex", "known");
+    r.pane(id)!.attachment.select(actor);
+    r.pane(id)!.dormant = true;
+    worktrees.recordPlacement(actor.state, home.worktrees.common_dir, [
+      { target: { pane: id }, path: "/tmp/linked", source: "write", stale: false },
+    ]);
+    await execute(r, ctx, { "pane.close": { target: id } });
+    const reopened = await execute(r, ctx, {
+      "agent.resume": { workspace: home.id, cwd: "/tmp", provider: "codex", session: "known", asleep: true, name: "" },
+    });
+    expect(reopened.pane).not.toBe(id);
+    const associations = () => snapshot(r).workspaces[0].worktrees!.agents;
+    expect(associations()).toEqual([
+      { target: { pane: reopened.pane }, path: "/tmp/linked", source: "write", stale: false },
+    ]);
+    // The same binding path handles manually selected known and unseen sessions.
+    const fresh = r.conversations.get("codex", "unseen");
+    r.pane(reopened.pane!)!.attachment.select(fresh);
+    expect(associations()).toEqual([]);
+    r.pane(reopened.pane!)!.attachment.select(actor);
+    expect(associations()[0].path).toBe("/tmp/linked");
+    // Another provider with the same session text cannot inherit this placement.
+    r.pane(reopened.pane!)!.attachment.select(r.conversations.get("claude", "known"));
+    expect(associations()).toEqual([]);
+    r.pane(reopened.pane!)!.attachment.select(actor);
+    home.worktrees.entries = home.worktrees.entries.filter(e => e.primary);
+    expect(associations()).toEqual([]);
+  } finally {
+    r.destroy();
+  }
+});
 test("a workspace takes tabs past 24, from new tabs and moves alike", async () => {
   const { r, home, away } = setup();
   try {

@@ -14,6 +14,9 @@ import { Text } from "../agents";
 import { Attachment, type Actor } from "../conversations";
 import { parseLabel } from "../activity/summary";
 import * as links from "../trackers/link_labels";
+import * as worktrees from "../worktrees";
+import { parseInventory } from "../trackers/worktrees";
+import { snapshot } from "../session";
 const fixtures = resolve(import.meta.dir, "../fixtures");
 const fresh = () => {
   const r = new Runtime(),
@@ -35,6 +38,117 @@ const show = (r: Runtime, actor: Actor) => {
 const roundtrip = (state: any) => json.parse(json.stringify(state));
 const restore = (r: Runtime, state: any, live: boolean) =>
   cp.restore(r, roundtrip(state), live, "/tmp/unused-checkpoint.sock", "/tmp/corgi");
+test("worktree evidence survives live and cold recovery independently of the launch directory", async () => {
+  using original = fresh();
+  const actor = original.conversations.get("codex", "worktree-session");
+  actor.state.cwd = new Text("/tmp");
+  show(original, actor);
+  const location: worktrees.Location = {
+    cwd: "/tmp/worktree",
+    writes: ["/tmp/worktree/file"],
+    ran: ["/tmp/worktree"],
+    basis: "named",
+  };
+  worktrees.recordLocation(actor.state, location);
+  const placement: { session: string; agents: worktrees.Association[] } = {
+    session: actor.state.sessionId(),
+    agents: [{ target: { pane: original.panes[0].id }, path: "/tmp/worktree", source: "write", stale: false }],
+  };
+  original.worktree_tracker.restore([placement]);
+  worktrees.recordPlacement(actor.state, "/tmp/project/.git", placement.agents);
+  for (const live of [true, false]) {
+    using next = new Runtime();
+    const state = cp.capture(original, live);
+    worktrees.observed(actor.state)!.writes.push("/tmp/later");
+    await restore(next, state, live);
+    expect(worktrees.observed(next.conversations.byId(actor.id)!.state)).toEqual(location);
+    expect(next.worktree_tracker.capture()).toEqual([placement]);
+    expect(worktrees.placement(next.conversations.byId(actor.id)!.state)).toEqual(worktrees.placement(actor.state));
+    worktrees.recordLocation(actor.state, location);
+  }
+  const old = cp.capture(original, true);
+  Reflect.deleteProperty(old, "worktree_placements");
+  Reflect.deleteProperty(old.conversations[0], "worktree_location");
+  Reflect.deleteProperty(old.conversations[0], "worktree_placement");
+  using next = new Runtime();
+  await restore(next, old, true);
+  expect(worktrees.observed(next.conversations.byId(actor.id)!.state)).toBeNull();
+  expect(next.worktree_tracker.capture()).toEqual([]);
+  expect(worktrees.placement(next.conversations.byId(actor.id)!.state)).toBeNull();
+});
+test("live handoff publishes worktree groups in its first snapshot before discovery", async () => {
+  using original = fresh();
+  const ws = original.workspaces.items[0],
+    actor = original.conversations.get("codex", "worktree-session");
+  show(original, actor);
+  const entries = parseInventory(
+    "worktree /tmp\0branch refs/heads/main\0\0worktree /tmp/linked\0branch refs/heads/feature\0\0",
+  );
+  for (const entry of entries) entry.available = true;
+  entries[1].comparison = { ahead: 9007199254740993n, behind: 2n };
+  ws.worktrees = { common_dir: "/tmp/.git", base: null, stale: false, entries, agents: [] };
+  worktrees.recordPlacement(actor.state, ws.worktrees.common_dir, [
+    { target: { pane: original.panes[0].id }, path: "/tmp/linked", source: "write", stale: false },
+  ]);
+  const expected = snapshot(original).workspaces[0].worktrees,
+    saved = cp.capture(original, true);
+  using next = new Runtime();
+  await restore(next, saved, true);
+  expect(next.worktree_tracker.busy()).toBe(false);
+  expect(snapshot(next).workspaces[0].worktrees).toEqual(expected);
+  expect(next.workspaces.items[0].worktrees).not.toBe(ws.worktrees);
+
+  // Cold recovery and older senders still discover inventory in the background.
+  using cold = new Runtime();
+  await restore(cold, cp.capture(original, false), false);
+  expect(snapshot(cold).workspaces[0].worktrees).toBeNull();
+  Reflect.deleteProperty(saved.workspaces[0], "worktrees");
+  using legacy = new Runtime();
+  await restore(legacy, saved, true);
+  expect(snapshot(legacy).workspaces[0].worktrees).toBeNull();
+  expect(worktrees.placement(legacy.conversations.byId(actor.id)!.state)).not.toBeNull();
+});
+test("live terminal restoration keeps title ownership and cold restoration clears it", () => {
+  const terminal = Terminal.create(20, 4);
+  try {
+    terminal.restore(Buffer.from("\x1b]2;codex | session\x07"), 42);
+    const state = cp.Screen.capture(terminal, true);
+    for (const live of [true, false]) {
+      const next = cp.Screen.restore(state, live);
+      try {
+        expect(next.title).toBe(terminal.title);
+        expect(next.title_pid).toBe(live ? 42 : 0);
+      } finally {
+        next.destroy();
+      }
+    }
+    Reflect.deleteProperty(state, "title_pid");
+    const old = cp.Screen.restore(state, true);
+    try {
+      expect(old.title_pid).toBe(0);
+    } finally {
+      old.destroy();
+    }
+  } finally {
+    terminal.destroy();
+  }
+});
+test("malformed saved worktree evidence is rejected", async () => {
+  using original = fresh();
+  const actor = original.conversations.get("codex", "bad-location");
+  show(original, actor);
+  const state = cp.capture(original, true);
+  for (const value of [
+    false,
+    {},
+    { cwd: "relative", writes: [], ran: [], basis: "named" },
+    { cwd: "/tmp", writes: [], ran: [], basis: "other" },
+  ]) {
+    using next = new Runtime();
+    state.conversations[0].worktree_location = value as any;
+    await expect(restore(next, state, true)).rejects.toThrow();
+  }
+});
 test("checkpoint integer fields restore as bigint for small and wide values", async () => {
   for (const sequence of [0n, 7n, 9007199254740993n]) {
     using original = fresh();

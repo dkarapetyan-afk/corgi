@@ -551,7 +551,7 @@ function build(r: Runtime, viewer: boolean) {
       cwd: w.cwd,
       custom_name: w.customName(),
       git_ahead: w.git_ahead,
-      worktrees: w.worktrees,
+      worktrees: r.worktree_tracker.snapshot(r, w),
       git_ref: w.git_ref.view?.() ?? w.git_ref,
       git_push: w.git_push.view?.() ?? w.git_push,
       worktree_removal: r.worktree_tracker.removal(w.id),

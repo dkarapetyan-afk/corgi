@@ -51,12 +51,110 @@ export interface Association {
   source: "cwd" | "write";
   stale: boolean;
 }
+export interface Placement {
+  common_dir: string;
+  entries: { path: string; source: Association["source"]; stale: boolean }[];
+}
+const placements = new WeakMap<object, Placement>();
+export function placement(agent: object): Placement | null {
+  return placements.get(agent) ?? null;
+}
+export function recordPlacement(agent: object, common_dir: string, entries: Association[]): void {
+  placements.set(agent, { common_dir, entries: entries.map(({ path, source, stale }) => ({ path, source, stale })) });
+}
+export function placed(agent: object, snapshot: Snapshot, target: Target): Association[] | null {
+  const saved = placement(agent);
+  if (!saved || saved.common_dir !== snapshot.common_dir) return null;
+  return saved.entries
+    .filter(e => snapshot.entries.some(checkout => checkout.path === e.path && !dead(checkout)))
+    .map(e => ({ ...e, target, stale: e.stale || snapshot.stale }));
+}
+export function restorePlacement(agent: object, value: unknown): void {
+  if (value == null) return;
+  const saved = value as Placement;
+  if (
+    typeof saved.common_dir !== "string" ||
+    !saved.common_dir.startsWith("/") ||
+    !Array.isArray(saved.entries) ||
+    saved.entries.length > 32 ||
+    saved.entries.some(
+      e =>
+        !e ||
+        typeof e.path !== "string" ||
+        !e.path.startsWith("/") ||
+        !["cwd", "write"].includes(e.source) ||
+        typeof e.stale !== "boolean",
+    )
+  )
+    throw Error("InvalidCheckpoint");
+  placements.set(agent, structuredClone(saved));
+}
 export interface Snapshot {
   common_dir: string;
   base: Base | null;
   entries: Checkout[];
   agents: Association[];
   stale: boolean;
+}
+export function snapshot(value: any): Snapshot | null {
+  if (!value || !Array.isArray(value.entries)) return null;
+  const count = (v: unknown): bigint | null => {
+    if (typeof v !== "bigint" && typeof v !== "number" && typeof v !== "string") return null;
+    try {
+      const n = BigInt(v);
+      return n >= 0n ? n : null;
+    } catch {
+      return null;
+    }
+  };
+  // An older daemon sends no times.
+  const time = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+  return {
+    common_dir: value.common_dir ?? "",
+    base: value.base ? { ref: value.base.ref ?? "", name: value.base.name ?? "", head: value.base.head ?? "" } : null,
+    stale: value.stale === true,
+    entries: value.entries.map((e: any) => {
+      const ahead = count(e.comparison?.ahead),
+        behind = count(e.comparison?.behind);
+      return {
+        path: e.path ?? "",
+        head: e.head ?? "",
+        branch: e.branch ?? null,
+        primary: e.primary === true,
+        bare: e.bare === true,
+        detached: e.detached === true,
+        locked: e.locked ?? null,
+        prunable: e.prunable ?? null,
+        available: e.available === true,
+        comparison: ahead === null || behind === null ? null : { ahead, behind },
+        changes: e.changes
+          ? {
+              total: Number(e.changes.total ?? 0),
+              staged: Number(e.changes.staged ?? 0),
+              modified: Number(e.changes.modified ?? 0),
+              untracked: Number(e.changes.untracked ?? 0),
+              conflicted: Number(e.changes.conflicted ?? 0),
+              added: Number(e.changes.added ?? 0),
+              removed: Number(e.changes.removed ?? 0),
+            }
+          : null,
+        created: time(e.created),
+        edited: time(e.edited),
+        stale: e.stale === true,
+      };
+    }),
+    agents: (value.agents ?? []).flatMap((a: any) => {
+      const target =
+        a.target?.pane !== undefined
+          ? { pane: Number(a.target.pane) }
+          : a.target?.headless !== undefined
+            ? { headless: Number(a.target.headless) }
+            : null;
+      return target
+        ? [{ target, path: a.path ?? "", source: a.source === "write" ? "write" : "cwd", stale: a.stale === true }]
+        : [];
+    }),
+  };
 }
 export function linked(snapshot: Snapshot | null): Checkout[] {
   return snapshot?.entries.filter(e => !e.primary && !e.bare && !dead(e)) ?? [];
@@ -84,7 +182,7 @@ export interface Location {
 }
 
 // Successful structured edits are stronger evidence than a launch directory.
-// This is current location evidence, not a persisted work history.
+// This is current location evidence, not a work history.
 const locations = new WeakMap<object, Location>();
 export function recordLocation(agent: object, location: Location): void {
   locations.set(agent, { ...location, writes: location.writes.slice(0, 32), ran: location.ran.slice(0, 16) });
@@ -95,6 +193,21 @@ export function recordWrites(agent: object, paths: string[]): void {
 }
 export function observed(agent: object): Location | null {
   return locations.get(agent) ?? null;
+}
+export function restoreLocation(agent: object, value: unknown): void {
+  if (value == null) return;
+  const location = value as Location;
+  const paths = (v: unknown, max: number): v is string[] =>
+    Array.isArray(v) && v.length <= max && v.every(p => typeof p === "string" && p.startsWith("/"));
+  if (
+    typeof location.cwd !== "string" ||
+    (location.cwd !== "" && !location.cwd.startsWith("/")) ||
+    !paths(location.writes, 32) ||
+    !paths(location.ran, 16) ||
+    !["moved", "named", "default"].includes(location.basis)
+  )
+    throw Error("InvalidCheckpoint");
+  recordLocation(agent, location);
 }
 export function observedDirectory(agent: object): string {
   return locations.get(agent)?.cwd ?? "";

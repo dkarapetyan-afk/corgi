@@ -17,6 +17,7 @@ const Request = struct {
     exited: bool = false,
     imported: bool = false,
     pid: i32 = -1,
+    title_pid: i32 = 0,
     contents: ?[]const struct { mime: []const u8, data: []const u8 } = null,
 };
 
@@ -152,6 +153,7 @@ fn perform(t: *pane.Terminal, alloc: std.mem.Allocator, req: Request, out: [*]u8
             t.restoring = true;
             defer t.restoring = false;
             t.feed(req.text);
+            t.title_pid = req.title_pid;
         },
         .adopt => {
             t.imported = true;

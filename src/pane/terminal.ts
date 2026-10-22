@@ -305,8 +305,8 @@ export class Terminal extends EventEmitter {
   dropPending(): void {
     this.native({ op: "takePending" });
   }
-  restore(bytes: Uint8Array): void {
-    this.native({ op: "restore", text: Buffer.from(bytes).toString() });
+  restore(bytes: Uint8Array, title_pid = 0): void {
+    this.native({ op: "restore", text: Buffer.from(bytes).toString(), title_pid });
   }
   refreshRedraw(now: number): void {
     this.redrawing = this.native({ op: "refreshRedraw", now });

@@ -13,6 +13,7 @@ import { Conversation } from "../activity/summary";
 import { Entry } from "../launch/command";
 import * as binary from "../base64";
 import * as json from "../json";
+import * as worktrees from "../worktrees";
 import { validateCheckpoint } from "./schema";
 
 export const version = 6;
@@ -62,6 +63,7 @@ export class Screen {
       rows: t.rows,
       data: binary.encode(live ? t.liveSnapshot() : t.snapshot()),
       pid: live ? t.pid : -1,
+      title_pid: live ? t.title_pid : 0,
       fd: live ? t.fd : -1,
       exited: t.exited,
       exit_status: t.exit_status,
@@ -81,7 +83,7 @@ export class Screen {
       invalid();
     const bytes = binary.decode(screen.data),
       t = Terminal.create(screen.cols, screen.rows);
-    t.restore(bytes);
+    t.restore(bytes, live ? (screen.title_pid ?? 0) : 0);
     if (live) {
       if (screen.initial_input) t.prefill(screen.initial_input);
       Object.assign(t, {
@@ -143,6 +145,7 @@ export function capture(r: Runtime, live: boolean) {
     next_session: r.next_session,
     revision: r.revision,
     next_conversation: r.conversations.next_id,
+    worktree_placements: r.worktree_tracker.capture(),
     link_labels: live ? r.link_labels : new Cache(),
     last_agent: r.last_agent,
     agent_yolo: r.agent_yolo,
@@ -153,6 +156,7 @@ export function capture(r: Runtime, live: boolean) {
       id: w.id,
       name: w.customName(),
       cwd: w.cwd,
+      worktrees: live ? w.worktrees : null,
       model: w.model,
       agent_order: w.agent_order.slice(),
       last_agent: w.last_agent,
@@ -187,6 +191,8 @@ export function capture(r: Runtime, live: boolean) {
     conversations: r.conversations.items.map(actor => ({
       id: actor.id,
       agent: live ? actor.state : historicalAgent(actor.state),
+      worktree_location: worktrees.observed(actor.state),
+      worktree_placement: worktrees.placement(actor.state),
       status_inference: live ? actor.status_inference : new Conversation(),
       screen_compacting: live && actor.screen_compacting,
       parent: actor.parent,
@@ -232,6 +238,7 @@ export async function restore(
   )
     invalid();
   r.link_labels = new Cache();
+  r.worktree_tracker.restore(state.worktree_placements);
   if (live && state.link_labels) {
     r.link_labels.generation = BigInt(state.link_labels.generation ?? 0);
     r.link_labels.entries = state.link_labels.entries.map((e: any) =>
@@ -249,6 +256,15 @@ export async function restore(
   for (const w of state.workspaces) {
     if (!w.id || w.id >= state.next_workspace || r.workspaces.get(w.id) || !isAbsolute(w.cwd)) invalid();
     const item = new Workspace(w.id, w.cwd);
+    if (live && w.worktrees != null) {
+      item.worktrees = worktrees.snapshot(w.worktrees);
+      if (
+        !item.worktrees ||
+        !isAbsolute(item.worktrees.common_dir) ||
+        item.worktrees.entries.some(e => !isAbsolute(e.path))
+      )
+        invalid();
+    }
     item.rename(w.name);
     item.model = Model.fromData(w.model);
     item.agent_order = Order.restore(w.agent_order ?? []);
@@ -290,6 +306,8 @@ export async function restore(
     const actor = r.conversations.get(agent.provider ?? invalid(), agent.sessionId());
     actor.id = saved.id;
     actor.state = live ? agent : historicalAgent(agent);
+    worktrees.restoreLocation(actor.state, saved.worktree_location);
+    worktrees.restorePlacement(actor.state, saved.worktree_placement);
     if (live) actor.status_inference = hydrate(new Conversation(), saved.status_inference);
     actor.parent = saved.parent ?? null;
     actor.workspace = r.workspaces.get(saved.workspace) ? saved.workspace : 0;

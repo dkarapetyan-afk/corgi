@@ -35,6 +35,23 @@ $.conversations[].status_inference.previous: custom bounded_text.BoundedText(80)
 $.conversations[].status_inference.phases[4]: custom bounded_text.BoundedText(80)
 $.conversations[].status_inference.phases_len: usize
 $.conversations[].status_inference.phase_turn: custom bounded_text.BoundedText(80)
+$.worktree_placements[].session: string
+$.worktree_placements[].agents[].target: one of
+$.worktree_placements[].agents[].target|pane: u32
+$.worktree_placements[].agents[].target|headless: u32
+$.worktree_placements[].agents[].path: string
+$.worktree_placements[].agents[].source: enum cwd write
+$.worktree_placements[].agents[].stale: bool
+$.conversations[].worktree_location: optional
+$.conversations[].worktree_location?.cwd: string
+$.conversations[].worktree_location?.writes[]: string
+$.conversations[].worktree_location?.ran[]: string
+$.conversations[].worktree_location?.basis: enum moved named default
+$.conversations[].worktree_placement: optional
+$.conversations[].worktree_placement?.common_dir: string
+$.conversations[].worktree_placement?.entries[].path: string
+$.conversations[].worktree_placement?.entries[].source: enum cwd write
+$.conversations[].worktree_placement?.entries[].stale: bool
 $.conversations[].id: u32
 $.conversations[].agent.subagents.running: u32
 $.conversations[].agent.subagents.blocked: u32
@@ -101,6 +118,47 @@ $.workspaces[].away.counts.tokens_known: bool
 $.workspaces[].id: u32
 $.workspaces[].name: string
 $.workspaces[].cwd: string
+$.workspaces[].worktrees: optional
+$.workspaces[].worktrees?.common_dir: string
+$.workspaces[].worktrees?.base: optional
+$.workspaces[].worktrees?.base?.ref: string
+$.workspaces[].worktrees?.base?.name: string
+$.workspaces[].worktrees?.base?.head: string
+$.workspaces[].worktrees?.stale: bool
+$.workspaces[].worktrees?.entries[].path: string
+$.workspaces[].worktrees?.entries[].head: string
+$.workspaces[].worktrees?.entries[].branch: optional
+$.workspaces[].worktrees?.entries[].branch?: string
+$.workspaces[].worktrees?.entries[].primary: bool
+$.workspaces[].worktrees?.entries[].bare: bool
+$.workspaces[].worktrees?.entries[].detached: bool
+$.workspaces[].worktrees?.entries[].available: bool
+$.workspaces[].worktrees?.entries[].stale: bool
+$.workspaces[].worktrees?.entries[].locked: optional
+$.workspaces[].worktrees?.entries[].locked?: string
+$.workspaces[].worktrees?.entries[].prunable: optional
+$.workspaces[].worktrees?.entries[].prunable?: string
+$.workspaces[].worktrees?.entries[].comparison: optional
+$.workspaces[].worktrees?.entries[].comparison?.ahead: u64
+$.workspaces[].worktrees?.entries[].comparison?.behind: u64
+$.workspaces[].worktrees?.entries[].changes: optional
+$.workspaces[].worktrees?.entries[].changes?.total: u64
+$.workspaces[].worktrees?.entries[].changes?.staged: u64
+$.workspaces[].worktrees?.entries[].changes?.modified: u64
+$.workspaces[].worktrees?.entries[].changes?.untracked: u64
+$.workspaces[].worktrees?.entries[].changes?.conflicted: u64
+$.workspaces[].worktrees?.entries[].changes?.added: u64
+$.workspaces[].worktrees?.entries[].changes?.removed: u64
+$.workspaces[].worktrees?.entries[].created: optional
+$.workspaces[].worktrees?.entries[].created?: i64
+$.workspaces[].worktrees?.entries[].edited: optional
+$.workspaces[].worktrees?.entries[].edited?: i64
+$.workspaces[].worktrees?.agents[].target: one of
+$.workspaces[].worktrees?.agents[].target|pane: u32
+$.workspaces[].worktrees?.agents[].target|headless: u32
+$.workspaces[].worktrees?.agents[].path: string
+$.workspaces[].worktrees?.agents[].source: enum cwd write
+$.workspaces[].worktrees?.agents[].stale: bool
 $.workspaces[].model: custom layout.Model
 $.workspaces[].agent_order[]: one of
 $.workspaces[].agent_order[]|pane: u32
@@ -162,6 +220,7 @@ $.panes[].screen.cols: u16
 $.panes[].screen.rows: u16
 $.panes[].screen.data: string
 $.panes[].screen.pid: i32
+$.panes[].screen.title_pid: i32
 $.panes[].screen.fd: i32
 $.panes[].screen.exited: bool
 $.panes[].screen.exit_status: i32
@@ -199,6 +258,7 @@ $.closed[].screen.cols: u16
 $.closed[].screen.rows: u16
 $.closed[].screen.data: string
 $.closed[].screen.pid: i32
+$.closed[].screen.title_pid: i32
 $.closed[].screen.fd: i32
 $.closed[].screen.exited: bool
 $.closed[].screen.exit_status: i32

@@ -18,7 +18,13 @@ import { Provider, byProvider } from "./providers";
 import { type Conversation, conversation, usageView } from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as errors from "./errors";
-import { removal as worktreeRemoval, type Brief, type Removal, type Snapshot as Worktrees } from "./worktrees";
+import {
+  snapshot as worktreeSnapshot,
+  removal as worktreeRemoval,
+  type Brief,
+  type Removal,
+  type Snapshot as Worktrees,
+} from "./worktrees";
 
 export interface Transport {
   socket?: string;
@@ -331,66 +337,7 @@ export function worktreeBriefs(value: unknown): Brief[] {
       : [],
   );
 }
-export function worktreeSnapshot(value: any): Worktrees | null {
-  if (!value || !Array.isArray(value.entries)) return null;
-  const count = (v: unknown): bigint | null => {
-    if (typeof v !== "bigint" && typeof v !== "number" && typeof v !== "string") return null;
-    try {
-      const n = BigInt(v);
-      return n >= 0n ? n : null;
-    } catch {
-      return null;
-    }
-  };
-  // An older daemon sends no times.
-  const time = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
-  return {
-    common_dir: value.common_dir ?? "",
-    base: value.base ? { ref: value.base.ref ?? "", name: value.base.name ?? "", head: value.base.head ?? "" } : null,
-    stale: value.stale === true,
-    entries: value.entries.map((e: any) => {
-      const ahead = count(e.comparison?.ahead),
-        behind = count(e.comparison?.behind);
-      return {
-        path: e.path ?? "",
-        head: e.head ?? "",
-        branch: e.branch ?? null,
-        primary: e.primary === true,
-        bare: e.bare === true,
-        detached: e.detached === true,
-        locked: e.locked ?? null,
-        prunable: e.prunable ?? null,
-        available: e.available === true,
-        comparison: ahead === null || behind === null ? null : { ahead, behind },
-        changes: e.changes
-          ? {
-              total: Number(e.changes.total ?? 0),
-              staged: Number(e.changes.staged ?? 0),
-              modified: Number(e.changes.modified ?? 0),
-              untracked: Number(e.changes.untracked ?? 0),
-              conflicted: Number(e.changes.conflicted ?? 0),
-              added: Number(e.changes.added ?? 0),
-              removed: Number(e.changes.removed ?? 0),
-            }
-          : null,
-        created: time(e.created),
-        edited: time(e.edited),
-        stale: e.stale === true,
-      };
-    }),
-    agents: (value.agents ?? []).flatMap((a: any) => {
-      const target =
-        a.target?.pane !== undefined
-          ? { pane: Number(a.target.pane) }
-          : a.target?.headless !== undefined
-            ? { headless: Number(a.target.headless) }
-            : null;
-      return target
-        ? [{ target, path: a.path ?? "", source: a.source === "write" ? "write" : "cwd", stale: a.stale === true }]
-        : [];
-    }),
-  };
-}
+export { worktreeSnapshot };
 export function statsAny(stats: any): boolean {
   return Object.values(stats ?? {}).some(v => v !== 0 && v !== false && v !== null && v !== undefined && v !== "0");
 }

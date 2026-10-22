@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import * as clock from "../clock";
 import * as subprocess from "../subprocess";
 import * as worktrees from "../worktrees";
+import * as json from "../json";
 import { adapter } from "../providers";
 import type { Agent } from "../agents";
 import type { Runtime } from "../runtime";
@@ -18,6 +19,8 @@ const max_counted_bytes = 1 << 20;
 const detail_ms = 3000;
 type Query = (cwd: string, args: string[]) => Promise<string | null>;
 type Input = {
+  agent?: Agent;
+  resolved?: boolean;
   target: Target;
   session: string;
   cwd: string;
@@ -180,6 +183,7 @@ function evidence(target: Target, agent: Agent, folder: string): Input {
   const seen = worktrees.observed(agent),
     cwd = seen?.cwd || agent.directory() || folder;
   return {
+    agent,
     target,
     session: agent.sessionId(),
     cwd,
@@ -215,6 +219,62 @@ export class Tracker {
   private locations = new Map<string, { root: string | null; at: number }>();
   /** The linked worktrees each agent was last placed in, by target, and for which session. */
   private placed = new Map<string, { session: string; agents: worktrees.Association[] }>();
+  /** Resolve each current attachment from conversation state before publishing it.
+   * Discovery stays asynchronous; an unknown conversation falls back to its cwd. */
+  snapshot(runtime: Runtime, workspace: Workspace): worktrees.Snapshot | null {
+    const snapshot = workspace.worktrees;
+    if (!snapshot) return null;
+    const agents: worktrees.Association[] = [];
+    const append = (target: Target, agent: Agent) => {
+      const saved = worktrees.placed(agent, snapshot, target);
+      if (saved !== null) agents.push(...saved);
+    };
+    for (const pane of runtime.panes)
+      if (workspace.model.tabForPane(pane.id) !== null && pane.agent().provider)
+        append({ pane: pane.id }, pane.agent());
+    for (const session of runtime.sessions)
+      if (session.workspace_id === workspace.id) append({ headless: session.id }, session.attachment.agent());
+    return { ...snapshot, agents };
+  }
+  capture() {
+    return [...this.placed.values()].map(p => structuredClone(p));
+  }
+  restore(value: unknown) {
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.length > 2048) throw Error("InvalidCheckpoint");
+    for (const item of value) {
+      const saved = json.object(item);
+      if (
+        typeof saved.session !== "string" ||
+        !saved.session ||
+        !Array.isArray(saved.agents) ||
+        !saved.agents.length ||
+        saved.agents.length > 32
+      )
+        throw Error("InvalidCheckpoint");
+      const agents: worktrees.Association[] = saved.agents.map((value: unknown) => {
+        const a = json.object(value),
+          target = json.object(a.target);
+        const pane = Object.hasOwn(target, "pane"),
+          id = pane ? target.pane : target.headless;
+        if (
+          Object.keys(target).length !== 1 ||
+          !Number.isInteger(id) ||
+          id <= 0 ||
+          id > 0xffffffff ||
+          typeof a.path !== "string" ||
+          !isAbsolute(a.path) ||
+          !["cwd", "write"].includes(a.source) ||
+          typeof a.stale !== "boolean"
+        )
+          throw Error("InvalidCheckpoint");
+        return { target: pane ? { pane: id } : { headless: id }, path: a.path, source: a.source, stale: a.stale };
+      });
+      const key = JSON.stringify(agents[0].target);
+      if (this.placed.has(key) || agents.some(a => JSON.stringify(a.target) !== key)) throw Error("InvalidCheckpoint");
+      this.placed.set(key, { session: saved.session, agents });
+    }
+  }
   private repositories = new Map<string, { common: string | null; at: number }>();
   /** Each workspace's removal under way, or its last, by workspace id. */
   private removals = new Map<number, Removing>();
@@ -395,6 +455,13 @@ export class Tracker {
         job.result === undefined
       )
         continue;
+      if (job.result)
+        for (const input of job.inputs) {
+          if (!input.agent || !input.session || input.agent.sessionId() !== input.session) continue;
+          const agents = job.result.agents.filter(a => JSON.stringify(a.target) === JSON.stringify(input.target));
+          // An unsuccessful scan must not erase a known placement.
+          if (agents.length || input.resolved) worktrees.recordPlacement(input.agent, job.result.common_dir, agents);
+        }
       const encode = (v: unknown) =>
         JSON.stringify(v, (_, value) => (typeof value === "bigint" ? value.toString() : value));
       if (encode(ws.worktrees) !== encode(job.result)) {
@@ -663,11 +730,15 @@ export class Tracker {
     for (const input of inputs) {
       const key = JSON.stringify(input.target),
         held = this.placed.get(key);
-      const kept = held?.session === input.session ? held.agents.filter(a => linked.some(e => e.path === a.path)) : [];
+      const remembered = input.agent ? worktrees.placed(input.agent, snapshot, input.target) : null;
+      const kept = (remembered ?? (held?.session === input.session ? held.agents : [])).filter(a =>
+        linked.some(e => e.path === a.path),
+      );
       const writes: string[] = [];
       for (const path of input.writes) if (await within(snapshot, path)) writes.push(path);
       const { found, uncertain } = await roots(writes.length ? writes : [input.cwd]),
         source = writes.length ? "write" : "cwd";
+      input.resolved = !uncertain;
       let agents: worktrees.Association[] = [...found].map(path => ({
         target: input.target,
         path,

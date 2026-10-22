@@ -225,6 +225,25 @@ test("an agent leaves a worktree only for an edit, a move, or a finished turn sp
     expect(await place({ cwd: child, ran: [f.repo, child], basis: "named" })).toEqual([child]);
     // Codex's own folder, and a directory it chose while the turn runs.
     expect(await place({ settled: true })).toEqual([child]);
+    const saved = tracker.capture();
+    const restored = new Tracker();
+    try {
+      restored.restore(JSON.parse(JSON.stringify(saved)));
+      const input = {
+        target: { pane: 1 },
+        session: "s",
+        cwd: f.repo,
+        writes: [],
+        ran: [f.repo],
+        basis: "default",
+        settled: true,
+      };
+      const again = (inputs: object[]) => (restored as any).associate(snapshot, inputs, 1000, null);
+      expect((await again([input])).map((a: worktrees.Association) => a.path)).toEqual([child]);
+      expect((await again([{ ...input, basis: "named" }])).map((a: worktrees.Association) => a.path)).toEqual([f.repo]);
+    } finally {
+      restored.close();
+    }
     expect(await place({ basis: "named" })).toEqual([child]);
     expect(await place({ cwd: other, ran: [other], basis: "named" })).toEqual([child]);
     // A finished turn that also ran in the worktree.
