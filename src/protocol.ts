@@ -28,6 +28,7 @@ export interface View<Session = unknown, Resources = unknown> {
   bell_kind: "none" | "finished" | "needs_input";
   controls: Control[];
   viewer: number;
+  /** Always false; retained for older viewers. Detach uses an action control. */
   detach: boolean;
 }
 export const version = 2;

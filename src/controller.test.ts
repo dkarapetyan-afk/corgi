@@ -432,6 +432,67 @@ test("escape in the launcher's search clears the query, then closes the launcher
   expect(s.agent_launcher).toBeNull();
 });
 
+test.each([false, true])("a failed fallback terminal keeps the empty launcher attached (search: %s)", async search => {
+  const commands: unknown[] = [];
+  const s = new Controller(
+    transport(async (op, fields) => {
+      if (op === "session.command") {
+        commands.push(fields);
+        throw Error("ShellNotFound");
+      }
+      if (op === "viewer.sync") return { viewer_protocol: 3, detach: true };
+      throw Error("UnexpectedRequest");
+    }),
+  );
+  s.receiveSnapshot({
+    workspaces: [{ id: 1, name: "one", cwd: "/workspace", model: { nodes: [], tabs: [], revision: 0 } }],
+    panes: [],
+    conversations: [],
+    headless_sessions: [],
+  });
+  s.input_state.attached = true;
+  s.agent_launcher = new LauncherMenu({ workspace: 1, cwd: "/other-checkout", pinned: true });
+  try {
+    if (search) {
+      Object.assign(s.agent_launcher.resume_view, {
+        focused: true,
+        searching: true,
+        query: Dialog.init({ pane: 0 }, "ab"),
+      });
+      await s.input(bytes("\x1b[27u"));
+      expect(s.agent_launcher.resume_view.query.name()).toBe("");
+      expect(commands).toEqual([]);
+    }
+    await s.input(bytes("\x1b[27u"));
+    expect(commands).toEqual([
+      { command: { "pane.create": { workspace: 1, cwd: "/workspace", command: null, title: "" } } },
+    ]);
+    expect(s.agent_launcher?.pinned).toBe(true);
+    expect(s.message).toBe("ShellNotFound");
+    expect(await viewer.sync(s, { seq: 0n }, false)).toBe(true);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each([false, true])("empty viewers ignore the legacy detach flag (%s)", async detach => {
+  const s = new Controller(transport(async () => ({ viewer_protocol: 3, detach })));
+  s.receiveSnapshot({
+    workspaces: [{ id: 1, name: "one", cwd: "/workspace", model: { nodes: [], tabs: [], revision: 0 } }],
+    panes: [],
+    conversations: [],
+    headless_sessions: [],
+  });
+  s.input_state.attached = true;
+  try {
+    expect(await viewer.sync(s, { seq: 0n }, false)).toBe(true);
+    await s.perform({ name: "detach" });
+    expect(await viewer.sync(s, { seq: 0n }, false)).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("the launcher reopens on the row from before a terminal", async () => {
   const snapshot = folders("/src/app");
   const s: any = new Controller({

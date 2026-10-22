@@ -147,6 +147,14 @@ test("open from a pane goes to the viewer showing it", () => {
   expect(two.controls[0]).toMatchObject({ kind: "action", name: "open", value: "/tmp" });
   expect(one.controls).toHaveLength(0);
 });
+test("an empty workspace does not ask older viewers to detach", async () => {
+  const s = fixture();
+  s.runtime.workspaces.items.push(new Workspace(1, "/tmp"));
+  const client = peer(s),
+    sent = spyOn(client, "queue").mockImplementation(() => {});
+  await sync(s, client, protocol.decode("viewer.sync", { workspace: 1, interests: [] }));
+  expect(sent.mock.calls[0][0]).toMatchObject({ type: "view", detach: false });
+});
 test("a new viewer opens on the pane last used in the preferred workspace", async () => {
   const s = fixture(),
     ws = new Workspace(1, "/tmp");

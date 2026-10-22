@@ -176,8 +176,7 @@ export async function sync(view: Controller, bell: { seq: bigint }, play_sound: 
       if (play_sound && !view.muted) sound.play(view.last_bell_kind);
     }
   }
-  const choosing = view.onboarding !== null || (view.agent_launcher !== null && view.agent_launcher.pinned);
-  return (!reply.detach || choosing) && view.input_state.attached;
+  return view.input_state.attached;
 }
 // Called only after the frame has been written. Receipts refer to the
 // snapshot displayed, never whatever completion happens to be latest remotely.

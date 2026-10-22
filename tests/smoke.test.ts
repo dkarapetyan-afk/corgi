@@ -1226,6 +1226,7 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     await this.until(async () => (await this.panes()).every((p: any) => p.id !== shell));
     this.assertEqual(await closed(), 0);
     await this.command("pane.close", { target: agent });
+    await this.input("\x02q");
     await this.get_type("detach");
     this.assertEqual(await closed(), 1);
     await this.reconnect();

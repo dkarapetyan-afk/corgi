@@ -410,8 +410,6 @@ export class Controller {
     const response = await call(this.connection, "session.command", { command });
     const result = { pane: Number(response.result?.pane ?? 0), workspace: Number(response.result?.workspace ?? 0) };
     await this.refresh();
-    if (this.runtime.panes.length === 0 && this.runtime.workspaces.items.length === 1)
-      this.input_state.attached = false;
     this.dirty = true;
     return result;
   }
@@ -2088,7 +2086,8 @@ export class Controller {
     launch.pinned = true;
     switch (action.kind) {
       case "close":
-        return this.closeMenu();
+        if (this.corgi_setup) return this.closeMenu();
+        return this.dismissLauncher();
       case "back":
         if (this.corgi_setup) {
           this.corgi_setup.back();
@@ -2687,6 +2686,19 @@ export class Controller {
     this.rememberLauncherSelection();
     this.agent_launcher = null;
   }
+  /** Dismissing the first launcher leaves a shell to return to. */
+  private async dismissLauncher(): Promise<void> {
+    if (this.runtime.panes.length === 0 && this.runtime.workspaces.items.length === 1) {
+      if (this.agent_launcher) this.agent_launcher.pinned = true;
+      try {
+        await this.create(null, this.current().cwd, null, "");
+      } catch (error) {
+        this.notice((error as Error).message);
+        return;
+      }
+    }
+    this.closeMenu();
+  }
   /** Where the launcher starts: the workspace's root, or the root of the
    * worktree the agent list puts the focused pane under. */
   private launcherCwd(): string {
@@ -2888,7 +2900,7 @@ export class Controller {
           if (view.query.len > 0) {
             view.query.clear();
             view.home();
-          } else return this.closeMenu();
+          } else return this.dismissLauncher();
           break;
         case 13:
           return this.resumeSelected();
@@ -2909,7 +2921,7 @@ export class Controller {
       switch (byte) {
         case 27:
           if (view.expanded) view.collapse();
-          else return this.closeMenu();
+          else return this.dismissLauncher();
           break;
         case 13:
         case 97:
@@ -3491,8 +3503,7 @@ export class Controller {
         launch.pinned = true;
         switch (byte) {
           case 27:
-            this.closeMenu();
-            break;
+            return this.dismissLauncher();
           case 13:
           case 97:
           case 65:
@@ -4809,7 +4820,7 @@ export class Controller {
         if (this.agent_launcher.managing) {
           const launch = this.agent_launcher,
             b = launch.bounds(this.width, this.height, side);
-          if (!b.contains(x, y)) this.closeMenu();
+          if (!b.contains(x, y)) await this.dismissLauncher();
           else await this.manageAction(launch.manager.click(b, x, y, launch.manageModel()));
           this.dirty = true;
           return;
@@ -4857,7 +4868,8 @@ export class Controller {
         else {
           const row = this.agent_launcher.hit(this.width, this.height, side, x, y);
           if (row !== null) await this.launchRow(row);
-          else if (!this.agent_launcher.bounds(this.width, this.height, side).contains(x, y)) this.closeMenu();
+          else if (!this.agent_launcher.bounds(this.width, this.height, side).contains(x, y))
+            await this.dismissLauncher();
         }
       } else if (!release && (button === 35 || button === 32)) {
         const launch = this.agent_launcher;

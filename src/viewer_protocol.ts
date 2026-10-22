@@ -156,7 +156,7 @@ export async function sync(s: Server, cl: Client, q: Sync) {
     bell_kind: s.last_bell_kind,
     controls: cl.controls,
     viewer: cl.viewer_id,
-    detach: s.runtime.panes.length === 0 && s.runtime.workspaces.items.length === 1,
+    detach: false,
   };
   cl.queue(view);
 }

@@ -715,13 +715,14 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     );
     this.assertGreater((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid, 0);
   }
-  async checkRealClientExit(keys: string, remainingPanes: number) {
+  async checkRealClientExit(keys: string | ((pty: Pty) => Promise<void>), remainingPanes: number) {
     const pty = new Pty(80, 24);
     this.pty = pty;
     const before = await pty.settings();
     pty.start([EXE], { env: this.env, cwd: this.temp.name });
     await pty.waitFor("workspaces", 4000);
-    pty.write(keys);
+    if (typeof keys === "string") pty.write(keys);
+    else await keys(pty);
     this.assertEqual(await deadline(pty.proc.exited, 4000, "Corgi did not detach"), 0);
     await sleep(0.1);
     const collected = pty.output;
@@ -813,11 +814,25 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     pty.write("\x02q");
     this.assertEqual(await deadline(pty.proc.exited, 3000), 0);
   }
-  async test_real_client_returns_to_terminal_on_last_shell_exit() {
-    await this.checkRealClientExit("exit\r", 0);
-    this.assertEqual((await this.session()).closed_panes, 0);
+  async checkRealClientStaysAfterLastPane(keys: string) {
+    await this.checkRealClientExit(async pty => {
+      pty.write(keys);
+      await this.until(async () => (await this.panes()).length === 0);
+      this.assertEqual((await this.session()).closed_panes, 0);
+      pty.write("\x02c");
+      await pty.waitFor("New terminal", 4000);
+      this.assertEqual(pty.proc.exitCode, null);
+      pty.write("t");
+      await this.until(async () => (await this.panes()).length === 1);
+      pty.write("printf 'STILL_%s\\n' ATTACHED\r");
+      await pty.waitFor("STILL_ATTACHED", 4000);
+      pty.write("\x02q");
+    }, 1);
   }
-  async test_real_client_returns_to_terminal_on_last_tab_close() {
+  async test_real_client_stays_attached_on_last_shell_exit() {
+    await this.checkRealClientStaysAfterLastPane("exit\r");
+  }
+  async test_real_client_stays_attached_on_last_tab_close() {
     await this.open_pane({ cwd: this.temp.name });
     await this.split_pane("right", { cwd: this.temp.name });
     const ident = (
@@ -829,8 +844,7 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
         cwd: this.temp.name,
       })
     ).session;
-    await this.checkRealClientExit("\x02X\x02c\r", 0);
-    this.assertEqual((await this.session()).closed_panes, 0);
+    await this.checkRealClientStaysAfterLastPane("\x02X");
     this.assertEqual((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].session, ident);
   }
 }
