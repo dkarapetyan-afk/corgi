@@ -5,7 +5,9 @@ import { Provider, byProvider, adapter } from "./providers";
 import { View as UsageView, Tokens } from "./usage/live";
 import { View as ContextView } from "./usage/context_window";
 import * as prices from "./usage/prices";
-import { Window, expired } from "./usage/account";
+import { Window, expired, resetCountdown } from "./usage/account";
+import * as spend from "./usage/spend";
+import { writeBar } from "./launcher_usage";
 import * as limit_history from "./usage/limits";
 import { Group as BackgroundGroup, type Group as BackgroundGroupName } from "./activity/background_tasks";
 import { max_actors as max } from "./conversations";
@@ -920,7 +922,7 @@ class Section {
   paneRows(): number {
     if (this.provider === null) return 0;
     const order = this.windowOrder();
-    return Math.max(1, Number(order[0] !== null) + Number(order[1] !== null));
+    return Math.max(1, Number(order[0] !== null) + Number(order[1] !== null) + (this.option?.spend ? 2 : 0));
   }
   height(): number {
     return 1 + Math.max(1, this.count, this.paneRows());
@@ -930,9 +932,10 @@ class Section {
     const option_value = this.option;
     if (option_value === null) return -1;
     if (expired(option_value.usage_fetched_at, now)) return 0;
-    if (typeof option_value.limits !== "object") return 0;
-    let most = 0;
-    for (const window of option_value.limits.windows) if (window !== null) most = Math.max(most, window.used + 1);
+    let most =
+      option_value.spend && spend.current(option_value.spend, now) ? (spend.percent(option_value.spend) ?? -1) + 1 : 0;
+    if (typeof option_value.limits === "object")
+      for (const window of option_value.limits.windows) if (window !== null) most = Math.max(most, window.used + 1);
     return most;
   }
 }
@@ -1032,6 +1035,11 @@ function drawAccounts(
           continue;
         }
       }
+      const spend_line = line - order.filter(index => index !== null).length;
+      if (value.spend !== null && spend_line >= 0 && spend_line < 2) {
+        spendLine(full, at, pane, value, spend_line, now);
+        continue;
+      }
       if (line === 0) full.cell(at, pane, 29, limitsMessage(value), "muted", false);
     }
     row += 1 + body;
@@ -1077,11 +1085,38 @@ function accountRule(card: Card, row: number, section: Section, divider: number,
   w.write(`${base} `);
 }
 function limitsMessage(value: Option): string {
-  if (value.limits === "metered") return "metered · no limit";
+  if (value.limits === "metered") return "metered";
   if (value.limits === "rate_limited") return "Unavailable · server returned 429";
   if (value.usage_error.length > 0) return "Unavailable";
   if (value.signed_in === false) return "Not signed in";
   return "Reading…";
+}
+function spendLine(card: Card, row: number, pane: number, value: Option, line: number, now: number) {
+  const reading = value.spend!;
+  const fresh = !expired(value.usage_fetched_at, now) && spend.current(reading, now);
+  if (!fresh) {
+    if (line === 0) card.cell(row, pane, 29, "mo · stale", "muted", false);
+    return;
+  }
+  if (line === 0) {
+    card.cell(row, pane, 29, `mo ${spend.amounts(reading)}`, "title", false);
+    return;
+  }
+  const percent = spend.percent(reading);
+  if (percent !== null) {
+    const tone = percent >= 100 ? "hot" : percent >= 80 ? "warm" : "live";
+    card.cell(row, pane, 0, "", "muted", false);
+    writeBar(card.w, percent, 6, Tone.ansi(tone), Tone.ansi("faint"));
+    card.cell(
+      row,
+      pane + 7,
+      10,
+      `${Number(percent.toFixed(2))}%`,
+      percent >= 100 ? "hot" : percent >= 80 ? "warm" : "muted",
+      false,
+    );
+  }
+  card.cell(row, pane + 18, 11, `↻ ${resetCountdown(reading.reset_at, now)}`, "faint", true);
 }
 const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 function eighths(used: number): number {

@@ -184,6 +184,14 @@ $.clients[].launch_preview?.preview.options.codex.limits|windows[2]?.minutes?: i
 $.clients[].launch_preview?.preview.options.codex.limits|windows[2]?.used: u8
 $.clients[].launch_preview?.preview.options.codex.limits|windows[2]?.reset_at: optional
 $.clients[].launch_preview?.preview.options.codex.limits|windows[2]?.reset_at?: i64
+$.clients[].launch_preview?.preview.options.codex.spend: optional
+$.clients[].launch_preview?.preview.options.codex.spend?.used_minor: f64
+$.clients[].launch_preview?.preview.options.codex.spend?.limit_minor: optional
+$.clients[].launch_preview?.preview.options.codex.spend?.limit_minor?: f64
+$.clients[].launch_preview?.preview.options.codex.spend?.currency: string
+$.clients[].launch_preview?.preview.options.codex.spend?.exponent: u8
+$.clients[].launch_preview?.preview.options.codex.spend?.period_start: i64
+$.clients[].launch_preview?.preview.options.codex.spend?.reset_at: i64
 $.clients[].launch_preview?.preview.options.codex.usage_fetched_at: i64
 $.clients[].launch_preview?.preview.options.codex.usage_error: custom bounded_text.BoundedText(160)
 $.clients[].launch_preview?.preview.options.codex.usage_needs_consent: bool
@@ -208,6 +216,14 @@ $.clients[].launch_preview?.preview.options.claude.limits|windows[2]?.minutes?: 
 $.clients[].launch_preview?.preview.options.claude.limits|windows[2]?.used: u8
 $.clients[].launch_preview?.preview.options.claude.limits|windows[2]?.reset_at: optional
 $.clients[].launch_preview?.preview.options.claude.limits|windows[2]?.reset_at?: i64
+$.clients[].launch_preview?.preview.options.claude.spend: optional
+$.clients[].launch_preview?.preview.options.claude.spend?.used_minor: f64
+$.clients[].launch_preview?.preview.options.claude.spend?.limit_minor: optional
+$.clients[].launch_preview?.preview.options.claude.spend?.limit_minor?: f64
+$.clients[].launch_preview?.preview.options.claude.spend?.currency: string
+$.clients[].launch_preview?.preview.options.claude.spend?.exponent: u8
+$.clients[].launch_preview?.preview.options.claude.spend?.period_start: i64
+$.clients[].launch_preview?.preview.options.claude.spend?.reset_at: i64
 $.clients[].launch_preview?.preview.options.claude.usage_fetched_at: i64
 $.clients[].launch_preview?.preview.options.claude.usage_error: custom bounded_text.BoundedText(160)
 $.clients[].launch_preview?.preview.options.claude.usage_needs_consent: bool

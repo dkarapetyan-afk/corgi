@@ -21,7 +21,7 @@ if (args[0] === "auth" && args[1] === "status") {
       authMethod: "claude.ai",
       email: data.email ?? "claude@example.com",
       orgId: "fixture-org",
-      subscriptionType: "max",
+      subscriptionType: data.subscriptionType ?? "max",
     }),
   );
   process.exit(data.loggedIn === false ? 1 : 0);
@@ -60,9 +60,9 @@ for await (const line of createInterface({ input: process.stdin })) {
       : data.mode === "malformed"
         ? {}
         : {
-            subscription_type: "max",
+            subscription_type: data.subscriptionType ?? "max",
             rate_limits_available: true,
-            rate_limits: {
+            rate_limits: data.rate_limits ?? {
               five_hour: { utilization: 12, resets_at: "2099-01-01T12:00:00.000000+00:00" },
               seven_day: { utilization: 48, resets_at: "2099-01-04T12:00:00Z" },
             },

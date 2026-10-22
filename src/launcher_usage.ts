@@ -2,6 +2,7 @@
 //! Mirrors launcher_usage.zig.
 import { fg } from "./palette";
 import { Writer, displayWidth, writeEllipsis, asciiText, truncatedText, sat } from "./text";
+import * as spend from "./usage/spend";
 
 const text_capacity = 160;
 /** "  6%" through "100%". */
@@ -50,12 +51,14 @@ export function expired(fetched_at: number, now: number): boolean {
 
 interface CellWindow {
   label: string;
-  used: number;
+  used: number | null;
+  figure: string;
   reset: string;
 }
 export class Cell {
   /** By slot, so one provider's weekly limit sits under another's. */
   windows: [CellWindow | null, CellWindow | null] = [null, null];
+  spend: CellWindow | null = null;
   fallback = "";
 
   static init(windows: [LimitWindow | null, LimitWindow | null], now: number): Cell {
@@ -65,9 +68,20 @@ export class Cell {
       cell.windows[i] = {
         label: asciiText(windowLabel(window), text_capacity),
         used: window.used,
+        figure: `${window.used}%`,
         reset: asciiText(countdown(window, now) ?? "unknown", text_capacity),
       };
     });
+    return cell;
+  }
+  static monthly(reading: spend.Reading, now: number): Cell {
+    const cell = new Cell();
+    cell.spend = {
+      label: "1M",
+      used: spend.percent(reading),
+      figure: spend.amounts(reading),
+      reset: resetCountdown(reading.reset_at, now),
+    };
     return cell;
   }
   /** Not `ascii`, which would blank the "…" and "—" in statuses. */
@@ -82,24 +96,26 @@ export class Cell {
     return cell;
   }
   limited(): boolean {
-    return this.windows[0] !== null || this.windows[1] !== null;
+    return this.spend !== null || this.windows[0] !== null || this.windows[1] !== null;
   }
   /** `selected` rows need brighter grays: faint text and empty cells vanish on them. */
   write(w: Writer, grid: Grid, width: number, row_style: string, selected: boolean): void {
     if (!this.limited()) return writeEllipsis(w, this.fallback, width);
+    const slots = this.spend ? [grid.spend, null] : grid.slots;
+    const windows = this.spend ? [this.spend, null] : this.windows;
     if (width < grid.groupsWidth(0) || !grid.holds(this)) {
       // At exceptionally small widths, clip text before adding any SGR.
       let plain = "";
-      grid.slots.forEach((slot, i) => {
+      slots.forEach((slot, i) => {
         if (!slot) return;
-        if (i > 0 && grid.slots[0] !== null) plain += separator;
-        const window = this.windows[i];
+        if (i > 0 && slots[0] !== null) plain += separator;
+        const window = windows[i];
         if (!window) {
           plain += " ".repeat(slotWidth(slot, 0));
           return;
         }
         plain += padded(window.label, slot.label);
-        plain += ` ${String(window.used).padStart(3)}% · `;
+        plain += ` ${window.figure.padStart(slot.figure)} · `;
         plain += padded(window.reset, slot.reset);
       });
       writeEllipsis(w, plain.replace(/ +$/, ""), width);
@@ -108,10 +124,10 @@ export class Cell {
     const bar_width = grid.barWidth(width);
     const empty = selected ? fg("line") : fg("selected");
     const quiet = selected ? fg("muted") : fg("faint");
-    grid.slots.forEach((slot, i) => {
+    slots.forEach((slot, i) => {
       if (!slot) return;
-      if (i > 0 && grid.slots[0] !== null) w.write(fg("line") + separator + row_style);
-      const window = this.windows[i];
+      if (i > 0 && slots[0] !== null) w.write(fg("line") + separator + row_style);
+      const window = windows[i];
       if (!window) {
         w.splat(" ", slotWidth(slot, bar_width));
         return;
@@ -119,18 +135,15 @@ export class Cell {
       w.write(row_style + fg("muted"));
       w.write(padded(window.label, slot.label));
       w.write(`${row_style} `);
-      const color = window.used >= 100 ? fg("hot") : window.used >= 80 ? fg("warm") : fg("accent");
+      const used = window.used ?? 0;
+      const color = used >= 100 ? fg("hot") : used >= 80 ? fg("warm") : fg("accent");
       if (bar_width > 0) {
-        const filled = Math.floor((bar_width * window.used + 50) / 100);
-        w.write(color);
-        for (let j = 0; j < bar_width; j++) {
-          if (j === filled) w.write(empty);
-          w.write("━");
-        }
+        if (window.used === null) w.splat(" ", bar_width);
+        else writeBar(w, used, bar_width, color, empty);
         w.write(`${row_style} `);
       }
       w.write(
-        `\x1b[1m${window.used >= 80 ? color : fg("strong")}${String(window.used).padStart(3)}%${row_style}` +
+        `\x1b[1m${used >= 80 ? color : fg("strong")}${window.figure.padStart(slot.figure)}${row_style}` +
           fg("line") +
           ` · ${quiet}`,
       );
@@ -139,27 +152,32 @@ export class Cell {
     });
   }
 }
+export function writeBar(w: Writer, used: number, width: number, filled_ink: string, empty_ink: string) {
+  const filled = Math.round((width * Math.max(0, Math.min(100, used))) / 100);
+  w.write(filled_ink + "━".repeat(filled) + empty_ink + "━".repeat(width - filled));
+}
 interface Slot {
   label: number;
+  figure: number;
   reset: number;
 }
 function slotWidth(slot: Slot, bar: number): number {
-  return slot.label + 1 + (bar > 0 ? bar + 1 : 0) + percent_width + 3 + slot.reset;
+  return slot.label + 1 + (bar > 0 ? bar + 1 : 0) + slot.figure + 3 + slot.reset;
 }
 /** Column widths shared by every row's groups, so they line up as a grid. */
 export class Grid {
   /** Null where no row has that window. */
   slots: [Slot | null, Slot | null] = [null, null];
+  /** Monthly money spans the whole cell, without widening the quota slots. */
+  spend: Slot | null = null;
   /** The widest status, such as "Track usage", shown instead of groups. */
   status = 0;
   add(cell: Cell): void {
     if (!cell.limited()) this.status = Math.max(this.status, displayWidth(cell.fallback));
+    if (cell.spend) this.spend = widen(this.spend, cell.spend);
     cell.windows.forEach((window, i) => {
       if (!window) return;
-      const wider = { ...(this.slots[i] ?? { label: 0, reset: 0 }) };
-      wider.label = Math.max(wider.label, displayWidth(window.label));
-      wider.reset = Math.max(wider.reset, displayWidth(window.reset));
-      this.slots[i] = wider;
+      this.slots[i] = widen(this.slots[i], window);
     });
   }
   minimumWidth(): number {
@@ -175,24 +193,30 @@ export class Grid {
       if (size > 0) size += displayWidth(separator);
       size += slotWidth(slot, bar);
     }
-    return size;
+    return Math.max(size, this.spend ? slotWidth(this.spend, bar) : 0);
   }
   /** The same in every row: up to six cells, then none once a group would
    * get fewer than two. */
   barWidth(width: number): number {
-    const groups = (this.slots[0] !== null ? 1 : 0) + (this.slots[1] !== null ? 1 : 0);
-    if (groups === 0) return 0;
-    const extra = Math.floor(sat(width, this.groupsWidth(0)) / groups);
-    return extra >= 3 ? Math.min(6, extra - 1) : 0;
+    for (let bar = 6; bar >= 2; bar--) if (this.groupsWidth(bar) <= width) return bar;
+    return 0;
   }
   /** Whether `cell` was among the rows the grid was sized for. */
   holds(cell: Cell): boolean {
     const wider = new Grid();
     wider.slots = [this.slots[0] && { ...this.slots[0] }, this.slots[1] && { ...this.slots[1] }];
+    wider.spend = this.spend && { ...this.spend };
     wider.status = this.status;
     wider.add(cell);
-    return JSON.stringify(wider.slots) === JSON.stringify(this.slots);
+    return JSON.stringify([wider.slots, wider.spend]) === JSON.stringify([this.slots, this.spend]);
   }
+}
+function widen(slot: Slot | null, window: CellWindow): Slot {
+  return {
+    label: Math.max(slot?.label ?? 0, displayWidth(window.label)),
+    figure: Math.max(slot?.figure ?? percent_width, displayWidth(window.figure)),
+    reset: Math.max(slot?.reset ?? 0, displayWidth(window.reset)),
+  };
 }
 function padded(text: string, width: number): string {
   return text + " ".repeat(sat(width, displayWidth(text)));

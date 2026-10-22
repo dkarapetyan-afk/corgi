@@ -98,25 +98,87 @@ test("usage rows line up on one grid at every width", () => {
       now,
     ),
     Cell.init([{ minutes: 300, used: 100, reset_at: now + 2 * 3600 + 15 * 60 }, null], now),
+    Cell.monthly(
+      {
+        used_minor: 590000,
+        limit_minor: 1000000,
+        currency: "USD",
+        exponent: 2,
+        period_start: 0,
+        reset_at: now + 86400,
+      },
+      now,
+    ),
   ];
   const grid = new Grid();
   for (const cell of cells) grid.add(cell);
   // No bars, short bars and full bars.
   for (const width of [grid.minimumWidth(), grid.minimumWidth() + 8, grid.preferredWidth()]) {
-    const host = new Terminal(80, 4);
+    const host = new Terminal(100, 5);
     const w = new Writer();
     cells.forEach((cell, i) => {
       w.write(`\x1b[${i + 1};1H`);
       cell.write(w, grid, width, "\x1b[0m", false);
     });
     host.feed(w.s);
-    const [weekly, both, short] = host.text().split("\n");
+    const [weekly, both, short, monthly] = host.text().split("\n");
     host.destroy();
     expect(columnOf(both, "·", 0)).toBe(columnOf(short, "·", 0));
+    expect(monthly).toContain("$5.9k / $10k");
+    if (width === grid.preferredWidth()) {
+      expect(monthly).toContain("━━━━━━");
+      expect(columnOf(monthly, "━", 0)).toBe(columnOf(both, "━", 0));
+    }
     expect(columnOf(both, "·", 1)).toBe(columnOf(weekly, "·", 0));
     expect(columnOf(both, "│", 0)).toBe(columnOf(weekly, "│", 0));
     expect(columnOf(both, "│", 0)).toBe(columnOf(short, "│", 0));
     expect(columnOf(both, "7d", 0)).toBe(columnOf(weekly, "7d", 0));
-    for (const line of [weekly, both, short]) expect(displayWidth(line.trimEnd())).toBeLessThanOrEqual(width);
+    for (const line of [weekly, both, short, monthly]) expect(displayWidth(line.trimEnd())).toBeLessThanOrEqual(width);
+  }
+});
+
+test("monthly spend does not widen the quota slots or hide their bars", () => {
+  const quota = Cell.init(
+    [
+      { minutes: 300, used: 20, reset_at: 3700 },
+      { minutes: 10080, used: 40, reset_at: 86500 },
+    ],
+    100,
+  );
+  const grid = new Grid();
+  grid.add(quota);
+  const before = structuredClone(grid.slots),
+    width = grid.preferredWidth();
+  grid.add(
+    Cell.monthly(
+      { used_minor: 59, limit_minor: 1000000, currency: "USD", exponent: 2, period_start: 0, reset_at: 86500 },
+      100,
+    ),
+  );
+  expect(grid.slots).toEqual(before);
+  expect(grid.preferredWidth()).toBe(width);
+  expect(grid.barWidth(width)).toBe(6);
+});
+
+test("monthly spend without a cap omits the bar and over-cap readings stay bounded", () => {
+  const reading = {
+    used_minor: 125000,
+    limit_minor: null as number | null,
+    currency: "USD",
+    exponent: 2,
+    period_start: 0,
+    reset_at: 86400,
+  };
+  for (const limit of [null, 0, 100000]) {
+    const cell = Cell.monthly({ ...reading, limit_minor: limit }, 100);
+    const grid = new Grid();
+    grid.add(cell);
+    for (const width of [18, grid.minimumWidth(), grid.preferredWidth()]) {
+      const w = new Writer();
+      cell.write(w, grid, width, "\x1b[0m", false);
+      expect(displayWidth(w.s.replace(/\x1b\[[0-9;]*m/g, ""))).toBeLessThanOrEqual(width);
+      if (limit === null) expect(w.s).not.toContain("━");
+      else if (width === grid.preferredWidth()) expect(w.s).toContain("━━━━━━");
+    }
   }
 });

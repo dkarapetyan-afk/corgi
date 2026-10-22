@@ -506,6 +506,40 @@ function sideAccount(now: number) {
   };
 }
 
+test("account limits include monthly spend, optional caps and calendar reset", () => {
+  const now = 1792663200;
+  const a = sideAccount(now);
+  a.option.plan = "Enterprise";
+  a.option.limits = "metered";
+  a.option.spend = {
+    used_minor: 59,
+    limit_minor: 1000000,
+    currency: "USD",
+    exponent: 2,
+    period_start: now - 60,
+    reset_at: now + 86400,
+  };
+  const accounts = new Accounts({ now, accounts: [a] });
+  const draw = () => unstyled(render(w => drawOverview(w, [], new UsageView(), false, "", "", {}, accounts, 130, 40)));
+  const frame = draw();
+  expect(frame).toContain("Claude side · tal@side.dev · Enterprise");
+  expect(frame).toContain("mo $0.59 / $10k");
+  expect(frame).toContain("━━━━━━");
+  expect(frame).toContain("0.01%");
+  expect(frame).toContain("↻ 1d");
+  a.option.spend.limit_minor = null;
+  expect(draw()).toContain("mo $0.59");
+  expect(draw()).not.toContain("0.01%");
+  expect(draw()).not.toContain("━━━━━━");
+  expect(draw()).not.toContain("no limit");
+  a.option.limits = { windows: [new Window({ minutes: 300, used: 47, reset_at: now + 60 }), null] };
+  expect(draw()).toContain("47%");
+  expect(draw()).toContain("mo $0.59");
+  a.option.spend.reset_at = now;
+  expect(draw()).toContain("mo · stale");
+  expect(draw()).not.toContain("$0.59");
+});
+
 test("agents in another account sit under its own rule with its limits", () => {
   const now = Math.floor(Date.now() / 1000);
   const named = (id: number, provider: "claude" | "codex", name: string, fields: Partial<Conversation> = {}) => {

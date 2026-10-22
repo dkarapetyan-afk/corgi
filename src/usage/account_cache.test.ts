@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { State, Cache } from "./account_cache";
 import { Info, Window, expired } from "./account";
 import { Text } from "../providers/common";
+const monthly = {
+  used_minor: 59,
+  limit_minor: 1000000,
+  currency: "USD",
+  exponent: 2,
+  period_start: 1,
+  reset_at: 90000,
+};
 test("partial account refresh retains usage until a fresh reading or sign-out", () => {
   const s = new State(),
     fresh = new Info();
@@ -36,6 +44,8 @@ test("locked account cache restores metadata and discards obsolete fetch state",
   try {
     const c = await Cache.open("claude", "user");
     c.state.info.account = new Text("user");
+    c.state.info.spend = monthly;
+    c.state.info.usage_fetched_at = 1700000000;
     c.state.next_usage = 1700000100;
     Object.assign(c.state, { next_profile: 1700000200, rate_limited: true });
     c.save();
@@ -43,6 +53,7 @@ test("locked account cache restores metadata and discards obsolete fetch state",
     const next = await Cache.open("claude", "user");
     expect(next.state.next_usage).toBe(1700000100);
     expect(next.state.info.account.text()).toBe("user");
+    expect(next.state.info.spend).toEqual(monthly);
     expect(next.state).not.toHaveProperty("next_profile");
     expect(next.state).not.toHaveProperty("rate_limited");
     expect(next.state.display(1700000000).usage_error.text()).toBe("");
@@ -52,6 +63,23 @@ test("locked account cache restores metadata and discards obsolete fetch state",
     else process.env.XDG_STATE_HOME = prior;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("spend survives a failed refresh without becoming fresh and clears on disable or signout", () => {
+  const state = new State();
+  const fresh = Object.assign(new Info(), { signed_in: true, limits: "metered", spend: monthly });
+  state.update(fresh, 1000);
+  state.update(Object.assign(new Info(), { signed_in: true, usage_error: new Text("failed") }), 1100);
+  expect(state.info.spend).toEqual(monthly);
+  expect(state.info.usage_fetched_at).toBe(1000);
+  expect(state.display(1600).usage_error.text()).toBe("failed");
+  state.update(fresh, 1700);
+  expect(state.display(2300).usage_error.text()).toBe("last success 10m+ ago");
+  state.update(Object.assign(new Info(), { signed_in: true, limits: "metered" }), 1800);
+  expect(state.info.spend).toBeNull();
+  state.update(fresh, 1900);
+  state.update(Object.assign(new Info(), { signed_in: false }), 2000);
+  expect(state.info.spend).toBeNull();
 });
 
 test("usage age follows successful fetches and expires at ten minutes", () => {

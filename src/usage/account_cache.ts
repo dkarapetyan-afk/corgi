@@ -5,6 +5,7 @@ import { flock } from "../native_bridge";
 import { Info, expired, restoreLimits } from "./account";
 import { Text } from "../providers/common";
 import { parse, stringify } from "../json";
+import * as spend from "./spend";
 export const interval = 60,
   cooldown = 300;
 export class State {
@@ -16,12 +17,17 @@ export class State {
     if (fresh.limits !== "none") this.info.usage_fetched_at = now;
     else if (fresh.signed_in === true && previous.limits !== "none") {
       this.info.limits = previous.limits;
+      this.info.spend = previous.spend;
       this.info.usage_fetched_at = previous.usage_fetched_at;
     }
   }
   display(now: number) {
     const result = Object.assign(new Info(), this.info);
-    if (typeof result.limits === "object" && expired(result.usage_fetched_at, now) && !result.usage_error.len)
+    if (
+      (typeof result.limits === "object" || result.spend !== null) &&
+      expired(result.usage_fetched_at, now) &&
+      !result.usage_error.len
+    )
       result.usage_error = new Text(result.usage_fetched_at <= 0 ? "fetch time unknown" : "last success 10m+ ago");
     return result;
   }
@@ -40,6 +46,7 @@ function restoreState(value: any) {
   for (const key of ["account", "plan", "usage_error"] as const)
     state.info[key] = new Text(typeof value.info?.[key] === "string" ? value.info[key] : "");
   state.info.limits = restoreLimits(value.info?.limits ?? "none");
+  state.info.spend = spend.restore(value.info?.spend);
   return state;
 }
 export function Locked<T extends object>(

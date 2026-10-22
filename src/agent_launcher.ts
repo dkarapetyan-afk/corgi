@@ -14,6 +14,7 @@ import * as agentManager from "./agent_manager";
 import { Slide } from "./card_transition";
 import { milliTimestamp } from "./clock";
 import { restoreLimits, type Limits } from "./usage/account";
+import * as spend from "./usage/spend";
 import { Cell, Grid, expired } from "./launcher_usage";
 import * as launcherResume from "./launcher_resume";
 import { writeKey } from "./launcher_resume";
@@ -77,6 +78,7 @@ export interface Option {
   account: string;
   plan: string;
   limits: Limits;
+  spend: spend.Reading | null;
   usage_fetched_at: number;
   usage_error: string;
   usage_needs_consent: boolean;
@@ -92,6 +94,7 @@ export function option(value: any = {}): Option {
     account: value.account ?? "",
     plan: value.plan ?? "",
     limits: restoreLimits(value.limits ?? "none"),
+    spend: spend.restore(value.spend),
     usage_fetched_at: Number(value.usage_fetched_at ?? 0),
     usage_error: value.usage_error ?? "",
     usage_needs_consent: value.usage_needs_consent === true,
@@ -268,7 +271,11 @@ export class Menu {
     const at = now();
     const limits = o.limits;
     if (limits === "none") return (o.pending ?? this.preview.pending) ? Cell.status("Reading…") : Cell.status("—");
-    if (limits === "metered") return Cell.status("Metered");
+    if (limits === "metered") {
+      if (o.spend === null) return Cell.status("Metered");
+      if (expired(o.usage_fetched_at, at) || !spend.current(o.spend, at)) return Cell.status("—");
+      return Cell.monthly(o.spend, at);
+    }
     if (limits === "rate_limited") return Cell.status("—");
     return expired(o.usage_fetched_at, at) ? Cell.status("—") : Cell.init(limits.windows as any, at);
   }

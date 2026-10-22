@@ -1,4 +1,5 @@
 import { Text } from "../agents";
+import type { Reading } from "./spend";
 export { Text };
 export const usage_max_age = 600;
 export type Limits = "none" | "metered" | "rate_limited" | { windows: [Window | null, Window | null] };
@@ -24,6 +25,7 @@ export class Info {
   account = new Text();
   plan = new Text();
   limits: Limits = "none";
+  spend: Reading | null = null;
   usage_fetched_at = 0;
   usage_error = new Text();
   usage_needs_consent = false;

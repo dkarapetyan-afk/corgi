@@ -15,6 +15,8 @@ import { parseLabel } from "./activity/summary";
 import { captureManifest } from "./persist/handoff";
 import { checkpoint_version, handoff_version } from "./persist/migrations";
 import { validateCheckpoint } from "./persist/schema";
+import { Preview } from "./launch/preview";
+import { preview as restorePreview } from "./agent_launcher";
 
 const schemas = Object.fromEntries(
   ["protocol", "viewer", "handoff"].map(name => [
@@ -93,6 +95,24 @@ function fixture() {
     false,
   );
   server.clients.push(client);
+  const preview = new Preview();
+  preview.options.claude.limits = "metered";
+  preview.options.claude.spend = {
+    used_minor: 59,
+    limit_minor: null,
+    currency: "USD",
+    exponent: 2,
+    period_start: 1790812800,
+    reset_at: 1793491200,
+  };
+  client.launch_preview = {
+    cwd: "/tmp",
+    preview,
+    checked: 0,
+    history_asked: false,
+    history_epoch: 0n,
+    history_sent: 0n,
+  };
   return {
     server,
     client,
@@ -106,12 +126,17 @@ function fixture() {
 test("the runtime wire matches protocol.version", () => {
   expect(protocol.version).toBe(2);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "d8dab557b97e277b7ae80880b1c36ee0fbe813273460ccdd95508e76ae169fa7",
+    "deb06af8cb93d3048a0fd6e64502597127a5fea247c268e7d47d8f98de085f3e",
   );
-  const { server, dispose } = fixture();
+  const { server, client, dispose } = fixture();
   try {
     const snapshot = json.parse(json.stringify(session.snapshot(server.runtime)));
     validate(schemas.protocol, { snapshot });
+    const preview = json.parse(json.stringify(client.launch_preview!.preview));
+    validate(schemas.protocol, { launch_preview: preview });
+    expect(restorePreview(preview).options.claude.spend).toEqual(client.launch_preview!.preview.options.claude.spend);
+    delete preview.options.claude.spend;
+    expect(restorePreview(preview).options.claude.spend).toBeNull();
     expect(snapshot.panes[0].agent.session).toBe("schema-session");
     const wrong = structuredClone(snapshot);
     wrong.panes[0].id = -1;
@@ -174,7 +199,7 @@ test("saved handoff format matches its version", async () => {
   expect(handoff_version).toBe(5);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "c936cbcdcc8768bf83701b370cf9d113b3e0d3db6df02d26c451f650ff893f60",
+    "da710d441974bd7968794f10f03d7658bfe1315f18688806135f50b8694930fb",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();
@@ -190,6 +215,7 @@ test("saved handoff format matches its version", async () => {
     validateCheckpoint(captured.runtime);
     expect(captured.runtime.panes[0].binding.actor).toBe(1);
     expect(captured.clients).toHaveLength(1);
+    expect(captured.clients[0].launch_preview.preview.options.claude.spend.used_minor).toBe(59);
     expect(captured.summaries.pool.slots).toHaveLength(4);
     expect(() => validate(schemas.handoff, { ...captured, listener: "bad" })).toThrow();
   } finally {

@@ -778,6 +778,14 @@ $.launch_preview.options.codex.limits|windows[2]?.minutes?: i64
 $.launch_preview.options.codex.limits|windows[2]?.used: u8
 $.launch_preview.options.codex.limits|windows[2]?.reset_at: optional
 $.launch_preview.options.codex.limits|windows[2]?.reset_at?: i64
+$.launch_preview.options.codex.spend: optional
+$.launch_preview.options.codex.spend?.used_minor: f64
+$.launch_preview.options.codex.spend?.limit_minor: optional
+$.launch_preview.options.codex.spend?.limit_minor?: f64
+$.launch_preview.options.codex.spend?.currency: string
+$.launch_preview.options.codex.spend?.exponent: u8
+$.launch_preview.options.codex.spend?.period_start: i64
+$.launch_preview.options.codex.spend?.reset_at: i64
 $.launch_preview.options.codex.usage_fetched_at: i64
 $.launch_preview.options.codex.usage_error: custom bounded_text.BoundedText(160)
 $.launch_preview.options.codex.usage_needs_consent: bool
@@ -802,6 +810,14 @@ $.launch_preview.options.claude.limits|windows[2]?.minutes?: i64
 $.launch_preview.options.claude.limits|windows[2]?.used: u8
 $.launch_preview.options.claude.limits|windows[2]?.reset_at: optional
 $.launch_preview.options.claude.limits|windows[2]?.reset_at?: i64
+$.launch_preview.options.claude.spend: optional
+$.launch_preview.options.claude.spend?.used_minor: f64
+$.launch_preview.options.claude.spend?.limit_minor: optional
+$.launch_preview.options.claude.spend?.limit_minor?: f64
+$.launch_preview.options.claude.spend?.currency: string
+$.launch_preview.options.claude.spend?.exponent: u8
+$.launch_preview.options.claude.spend?.period_start: i64
+$.launch_preview.options.claude.spend?.reset_at: i64
 $.launch_preview.options.claude.usage_fetched_at: i64
 $.launch_preview.options.claude.usage_error: custom bounded_text.BoundedText(160)
 $.launch_preview.options.claude.usage_needs_consent: bool

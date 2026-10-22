@@ -54,3 +54,68 @@ test("Claude initialize names the default model", () => {
   ).toBe("claude-sonnet-5-5");
   expect(defaultModel(null)).toBe("");
 });
+
+test("Enterprise usage reads monthly spend without quota windows or session estimates", () => {
+  const info = new Info();
+  const reply = {
+    rate_limits_available: true,
+    subscription_type: "enterprise",
+    session: { total_cost_usd: 999 },
+    rate_limits: {
+      five_hour: null,
+      seven_day: null,
+      extra_usage: {
+        is_enabled: true,
+        used_credits: 59,
+        monthly_limit: 1000000,
+        currency: "USD",
+        decimal_places: 2,
+      },
+    },
+  };
+  const now = Date.parse("2026-10-22T12:00:00Z") / 1000;
+  applyUsage(info, reply, now);
+  expect(info.limits).toBe("metered");
+  expect(info.plan.text()).toBe("Enterprise");
+  expect(info.spend).toEqual({
+    used_minor: 59,
+    limit_minor: 1000000,
+    currency: "USD",
+    exponent: 2,
+    period_start: Date.parse("2026-10-01T00:00:00Z") / 1000,
+    reset_at: Date.parse("2026-11-01T00:00:00Z") / 1000,
+  });
+  for (const [at, start, end] of [
+    ["2028-02-29T23:59:59Z", "2028-02-01", "2028-03-01"],
+    ["2026-12-31T23:59:59Z", "2026-12-01", "2027-01-01"],
+    ["2027-01-01T00:00:00Z", "2027-01-01", "2027-02-01"],
+  ]) {
+    applyUsage(info, reply, Date.parse(at) / 1000);
+    expect([info.spend?.period_start, info.spend?.reset_at]).toEqual([
+      Date.parse(start) / 1000,
+      Date.parse(end) / 1000,
+    ]);
+  }
+});
+
+test("Claude monthly spend keeps missing and zero limits distinct and clears disabled spend", () => {
+  const info = new Info();
+  const extra = { is_enabled: true, used_credits: 0, monthly_limit: null as number | null, currency: "JPY" };
+  const reply = { rate_limits_available: true, rate_limits: { extra_usage: extra } };
+  applyUsage(info, reply);
+  expect(info.spend?.limit_minor).toBeNull();
+  expect(info.spend?.exponent).toBe(0);
+  extra.monthly_limit = 0;
+  applyUsage(info, reply);
+  expect(info.spend?.limit_minor).toBe(0);
+  extra.is_enabled = false;
+  applyUsage(info, reply);
+  expect(info.spend).toBeNull();
+  expect(info.limits).toBe("metered");
+  extra.is_enabled = true;
+  extra.used_credits = -1;
+  expect(() => applyUsage(info, reply)).toThrow("InvalidUsage");
+  applyUsage(info, { ...reply, rate_limits: { ...reply.rate_limits, five_hour: { utilization: 5 } } });
+  expect(typeof info.limits).toBe("object");
+  expect(info.spend).toBeNull();
+});

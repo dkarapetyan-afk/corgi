@@ -16,6 +16,7 @@ export class Option {
   account = new Text();
   plan = new Text();
   limits: Info["limits"] = "none";
+  spend: Info["spend"] = null;
   usage_fetched_at = 0;
   usage_error = new Text();
   usage_needs_consent = false;
@@ -234,6 +235,7 @@ export class Worker {
         "account",
         "plan",
         "limits",
+        "spend",
         "usage_fetched_at",
         "usage_error",
         "usage_needs_consent",

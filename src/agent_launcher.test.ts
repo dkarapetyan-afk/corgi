@@ -22,6 +22,44 @@ function screen(m: Menu, cols: number, rows: number, side: SidebarView): string[
 const work = Row.of("claude", "/accounts/work");
 const workAccount = (option: object = {}) => ({ provider: "claude", account: "/accounts/work", name: "work", option });
 
+test("Enterprise accounts show their monthly spend in the picker and manager", () => {
+  const at = now();
+  const m = menu({ selected: work });
+  m.preview = preview({
+    pending: false,
+    accounts: [
+      workAccount({
+        signed_in: true,
+        plan: "Enterprise",
+        limits: "metered",
+        usage_fetched_at: at,
+        spend: {
+          used_minor: 59,
+          limit_minor: 1000000,
+          currency: "USD",
+          exponent: 2,
+          period_start: at - 60,
+          reset_at: at + 86400,
+        },
+      }),
+    ],
+  });
+  expect(m.usageCell(work).spend?.figure).toBe("$0.59 / $10k");
+  expect(m.usageCell("claude").fallback).not.toContain("$0.59");
+  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")!.usage.spend?.figure).toBe("$0.59 / $10k");
+  const rendered = screen(m, 150, 30, SidebarView.init(150, 30, true, 0, 0)).join("\n");
+  expect(rendered).toMatch(/1M\s+━+\s+\$0\.59 \/ \$10k\s+·\s+1d/);
+  const o = m.preview.accounts[0].option;
+  o.spend!.limit_minor = null;
+  expect(m.usageCell(work).spend?.figure).toBe("$0.59");
+  expect(m.usageCell(work).spend?.used).toBeNull();
+  o.spend!.reset_at = at;
+  expect(m.usageCell(work).fallback).toBe("—");
+  o.spend!.reset_at = at + 86400;
+  o.usage_fetched_at = at - 600;
+  expect(m.usageCell(work).fallback).toBe("—");
+});
+
 test("launcher menu bounds", () => {
   const side = SidebarView.init(80, 24, true, 0, 0);
   const m = menu();

@@ -6,6 +6,7 @@ import { Info, Window, used, windows } from "../../usage/account";
 import { Control, cancelled } from "./control";
 import { Cache, interval, cooldown } from "../../usage/account_cache";
 import * as errors from "../../errors";
+import * as spend from "../../usage/spend";
 function window(value: unknown, minutes: number) {
   const percent = used(field(value, "utilization"));
   if (percent === null) return null;
@@ -43,15 +44,34 @@ export function readAccount(value: any) {
   }
   return info;
 }
-export function applyUsage(info: Info, value: any) {
+export function applyUsage(info: Info, value: any, now = Math.floor(Date.now() / 1000)) {
   if (typeof value?.rate_limits_available !== "boolean") throw Error("InvalidUsage");
   if (!value.rate_limits_available) throw Error("UsageUnavailable");
   const quota = limits(value.rate_limits);
-  if (quota === "none") throw Error("InvalidUsage");
-  info.limits = quota;
+  const extra = field(value.rate_limits, "extra_usage");
+  const monthly = monthlySpend(extra, now);
+  if (quota === "none" && monthly === null && field(extra, "is_enabled") !== false) throw Error("InvalidUsage");
+  info.limits = quota === "none" ? "metered" : quota;
+  info.spend = monthly;
   info.usage_error = new Text();
   if (typeof value.subscription_type === "string" && value.subscription_type)
     info.plan = claude.plan(value.subscription_type, "");
+}
+/** The SDK documents extra_usage amounts in minor currency units. Claude's
+ * monthly spend limits reset on the first of the month at 00:00 UTC. */
+function monthlySpend(value: unknown, now: number): spend.Reading | null {
+  if (field(value, "is_enabled") !== true) return null;
+  const currency = field(value, "currency");
+  const exponent = field(value, "decimal_places") ?? spend.currencyExponent(currency);
+  const date = new Date(now * 1000);
+  return spend.restore({
+    used_minor: field(value, "used_credits"),
+    limit_minor: field(value, "monthly_limit"),
+    currency,
+    exponent,
+    period_start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) / 1000,
+    reset_at: Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) / 1000,
+  });
 }
 /** The model the picker's "default" entry resolves to. */
 export function defaultModel(value: any): string {
@@ -154,7 +174,7 @@ export class Client {
       const fresh = Object.assign(new Info(), this.account);
       try {
         if (this.session === null) await this.start(executable, stopping, quit, Date.now() + 5000);
-        applyUsage(fresh, await this.session!.request("get_usage", {}, { stopping, quit }));
+        applyUsage(fresh, await this.session!.request("get_usage", {}, { stopping, quit }), now);
       } catch (e) {
         this.close();
         fresh.usage_error = new Text(usageFailure(e));
