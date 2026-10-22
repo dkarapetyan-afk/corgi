@@ -54,6 +54,9 @@ export class State {
   briefs: Map<string, worktrees.Brief> | null = null;
   /** When this viewer first saw each brief being written, for its glimmer. */
   private writing = new Map<string, number>();
+  /** The overview's order, kept from one opening to the next: the latest edit first. */
+  sort: Sort = "edited";
+  ascending = false;
   removal = new worktreeRemoval.Hold();
   /** The removal effect for this opening of the overview, drawn when first needed. */
   private effect: worktreeRemoval.Effect | null = null;
@@ -86,6 +89,34 @@ export class State {
     if (this.effect === null) this.effect = this.last_effect = worktreeRemoval.pick(this.last_effect);
     return this.effect;
   }
+  /** The linked worktrees in the overview's order. */
+  entries(snapshot: worktrees.Snapshot | null): worktrees.Checkout[] {
+    const sort = this.sort,
+      ascending = this.ascending;
+    return worktrees.linked(snapshot).sort((a, b) => {
+      if (sort !== "worktree") {
+        const left = figures(sort, a, snapshot, this),
+          right = figures(sort, b, snapshot, this);
+        // Worktrees without the figure go last either way.
+        if (left === null || right === null) {
+          if (left !== right) return left === null ? 1 : -1;
+        } else
+          for (let i = 0; i < left.length; i++)
+            if (left[i] !== right[i]) return left[i] < right[i] === ascending ? -1 : 1;
+      }
+      const names = collator.compare(worktrees.label(a), worktrees.label(b)) || collator.compare(a.path, b.path);
+      return sort === "worktree" && !ascending ? -names : names;
+    });
+  }
+  /** Sorts by the heading under a cell, the way its column runs first; the
+   * sorted heading turns it around. */
+  click(rect: Rect, x: number, y: number): boolean {
+    const sort = sortAt(rect, x, y);
+    if (sort === null) return false;
+    this.ascending = sort === this.sort ? !this.ascending : ascends[sort];
+    this.sort = sort;
+    return true;
+  }
   index(entries: worktrees.Checkout[]) {
     const index = entries.findIndex(e => e.path === this.selected);
     return Math.max(0, index);
@@ -98,7 +129,7 @@ export class State {
     return Math.floor(this.index(entries) / capacity) * capacity;
   }
   move(snapshot: worktrees.Snapshot | null, delta: number) {
-    const entries = worktrees.linked(snapshot);
+    const entries = this.entries(snapshot);
     this.select(entries[Math.max(0, Math.min(entries.length - 1, this.index(entries) + delta))]?.path ?? null);
   }
   select(path: string | null) {
@@ -115,7 +146,17 @@ export class State {
 /** The worktrees the overview lists: the linked ones, and one just removed
  * until its row has closed. */
 export function listing(snapshot: worktrees.Snapshot | null, state: State, now = milliTimestamp()) {
-  return state.removal.shown(worktrees.linked(snapshot), now, state.lines());
+  return state.removal.shown(state.entries(snapshot), now, state.lines());
+}
+/** A worktree's agents as the sidebar counts them, else those associated with it. */
+function agentsAt(snapshot: worktrees.Snapshot | null, state: State, path: string): Tally {
+  return (
+    state.agents?.get(path) ?? {
+      agents: snapshot?.agents.filter(a => a.path === path).length ?? 0,
+      working: 0,
+      attention: 0,
+    }
+  );
 }
 /** Temporary directories by how they read, real paths included since Git
  * lists worktrees by theirs: on macOS `/tmp` is `/private/tmp`. */
@@ -148,6 +189,42 @@ export function displayPath(path: string, main: string): string {
   return directoryLabel(path, homedir());
 }
 type Column = "agents" | "main" | "age" | "edited" | "changes";
+/** What the overview orders worktrees by: their names, or a column. */
+export type Sort = "worktree" | Column;
+/** Whether each sort first runs up: names from A; figures run down, the
+ * most or the newest first. */
+const ascends: Record<Sort, boolean> = {
+  worktree: true,
+  agents: false,
+  main: false,
+  age: false,
+  edited: false,
+  changes: false,
+};
+const collator = new Intl.Collator(undefined, { numeric: true });
+/** A worktree's figures in a column, the least or oldest first, or null
+ * where it shows none. */
+function figures(
+  sort: Column,
+  entry: worktrees.Checkout,
+  snapshot: worktrees.Snapshot | null,
+  state: State,
+): (number | bigint)[] | null {
+  switch (sort) {
+    case "agents":
+      return [agentsAt(snapshot, state, entry.path).agents];
+    case "main":
+      return entry.comparison && [entry.comparison.ahead, entry.comparison.behind];
+    case "age":
+      return entry.created === null ? null : [entry.created];
+    case "edited":
+      return entry.edited === null ? null : [entry.edited];
+    case "changes":
+      return entry.available && entry.changes
+        ? [entry.changes.total, entry.changes.added + entry.changes.removed]
+        : null;
+  }
+}
 /** The columns right of the worktree, each with the gap after it; the last
  * ends two cells from the card's edge. */
 const columns: { name: Column; header: string; width: number }[] = [
@@ -176,6 +253,16 @@ export function columnsFor(width: number): { x: Partial<Record<Column, number>>;
     x[c.name] = at;
   }
   return { x, room: at - 4 };
+}
+/** The heading under a cell: WORKTREE up to the first column, then each
+ * column from its mark, just left of its heading. */
+export function sortAt(rect: Rect, x: number, y: number): Sort | null {
+  const col = x - rect.x,
+    at = columnsFor(rect.w).x;
+  if (y !== rect.y + 4 || col < 1 || col >= rect.w - 2) return null;
+  let sort: Sort = "worktree";
+  for (const c of columns) if (at[c.name] !== undefined && col >= at[c.name]! - 1) sort = c.name;
+  return sort;
 }
 export function draw(
   w: Writer,
@@ -257,9 +344,15 @@ export function draw(
   const layout = columnsFor(rect.w),
     x = layout.x,
     main = snapshot?.entries.find(e => e.primary)?.path ?? cwd;
-  line(4, 2, "WORKTREE", layout.room, "faint");
+  // The sorted heading is bright, marked with the way its column runs.
+  const heading = (col: number, sort: Sort, label: string, width: number) => {
+    const sorted = state.sort === sort;
+    if (sorted) grid.text(col - 1, 4, state.ascending ? "↑" : "↓", c.strong, true);
+    line(4, col, label, width, sorted ? "strong" : "faint", sorted);
+  };
+  heading(2, "worktree", "WORKTREE", layout.room);
   for (const column of columns)
-    if (x[column.name] !== undefined) line(4, x[column.name]!, column.header, column.width, "faint");
+    if (x[column.name] !== undefined) heading(x[column.name]!, column.name, column.header, column.width);
   // Until a removed row has closed, the cursor is its own: it goes with the
   // row, then waits on that line while the rows below move up to it, or
   // climbs to the row above when that is next.
@@ -292,7 +385,7 @@ export function draw(
       line(y, displayWidth(label) + 3, short, displayWidth(short), tone("faint"));
     if (x.agents !== undefined) {
       const associations = snapshot?.agents.filter(a => a.path === entry.path) ?? [],
-        counted = state.agents?.get(entry.path) ?? { agents: associations.length, working: 0, attention: 0 },
+        counted = agentsAt(snapshot, state, entry.path),
         segments: [string, palette.Token, boolean?][] = histogram(counted);
       if (!counted.agents) segments.push(["0", tone("faint")]);
       if (associations.some(a => a.stale)) segments.push(["*", "text"]);
@@ -300,13 +393,13 @@ export function draw(
     }
     if (x.main !== undefined) {
       const vs = entry.comparison;
-      line(
-        y,
-        x.main,
-        vs ? `↑${compactCount(vs.ahead)} ↓${compactCount(vs.behind)}` : "—",
-        8,
-        vs ? "text" : tone("faint"),
-      );
+      // Commits main doesn't have yet want attention.
+      if (vs)
+        runs(y, x.main, 8, [
+          [`↑${compactCount(vs.ahead)}`, vs.ahead > 0n ? "warm" : "text"],
+          [` ↓${compactCount(vs.behind)}`, "text"],
+        ]);
+      else line(y, x.main, "—", 8, tone("faint"));
     }
     if (x.age !== undefined)
       line(

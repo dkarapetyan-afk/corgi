@@ -2,7 +2,7 @@ import { transport } from "./fixtures/transport";
 import { expect, test } from "bun:test";
 import { Controller } from "./controller";
 import { worktreeSnapshot } from "./mirror";
-import { State, between, columnsFor, displayPath, draw, geometry, listing } from "./worktree_tooltip";
+import { State, between, columnsFor, displayPath, draw, geometry, listing, sortAt } from "./worktree_tooltip";
 import * as worktreeRemoval from "./worktree_removal";
 import { View, workspaceEntry, worktreeAt, worktreeLabel, worktreeBadge, writeExit, spotlight_dim } from "./sidebar";
 import { bgRgb, colors, fg, fgRgb } from "./palette";
@@ -11,6 +11,7 @@ import { Writer } from "./text";
 import { Terminal } from "./pane/terminal";
 import { parseInventory } from "./trackers/worktrees";
 import * as clock from "./clock";
+import * as worktrees from "./worktrees";
 import type { Brief, Snapshot } from "./worktrees";
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -103,9 +104,65 @@ test("rows show agents at work, the comparison, age, last edit and line counts",
     expect(w.buffered()).toContain(bgRgb(colors.selected));
     expect(w.buffered()).toContain(`${fgRgb(colors.accent)}+142`);
     expect(w.buffered()).toContain(`${fgRgb(colors.hot)}−38`);
+    // Commits main doesn't have are warm.
+    expect(w.buffered()).toContain(`${fgRgb(colors.warm)}↑6`);
+    expect(w.buffered()).not.toContain(`${fgRgb(colors.warm)}↑0`);
   } finally {
     terminal.destroy();
   }
+});
+test("headings sort the rows, the sorted one marked and turned around by a second click", () => {
+  const data = snapshot(3),
+    now = Date.UTC(2026, 9, 11),
+    [a, b, c] = data.entries.slice(1);
+  Object.assign(a, { comparison: { ahead: 2n, behind: 0n }, created: now - 3600000, edited: now - 60000 });
+  Object.assign(b, { comparison: { ahead: 9n, behind: 1n }, created: now - 86400000, edited: null });
+  Object.assign(c, { comparison: null, created: now - 60000, edited: now - 7200000 });
+  const state = new State(),
+    rect = geometry(140, 30, 28, 3, 3)!,
+    x = columnsFor(rect.w).x,
+    order = () => state.entries(data).map(worktrees.label),
+    heading = () => {
+      const w = new Writer(),
+        terminal = new Terminal(140, 30);
+      try {
+        draw(w, rect, "repo", "/repo", data, state, null, now);
+        terminal.feed(w.buffered());
+        return terminal.text().split("\n")[rect.y + 4];
+      } finally {
+        terminal.destroy();
+      }
+    };
+  // The latest edit first, worktrees without one last.
+  expect(order()).toEqual(["topic-0", "topic-2", "topic-1"]);
+  expect(heading()).toContain("↓EDITED");
+  // Counts run down first; worktrees without one stay last both ways.
+  expect(state.click(rect, rect.x + x.main! + 2, rect.y + 4)).toBe(true);
+  expect(order()).toEqual(["topic-1", "topic-0", "topic-2"]);
+  expect(heading()).toMatch(/ WORKTREE .*↓VS MAIN/);
+  state.click(rect, rect.x + x.main! + 2, rect.y + 4);
+  expect(order()).toEqual(["topic-0", "topic-1", "topic-2"]);
+  expect(heading()).toContain("↑VS MAIN");
+  // Times run from the newest, and a heading's mark is part of it.
+  state.click(rect, rect.x + x.age! - 1, rect.y + 4);
+  expect(order()).toEqual(["topic-2", "topic-0", "topic-1"]);
+  expect(heading()).toContain("↓AGE");
+  // Names run from A.
+  state.click(rect, rect.x + 3, rect.y + 4);
+  expect(order()).toEqual(["topic-0", "topic-1", "topic-2"]);
+  expect(heading()).toContain("↑WORKTREE");
+  state.click(rect, rect.x + 3, rect.y + 4);
+  expect(order()).toEqual(["topic-2", "topic-1", "topic-0"]);
+  expect(heading()).toContain("↓WORKTREE");
+  // Only the heading row sorts, and the sort outlasts the overview.
+  expect(sortAt(rect, rect.x + x.main!, rect.y + 5)).toBeNull();
+  expect(state.click(rect, rect.x + x.main!, rect.y + 3)).toBe(false);
+  state.clear();
+  expect(order()).toEqual(["topic-2", "topic-1", "topic-0"]);
+  // Browsing follows the order shown.
+  state.select("/repo/.worktrees/1");
+  state.move(data, 1);
+  expect(state.selected).toBe("/repo/.worktrees/0");
 });
 test("the overview counts each worktree's agents, and those working, as the sidebar does", () => {
   const data = snapshot(2);

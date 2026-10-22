@@ -700,8 +700,10 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         shown.closed,
         u.worktree_card.lines(),
       );
-      if (rect) worktreeTooltip.draw(w, rect, ws.name, ws.cwd, ws.worktrees, u.worktree_card, badge, now);
-      else writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer);
+      if (rect) {
+        worktreeTooltip.draw(w, rect, ws.name, ws.cwd, ws.worktrees, u.worktree_card, badge, now);
+        if (u.pointer && worktreeTooltip.sortAt(rect, u.pointer.x, u.pointer.y) !== null) link_pointer = true;
+      } else writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer);
     }
   } else if (u.link_tooltip && u.agent_launcher === null && u.corgi_setup === null && u.pointer) {
     const pointer = u.pointer;

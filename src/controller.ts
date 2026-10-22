@@ -1673,7 +1673,7 @@ export class Controller {
         if (this.worktreeDetail() === null) break;
         const card = this.worktree_card,
           ws = this.runtime.workspaces.items.find(w => w.id === card.workspace),
-          entries = worktrees.linked(ws?.worktrees ?? null),
+          entries = card.entries(ws?.worktrees ?? null),
           index = card.index(entries),
           checkout = entries[index];
         if (!ws || !checkout) break;
@@ -4029,7 +4029,10 @@ export class Controller {
       if (path && (button === 35 || button === 0)) await this.perform({ name: "worktree-select", value: path });
       if (!release && button === 0) {
         if (path) await this.perform({ name: "worktree-enter" });
-        else this.worktree_card.pinned = true;
+        else {
+          this.worktree_card.pinned = true;
+          this.worktree_card.click(worktree_rect, x, y);
+        }
         this.ui_mouse_down = true;
       }
       if (!release && (button === 64 || button === 65))
@@ -5081,10 +5084,9 @@ export class Controller {
     const id = this.worktreeDetail();
     if (id === null || !this.worktreeRect()) return null;
     const snapshot = this.runtime.workspaces.items.find(ws => ws.id === id)?.worktrees,
-      entries = worktrees.linked(snapshot ?? null),
+      entries = this.worktree_card.entries(snapshot ?? null),
       checkout = entries[this.worktree_card.index(entries)];
     if (!checkout) return null;
-    this.worktree_card.select(checkout.path);
     return { workspace: id, path: checkout.path };
   }
   /** The checkout the agent list lights: the worktree browsed in the

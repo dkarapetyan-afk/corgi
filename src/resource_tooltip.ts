@@ -46,20 +46,23 @@ export interface Process {
   read?: bigint | null;
   written?: bigint | null;
 }
-function metricValue(sort: Sort, p: Process): number {
+function metricValue(sort: Sort, p: Process): number | null {
   switch (sort) {
     case "cpu":
-      return p.cpu ?? -1;
+      return p.cpu ?? null;
     case "memory":
       return Number(p.memory ?? 0);
     case "io":
-      return p.read != null && p.written != null ? Number(p.read) + Number(p.written) : -1;
+      return p.read != null && p.written != null ? Number(p.read) + Number(p.written) : null;
   }
 }
-export function less(sort: Sort, left: Process, right: Process): boolean {
+/** The most first, or the least when `ascending`; unsampled processes last either way. */
+export function less(sort: Sort, left: Process, right: Process, ascending = false): boolean {
   const l = metricValue(sort, left);
   const r = metricValue(sort, right);
-  return l === r ? left.pid < right.pid : l > r;
+  if (l === r) return left.pid < right.pid;
+  if (l === null || r === null) return r === null;
+  return ascending ? l < r : l > r;
 }
 const process_capacity = 64;
 interface Key {
@@ -70,6 +73,7 @@ export class State {
   workspace: number | null = null;
   anchor = 0;
   sort: Sort = "cpu";
+  ascending = false;
   order: Key[] = [];
   count = 0;
   frozen = false;
@@ -81,19 +85,24 @@ export class State {
       this.workspace = work.id;
       this.count = 0;
       this.sort = "cpu";
+      this.ascending = false;
       this.frozen = false;
     }
     if (freeze && this.frozen && this.count > 0) return;
     const list = (work.processes ?? []).slice(0, process_capacity);
     // std.mem.sort is stable, as Array.sort is.
-    list.sort((a, b) => (less(this.sort, a, b) ? -1 : less(this.sort, b, a) ? 1 : 0));
+    const sort = this.sort,
+      ascending = this.ascending;
+    list.sort((a, b) => (less(sort, a, b, ascending) ? -1 : less(sort, b, a, ascending) ? 1 : 0));
     this.order = list.map(p => ({ pid: p.pid, start: String(p.start) }));
     this.count = list.length;
     this.frozen = freeze;
   }
+  /** Sorts by the heading under a cell, the most first; the sorted heading turns it around. */
   click(rect: Rect, x: number, y: number): void {
     const sort = sortAt(rect, x, y);
     if (sort === null) return;
+    this.ascending = sort === this.sort && !this.ascending;
     this.sort = sort;
     this.frozen = false;
   }
@@ -228,17 +237,22 @@ export function draw(w: Writer, rect: Rect, name: string, snapshot: any, state: 
   at(w, rect.x + 2, rect.y + 11, faint, host_line, rect.w - 4);
   at(w, rect.x + 2, rect.y + 13, strong, "TOP PROCESSES", 20);
   const header = rect.y + 14;
-  // The sorted column's heading and figures are bright; the rest recede.
+  // The sorted column's heading and figures are bright, the heading marked
+  // with the way they run; the rest recede.
   const cpu = state.sort === "cpu" ? strong : text;
   const memory = state.sort === "memory" ? strong : text;
   const io = state.sort === "io" ? strong : text;
+  const heading = (x: number, sort: Sort, label: string, width: number) =>
+    state.sort === sort
+      ? right(w, x, header, strong, (state.ascending ? "↑" : "↓") + label, width)
+      : right(w, x, header, faint, label, width);
   // Linux PIDs reach seven digits.
   right(w, rect.x + 2, header, faint, "PID", 7);
   at(w, rect.x + 10, header, faint, "PROCESS", rect.w - 43);
-  right(w, rect.x + rect.w - 32, header, state.sort === "cpu" ? strong : faint, "CPU %", 7);
-  right(w, rect.x + rect.w - 24, header, state.sort === "memory" ? strong : faint, "GiB", 6);
-  right(w, rect.x + rect.w - 17, header, state.sort === "io" ? strong : faint, "R MB/s", 7);
-  right(w, rect.x + rect.w - 9, header, state.sort === "io" ? strong : faint, "W MB/s", 7);
+  heading(rect.x + rect.w - 32, "cpu", "CPU %", 7);
+  heading(rect.x + rect.w - 24, "memory", "GiB", 6);
+  heading(rect.x + rect.w - 17, "io", "R MB/s", 7);
+  heading(rect.x + rect.w - 9, "io", "W MB/s", 7);
   const count = Math.min(state.count, sat(rect.h, 19));
   state.order.slice(0, count).forEach((key, i) => {
     const y = header + 1 + i;

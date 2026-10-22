@@ -1961,7 +1961,7 @@ function drawTrees(g, o, rows) {
 // worktree-remove. Once the hold completes, Corgi would close the agents and
 // have Git remove it; here it's gone at once.
 function removeTree(S) {
-  const o = S.trees, card = o.card, entries = worktrees.linked(o.snapshot), index = card.index(entries), checkout = entries[index];
+  const o = S.trees, card = o.card, entries = card.entries(o.snapshot), index = card.index(entries), checkout = entries[index];
   if (!checkout) return;
   card.select(checkout.path);
   const agents = o.snapshot.agents.filter((a) => a.path === checkout.path).length, now = Date.now();
@@ -1973,15 +1973,16 @@ function removeTree(S) {
   card.select((entries[index + 1] ?? entries[index - 1])?.path ?? null);
 }
 // Its keys while the screen has the page's focus: ↑↓ (or j k) browse, ⌫
-// held removes, Esc closes. The pointer picks the row it's on, and the
-// badge opens it again. `held` runs once a hold is under way.
+// held removes, Esc closes. The pointer picks the row it's on, a heading
+// sorts the rows, and the badge opens it again. `held` runs once a hold is
+// under way.
 const TREE_MOVES = { ArrowDown: 1, ArrowUp: -1, j: 1, k: -1 };
 function treesInput(el, current, [r0, c0, rows, cols], held) {
   const cellAt = (e) => { const b = el.getBoundingClientRect(); return { col: c0 + Math.floor((e.clientX - b.left) / (b.width / cols)), row: r0 + Math.floor((e.clientY - b.top) / (b.height / rows)) }; };
   const aim = (e) => {
     const o = current().S.trees, at = cellAt(e), badge = treesBadge(o), rect = o.open && treesRect(o, rows);
-    const onBadge = !!badge && badge.contains(at.col, at.row);
-    return { o, onBadge, path: rect && rect.contains(at.col, at.row) ? o.card.hit(o.snapshot, rect, at.col, at.row) : null };
+    const onBadge = !!badge && badge.contains(at.col, at.row), on = rect && rect.contains(at.col, at.row);
+    return { o, onBadge, at, rect, path: on ? o.card.hit(o.snapshot, rect, at.col, at.row) : null, sort: on ? worktreeTooltip.sortAt(rect, at.col, at.row) : null };
   };
   el.addEventListener("keydown", (e) => {
     const S = current().S, o = S.trees;
@@ -1994,15 +1995,16 @@ function treesInput(el, current, [r0, c0, rows, cols], held) {
   });
   el.addEventListener("mousemove", (e) => {
     if (!e.movementX && !e.movementY) return;
-    const { o, onBadge, path } = aim(e);
+    const { o, onBadge, path, sort } = aim(e);
     if (onBadge && !o.open) openTrees(o);
     if (path) o.card.select(path);
-    el.style.cursor = onBadge || path ? "pointer" : "";
+    el.style.cursor = onBadge || path || sort ? "pointer" : "";
   });
   el.addEventListener("click", (e) => {
-    const { o, onBadge, path } = aim(e);
+    const { o, onBadge, at, rect, path, sort } = aim(e);
     if (onBadge && !o.open) openTrees(o);
     if (path) o.card.select(path);
+    if (sort) o.card.click(rect, at.col, at.row);
   });
 }
 
