@@ -11,10 +11,13 @@ Start in an isolated environment:
 
 This builds `dist/corgi` and starts or attaches to the named runtime. Its
 preferences and recovery state persist. `--temp` gives each invocation fresh
-Corgi state; detaching leaves either runtime running. Provider accounts and
-import sources are still shared. Use a sandbox for fake agents.
+Corgi state and stops your older temporary runtimes, including their panes and
+agents. Use `--temp --no-kill` to keep them. Detaching leaves either runtime
+running. Provider accounts and import sources are still shared. Use a sandbox
+for fake agents.
 
 Plain `./go.ts` uses the main environment and stops your other Corgi daemons.
+`--no-kill` skips this cleanup too.
 Inside a named environment it keeps that environment. Run environment-switching
 commands from an outer terminal; `./go.ts --help` describes the options.
 

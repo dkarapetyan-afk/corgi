@@ -95,6 +95,33 @@ describe("development daemon cleanup", () => {
     expect(rows.map(row => [row.daemon.pid, row.state])).toEqual([[12, "stuck"]]);
   });
 
+  test("temporary cleanup preserves main, named, sandbox, and unidentified runtimes", async () => {
+    const sockets: Record<number, string> = {
+      11: "/tmp/corgi-temp-501.11/control.sock",
+      12: "/private/tmp/corgi-temp-501.12/control.sock",
+      13: "/tmp/corgi-env-501-13/control.sock",
+      14: "/tmp/corgi-sandbox-501-review/control.sock",
+      16: "/tmp/nested/corgi-temp-501.16/control.sock",
+    };
+    const { actions, shut, signals, running } = world([10, 11, 12, 13, 14, 15, 16, 17], {
+      socket: async ({ pid }: { pid: number }) => {
+        if (pid === 17) throw new Error("cannot identify socket");
+        return sockets[pid];
+      },
+    });
+    const rows = await stopOthers(actions, "temp");
+    expect(shut).toEqual([sockets[11], sockets[12]]);
+    expect(signals).toEqual([
+      [12, "SIGTERM", 3000],
+      [12, "SIGKILL", 5000],
+    ]);
+    expect(rows.map(row => [row.daemon.pid, row.state])).toEqual([
+      [11, "stopped"],
+      [12, "killed"],
+    ]);
+    expect(running()).toEqual([10, 13, 14, 15, 16, 17]);
+  });
+
   test("does not signal a reused PID or kill when main cannot be identified", async () => {
     let command = "/opt/corgi serve";
     const actions = {
@@ -125,7 +152,7 @@ describe("development daemon cleanup", () => {
     ).rejects.toThrow("main unresponsive");
   });
 
-  test("go.ts invokes cleanup only for the main environment", async () => {
+  test("go.ts scopes cleanup to the environment and honors --no-kill", async () => {
     const root = mkdtempSync(join(tmpdir(), "corgi-launch-cleanup-"));
     const outside: string[] = [];
     try {
@@ -135,7 +162,7 @@ describe("development daemon cleanup", () => {
       writeFileSync(join(root, "build.ts"), "");
       writeFileSync(
         join(root, "scripts/stop-other-daemons.ts"),
-        'export async function stopOtherDaemons() { await Bun.write(process.env.CLEANUP_MARKER!, "called"); }\n',
+        'export async function stopOtherDaemons(socket: string, scope = "all") { await Bun.write(process.env.CLEANUP_MARKER!, JSON.stringify({socket, scope})); }\n',
       );
       writeFileSync(
         join(root, "dist/corgi"),
@@ -143,11 +170,16 @@ describe("development daemon cleanup", () => {
       );
       chmodSync(join(root, "dist/corgi"), 0o755);
       for (const [args, socket, cleanup] of [
-        [[], undefined, true],
-        [["--reload"], undefined, true],
-        [["--temp", "ping"], undefined, false],
-        [["--env", "test", "ping"], undefined, false],
-        [["ping"], "/tmp/other/control.sock", false],
+        [[], undefined, "all"],
+        [["--reload"], undefined, "all"],
+        [["--temp", "ping"], undefined, "temp"],
+        [["--temp", "--no-kill", "ping"], undefined, null],
+        [["--no-kill", "--temp", "ping"], undefined, null],
+        [["--no-kill", "ping"], undefined, null],
+        [["--no-kill", "--reload"], undefined, null],
+        [["--env", "test", "ping"], undefined, null],
+        [["ping"], "/tmp/other/control.sock", null],
+        [["ping"], "/tmp/corgi-temp-501.existing/control.sock", null],
       ] as const) {
         const marker = join(root, "cleanup");
         rmSync(marker, { force: true });
@@ -162,10 +194,16 @@ describe("development daemon cleanup", () => {
         const output = await new Response(child.stdout).text();
         const errors = await new Response(child.stderr).text();
         expect(await child.exited, errors).toBe(0);
-        expect(existsSync(marker)).toBe(cleanup);
+        expect(existsSync(marker)).toBe(cleanup !== null);
+        if (cleanup !== null)
+          expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({
+            socket: `/tmp/corgi-${process.getuid!()}/control.sock`,
+            scope: cleanup,
+          });
         for (const line of output.trim().split("\n").filter(Boolean)) {
           const value = JSON.parse(line);
-          if (value.socket?.startsWith("/tmp/corgi-") && !value.socket.includes("/other/"))
+          expect(value.args).not.toContain("--no-kill");
+          if (args.includes("--temp") && value.socket?.startsWith("/tmp/corgi-temp-"))
             outside.push(value.socket.replace(/\/control.sock$/, ""));
         }
       }

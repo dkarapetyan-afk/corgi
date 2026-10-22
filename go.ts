@@ -8,9 +8,10 @@ import { isatty } from "node:tty";
 import { stopOtherDaemons } from "./scripts/stop-other-daemons.ts";
 import type { Sandbox } from "./tools/sandbox.ts";
 
-const usage = `Usage: bun run go.ts [--temp | --env NAME | --sandbox NAME] [--reload | --restart] [COMMAND ...]
+const usage = `Usage: bun run go.ts [--temp | --env NAME | --sandbox NAME] [--no-kill] [--reload | --restart] [COMMAND ...]
 
-  --temp          Fresh isolated Corgi environment on every launch
+  --temp          Fresh isolated Corgi environment; stop older temporary runtimes
+  --no-kill       Keep other runtimes when launching main or --temp
   --env NAME      Reuse a named environment with its own setup and saved state
   --sandbox NAME  Try a feature in a seeded world with fake agents, apart from
                   your own Corgi and settings (tools/sandboxes/NAME.ts)
@@ -20,6 +21,7 @@ const usage = `Usage: bun run go.ts [--temp | --env NAME | --sandbox NAME] [--re
 
 With no command, start or attach. Use "onboard" to reopen onboarding.
 Launching the main environment stops all other Corgi daemons owned by you.
+Launching --temp stops only your other temporary runtimes. --no-kill skips cleanup.
 Temporary runtimes keep running after detach; shutdown still asks for confirmation.`;
 
 const root = import.meta.dir;
@@ -68,6 +70,7 @@ let args = process.argv.slice(2);
 let environment: "temp" | "named" | "sandbox" | undefined;
 let environmentName = "";
 let action: "--reload" | "--restart" | undefined;
+let noKill = false;
 while (args.length) {
   const [arg] = args;
   if (arg === "--temp" || arg === "--env" || arg === "--sandbox") {
@@ -85,6 +88,9 @@ while (args.length) {
     }
     if (environmentName.length > 32) fail("names must be at most 32 characters");
     args = args.slice(2);
+  } else if (arg === "--no-kill") {
+    noKill = true;
+    args = args.slice(1);
   } else if (arg === "--reload" || arg === "--restart") {
     if (action) fail("choose either --reload or --restart, once");
     action = arg;
@@ -150,7 +156,10 @@ if (environment === "sandbox") {
   env = sandbox.env;
 }
 const mainSocket = `/tmp/corgi-${uid}/control.sock`;
-if (!environment && (env.CORGI_SOCKET || mainSocket) === mainSocket) await stopOtherDaemons(mainSocket);
+if (!noKill) {
+  if (environment === "temp") await stopOtherDaemons(mainSocket, "temp");
+  else if (!environment && (env.CORGI_SOCKET || mainSocket) === mainSocket) await stopOtherDaemons(mainSocket);
+}
 
 if (action === "--reload") {
   must([binary, "reload"]);

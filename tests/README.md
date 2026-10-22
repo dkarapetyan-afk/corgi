@@ -80,8 +80,8 @@ once that process is gone.
 Normal teardown requests shutdown and verifies process exit. A surviving
 daemon or a process reaped by the watchdog fails the test. Cleanup failures
 retain the runtime directory and log for diagnosis. The UI driver uses the
-same protection. Persistent `go.ts --temp` environments still have their
-documented independent lifetime.
+same protection. `go.ts --temp` environments survive detach, but the next
+`--temp` launch stops older temporary runtimes unless passed `--no-kill`.
 
 PTY restoration checks compare `stty -g` snapshots on the same reusable
 terminal before and after the client, including control characters and speeds.

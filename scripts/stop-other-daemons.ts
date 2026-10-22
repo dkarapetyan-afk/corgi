@@ -1,4 +1,4 @@
-/** Main-environment development launches retire other same-user Corgi daemons. */
+/** Development launches retire other same-user Corgi daemons. */
 import { createConnection } from "node:net";
 import { isatty } from "node:tty";
 
@@ -27,6 +27,7 @@ export const GIVE_UP_AFTER_MS = 7000;
 
 export type State = "stopping" | "terminating" | "killing" | "stopped" | "terminated" | "killed" | "stuck";
 export type Row = { daemon: Daemon; label: string; state: State; ms: number };
+type Scope = "all" | "temp";
 
 type Actions = {
   /** Live daemons, optionally only among `pids`. */
@@ -44,17 +45,26 @@ type Actions = {
 
 const finished: Partial<Record<State, State>> = { stopping: "stopped", terminating: "terminated", killing: "killed" };
 
-export async function stopOthers(actions: Actions): Promise<Row[]> {
+export async function stopOthers(actions: Actions, scope: Scope = "all"): Promise<Row[]> {
   const main = await actions.mainPid();
-  const rows: Row[] = (await actions.list())
-    .filter(daemon => daemon.pid !== main)
-    .map(daemon => ({ daemon, label: "", state: "stopping", ms: 0 }));
+  let candidates = (await actions.list()).filter(daemon => daemon.pid !== main);
+  const sockets = new Map<number, string>();
+  if (scope === "temp") {
+    await Promise.all(
+      candidates.map(async daemon => {
+        const socket = await actions.socket(daemon).catch(() => undefined);
+        if (socket && /^\/(?:private\/)?tmp\/corgi-temp-\d+\.[^/]+\/control\.sock$/.test(socket))
+          sockets.set(daemon.pid, socket);
+      }),
+    );
+    candidates = candidates.filter(daemon => sockets.has(daemon.pid));
+  }
+  const rows: Row[] = candidates.map(daemon => ({ daemon, label: "", state: "stopping", ms: 0 }));
   if (!rows.length) return rows;
   const start = actions.now();
   const asked = new Map<Row, boolean>();
   for (const row of rows) {
-    actions
-      .socket(row.daemon)
+    (sockets.has(row.daemon.pid) ? Promise.resolve(sockets.get(row.daemon.pid)) : actions.socket(row.daemon))
       .then(async socket => {
         row.label = socket?.replace(/\/control\.sock$/, "") ?? "";
         asked.set(row, socket !== undefined && (await actions.shutdown(socket)));
@@ -244,6 +254,6 @@ export function systemActions(mainSocket: string): Actions {
   };
 }
 
-export async function stopOtherDaemons(mainSocket: string): Promise<void> {
-  await stopOthers(systemActions(mainSocket));
+export async function stopOtherDaemons(mainSocket: string, scope: Scope = "all"): Promise<void> {
+  await stopOthers(systemActions(mainSocket), scope);
 }
