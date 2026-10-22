@@ -1,12 +1,20 @@
 import * as discovery from "../../discovery";
-import { run as subprocessRun, type Quit } from "../../subprocess";
+import { run as subprocessRun, type Output, type Quit } from "../../subprocess";
 import * as claude from "./index";
+import { vocabulary } from "./info";
 import { field, str, timestampMs, Text } from "../common";
 import { Info, Window, used, windows } from "../../usage/account";
+import { getLogger } from "../../log";
+import { Failure } from "../../failure";
 import { Control, cancelled } from "./control";
 import { Cache, interval, cooldown } from "../../usage/account_cache";
 import * as errors from "../../errors";
 import * as spend from "../../usage/spend";
+const log = getLogger("claude.account");
+function clip(output: Buffer, max = 600) {
+  const text = output.toString();
+  return text.length > max ? text.slice(0, max) + "…" : text;
+}
 function window(value: unknown, minutes: number) {
   const percent = used(field(value, "utilization"));
   if (percent === null) return null;
@@ -81,7 +89,13 @@ export function defaultModel(value: any): string {
 }
 export class Client {
   /** `env` picks the account it reads. */
-  constructor(readonly env: NodeJS.ProcessEnv = process.env) {}
+  constructor(readonly env: NodeJS.ProcessEnv = process.env) {
+    this.config = env[vocabulary.config_env] ?? "";
+  }
+  private config: string;
+  private resolve_failure = new Failure();
+  private auth_failure = new Failure();
+  private usage_failure = new Failure();
   session: Control | null = null;
   identity: string | null = null;
   account = new Info();
@@ -107,32 +121,11 @@ export class Client {
   async read(stopping?: any, quit?: Quit) {
     const now = Math.floor(Date.now() / 1000);
     if (cancelled(stopping) || quit?.aborted) throw Error("Cancelled");
-    const executable = await discovery.resolve("claude", null);
-    if (!executable) throw Error("FileNotFound");
+    const executable = await this.resolve();
     if (now >= this.next_auth) {
       this.next_auth = now + 60;
       this.account = new Info();
-      const output = await subprocessRun([executable, "auth", "status", "--json"], {
-        cwd: "/tmp",
-        env: this.env,
-        timeout_ms: 5000,
-        max_output: 16384,
-        quit,
-      });
-      const stdout = output.stdout.toString(),
-        exit = "exited" in output.term ? output.term.exited : -1;
-      let d: any;
-      try {
-        d = JSON.parse(stdout);
-      } catch (error) {
-        this.close();
-        throw error;
-      }
-      const account = readAccount(d);
-      if (account.signed_in === null || (exit !== 0 && !(exit === 1 && account.signed_in === false))) {
-        this.close();
-        throw Error("InvalidAccount");
-      }
+      const { account, d } = await this.auth(executable, quit);
       if (account.signed_in === true && account.limits !== "metered" && !d.email)
         account.usage_error = new Text("usage account unavailable");
       const identity = JSON.stringify({
@@ -171,20 +164,74 @@ export class Client {
       if (now < cache.state.next_usage) return cache.state.display(now);
       cache.state.next_usage = now + interval;
       cache.save();
-      const fresh = Object.assign(new Info(), this.account);
+      const fresh = Object.assign(new Info(), this.account),
+        started = Date.now();
       try {
         if (this.session === null) await this.start(executable, stopping, quit, Date.now() + 5000);
         applyUsage(fresh, await this.session!.request("get_usage", {}, { stopping, quit }), now);
+        if (this.usage_failure.clear())
+          log.info("Usage read recovered", { account: this.config, ms: Date.now() - started });
       } catch (e) {
         this.close();
         fresh.usage_error = new Text(usageFailure(e));
         cache.state.next_usage = now + cooldown;
+        if (!errors.is(e, "Cancelled") && this.usage_failure.changed(e))
+          log.warn("Usage read failed", { account: this.config, ms: Date.now() - started, err: e });
       }
       cache.state.update(fresh, now);
       cache.save();
       return cache.state.display(now);
     } finally {
       cache.close();
+    }
+  }
+  private async resolve() {
+    const started = Date.now();
+    try {
+      const executable = await discovery.resolve("claude", null);
+      if (!executable) throw Error("FileNotFound");
+      if (this.resolve_failure.clear())
+        log.info("Executable resolution recovered", { account: this.config, ms: Date.now() - started });
+      return executable;
+    } catch (error) {
+      if (!errors.is(error, "Cancelled") && this.resolve_failure.changed(error))
+        log.warn("Executable resolution failed", { account: this.config, ms: Date.now() - started, err: error });
+      throw error;
+    }
+  }
+  /** The account `claude auth status` reports, and its reply. */
+  private async auth(executable: string, quit?: Quit) {
+    let output: Output | null = null;
+    const started = Date.now();
+    try {
+      output = await subprocessRun([executable, "auth", "status", "--json"], {
+        cwd: "/tmp",
+        env: this.env,
+        timeout_ms: 5000,
+        max_output: 16384,
+        stderr: true,
+        quit,
+      });
+      const exit = "exited" in output.term ? output.term.exited : -1,
+        d = JSON.parse(output.stdout.toString()),
+        account = readAccount(d);
+      if (account.signed_in === null || (exit !== 0 && !(exit === 1 && account.signed_in === false)))
+        throw Error("InvalidAccount");
+      if (this.auth_failure.clear())
+        log.info("Authentication read recovered", { account: this.config, ms: Date.now() - started });
+      return { account, d };
+    } catch (error) {
+      this.close();
+      const printed = output && { term: output.term, stdout: clip(output.stdout), stderr: clip(output.stderr) };
+      if (!errors.is(error, "Cancelled") && this.auth_failure.changed(error))
+        log.warn("Authentication read failed", {
+          account: this.config,
+          ms: Date.now() - started,
+          err: error,
+          executable,
+          ...printed,
+        });
+      throw error;
     }
   }
   /** Starts the control session; its initialize reply names the default model. */

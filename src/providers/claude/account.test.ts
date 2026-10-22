@@ -1,8 +1,45 @@
-import { test, expect } from "bun:test";
-import { applyUsage, defaultModel, limits } from "./account";
+import { test, expect, spyOn } from "bun:test";
+import { applyUsage, Client, defaultModel, limits } from "./account";
+import { vocabulary } from "./info";
+import * as discovery from "../../discovery";
+import * as log from "../../log";
 import { timestampMs } from "../common";
 import { Info } from "../../usage/account";
 import { Text } from "../../providers";
+test("account lookup logs failures per account, ignores cancellation, and reports recovery once", async () => {
+  const resolve = spyOn(discovery, "resolve").mockRejectedValue(Error("ProviderNotFound")),
+    output = spyOn(process.stderr, "write").mockImplementation(() => true),
+    first = new Client({ [vocabulary.config_env]: "/one" }),
+    second = new Client({ [vocabulary.config_env]: "/two" });
+  log.configure("serve", {});
+  try {
+    await expect(first.read()).rejects.toThrow("ProviderNotFound");
+    await expect(first.read()).rejects.toThrow("ProviderNotFound");
+    await expect(second.read()).rejects.toThrow("ProviderNotFound");
+    expect(output).toHaveBeenCalledTimes(2);
+    expect(String(output.mock.calls[0][0])).toContain('"account":"/one"');
+    expect(String(output.mock.calls[1][0])).toContain('"account":"/two"');
+    resolve.mockRejectedValueOnce(Error("Cancelled"));
+    await expect(first.read()).rejects.toThrow("Cancelled");
+    await expect(first.read()).rejects.toThrow("ProviderNotFound");
+    expect(output).toHaveBeenCalledTimes(2);
+    resolve.mockResolvedValue("/fake/claude");
+    first.next_auth = Infinity;
+    await first.read();
+    await first.read();
+    expect(output).toHaveBeenCalledTimes(3);
+    expect(String(output.mock.calls[2][0])).toContain("Executable resolution recovered");
+    resolve.mockRejectedValue(Error("ProviderNotFound"));
+    await expect(first.read()).rejects.toThrow("ProviderNotFound");
+    expect(output).toHaveBeenCalledTimes(4);
+  } finally {
+    first.close();
+    second.close();
+    resolve.mockRestore();
+    output.mockRestore();
+    log.configure("test");
+  }
+});
 test("Claude control usage preserves login on unsupported or malformed quota data", () => {
   const info = new Info();
   info.signed_in = true;

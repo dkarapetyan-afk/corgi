@@ -1,9 +1,9 @@
 import { Pool } from "./inference/harness";
 import { model } from "./inference/setup";
 import type { Provider } from "./providers";
-import { stringify } from "./json";
+import { getLogger } from "./log";
 import * as contract from "./activity/prompt";
-import * as clock from "./clock";
+const log = getLogger("activity_summary");
 export { contract };
 export type Input = contract.Input;
 export type Source = {
@@ -14,15 +14,10 @@ export type Source = {
   tools_since_last: bigint;
 };
 export type Discard = "not_working" | "session_changed" | "turn_changed" | "evidence_changed" | "superseded";
-function log(value: any) {
-  if (process.argv.some(arg => arg === "serve" || arg === "__handoff"))
-    process.stderr.write("info(activity_summary): " + stringify(value) + "\n");
-}
 export function outcome(request: bigint, discard: Discard | null) {
   if (!request) return;
-  log({
+  log.info("Summary outcome", {
     event: "outcome",
-    at: clock.milliTimestamp(),
     context: { pid: process.pid, request },
     status: discard === null ? "applied" : "discarded",
     reason: discard,
@@ -47,9 +42,8 @@ export class Backend {
       context = { pid: process.pid, request, source, turn, conversation };
     const content = contract.content({ ...input, history: null }),
       fresh = input.history?.length ? contract.content(input) : null;
-    log({
+    log.info("Summary requested", {
       event: "request",
-      at: clock.milliTimestamp(),
       context,
       provider: this.pool.config.provider,
       model: this.pool.config.model,
@@ -71,9 +65,8 @@ export class Backend {
         stopping,
       );
     } catch (error) {
-      log({
+      log.info("Summary inference failed", {
         event: "result",
-        at: clock.milliTimestamp(),
         context,
         status: "inference_error",
         err: (error as Error).message,
@@ -83,9 +76,8 @@ export class Backend {
     }
     try {
       const decision = contract.parse(response.text(), input.phase);
-      log({
+      log.info("Summary result", {
         event: "result",
-        at: clock.milliTimestamp(),
         context,
         status: decision.label === null ? "abstained" : "validated",
         output: response.text(),
@@ -96,9 +88,8 @@ export class Backend {
       });
       return { request, decision };
     } catch (error) {
-      log({
+      log.info("Summary rejected", {
         event: "result",
-        at: clock.milliTimestamp(),
         context,
         status: "rejected",
         err: (error as Error).message,

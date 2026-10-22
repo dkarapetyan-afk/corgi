@@ -8,6 +8,7 @@ import * as cli from "./cli";
 import * as agent_mode from "./agent_mode";
 import * as json from "./json";
 import * as errors from "./errors";
+import * as log from "./log";
 import helpText from "../assets/help.txt" with { type: "text" };
 import { specs as actionSpecs } from "./action";
 import type { Preset } from "./keymap";
@@ -173,6 +174,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
   };
   const command = args[0] ?? "attach",
     path = os.socketPath();
+  log.configure(alias ? "agent" : command);
   quietExecveWarning();
   // Only the daemon logs native messages: its stderr is server.log.
   if (command === "serve" || command === "__handoff") n.native_log_stderr(true);

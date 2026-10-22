@@ -10,11 +10,12 @@ import * as clock from "./clock";
 import * as os from "./os";
 import * as subprocess from "./subprocess";
 import * as worktrees from "./worktrees";
-import { stringify } from "./json";
+import { getLogger } from "./log";
 import { Pool, type Request as InferenceRequest } from "./inference/harness";
 import { changedPaths, parseNumstat } from "./trackers/worktrees";
 import { Provider } from "./providers";
 import type { Runtime } from "./runtime";
+const log = getLogger("worktree_brief");
 
 type Query = (cwd: string, args: string[]) => Promise<string | null>;
 /** What a brief saw: HEAD, and each uncommitted file's counts and identity. */
@@ -325,10 +326,6 @@ export async function delta(query: Query, wt: string, base: string, before: Seen
 }
 
 // --------------------------------------------------------------- the service
-function log(value: any) {
-  if (process.argv.some(arg => arg === "serve" || arg === "__handoff"))
-    process.stderr.write("info(worktree_brief): " + stringify(value) + "\n");
-}
 /** Two pools, so two briefs are written at once; a worktree keeps to one,
  * where its conversation is. */
 const pool_count = 2,
@@ -528,9 +525,8 @@ export class Briefs {
       }
       const reply = await this.infer(pool, request);
       const label = decide(reply.text, entry.label);
-      log({
+      log.info("Worktree brief result", {
         event: "result",
-        at: clock.milliTimestamp(),
         path: job.path,
         ms: clock.milliTimestamp() - started,
         fresh: reply.fresh,
@@ -546,7 +542,7 @@ export class Briefs {
         failed: false,
       });
     } catch (error) {
-      log({ event: "error", at: clock.milliTimestamp(), path: job.path, err: (error as Error).message });
+      log.info("Worktree brief failed", { event: "error", path: job.path, err: (error as Error).message });
       entry.failed = true;
     } finally {
       entry.writing = false;

@@ -171,7 +171,11 @@ source untouched. Migrations run forward only.
 
 `server.log` lives beside the runtime socket, normally
 `/tmp/corgi-UID/server.log`; `CORGI_SOCKET` selects another runtime. Only the
-daemon and handoff process log there. Activity-summary records include exact
+daemon and handoff process log there. Use `getLogger("scope")` from `src/log.ts`
+and `log.warn("Message", { err, ...fields })` for diagnostics. The logger adds
+the time and scope; polling jobs keep their own `Failure` to suppress repeats.
+`CORGI_LOG_LEVEL` selects `debug`, `info` (the default), `warn` or `error` when
+the daemon starts. Activity-summary records include exact
 model inputs and outputs, so inspect and redact before sharing logs.
 
 Use `corgi integration status` for hook installation/trust and `corgi which codex`
