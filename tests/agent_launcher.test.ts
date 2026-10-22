@@ -23,7 +23,7 @@ const claudeWindows = [
   [10080, 48],
 ];
 function hasLimits(row: string, short: number, weekly: number): boolean {
-  return new RegExp(String.raw`\b5h(?:\s+━+)?\s+${short}%.*\b7d(?:\s+━+)?\s+${weekly}%`).test(row);
+  return new RegExp(String.raw`\b7d(?:\s+[━─]+)?\s+${weekly}%.*\b5h(?:\s+[━─]+)?\s+${short}%`).test(row);
 }
 
 class Launcher extends Runtime {
@@ -1121,7 +1121,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const view = await Viewer.create(this, 150, 30);
     await view.input("\x02A");
     await this.until(async () =>
-      screen_text((await view.poll()).data, 150, 30).some(row => /1M\s+━+\s+\$0\.59 \/ \$10k/.test(row)),
+      screen_text((await view.poll()).data, 150, 30).some(row => /mo\s+─+\s+<1%.*\$0\.59 \/ \$10k/.test(row)),
     );
   }
   async test_codex_monthly_credit_limit_shows_as_spend() {
@@ -1149,7 +1149,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const view = await Viewer.create(this, 150, 30);
     await view.input("\x02A");
     await this.until(
-      async () => screen_text((await view.poll()).data, 150, 30).some(row => /1M\s+━+\s+⛁388 \/ ⛁250k/.test(row)),
+      async () => screen_text((await view.poll()).data, 150, 30).some(row => /mo\s+─+\s+<1%.*⛁388 \/ ⛁250k/.test(row)),
       12,
     );
   }

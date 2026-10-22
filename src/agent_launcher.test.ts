@@ -44,15 +44,16 @@ test("Enterprise accounts show their monthly spend in the picker and manager", (
       }),
     ],
   });
-  expect(m.usageCell(work).spend?.figure).toBe("$0.59 / $10k");
+  expect(m.usageCell(work).amount).toBe("$0.59 / $10k");
+  expect(m.usageCell(work).windows[0]?.figure).toBe("<1%");
   expect(m.usageCell("claude").fallback).not.toContain("$0.59");
-  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")!.usage.spend?.figure).toBe("$0.59 / $10k");
+  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")!.usage.amount).toBe("$0.59 / $10k");
   const rendered = screen(m, 150, 30, SidebarView.init(150, 30, true, 0, 0)).join("\n");
-  expect(rendered).toMatch(/1M\s+━+\s+\$0\.59 \/ \$10k\s+·\s+1d/);
+  expect(rendered).toMatch(/mo\s+─+\s+<1%\s+1d\s+\$0\.59 \/ \$10k/);
   const o = m.preview.accounts[0].option;
   o.spend!.limit_minor = null;
-  expect(m.usageCell(work).spend?.figure).toBe("$0.59");
-  expect(m.usageCell(work).spend?.used).toBeNull();
+  expect(m.usageCell(work).amount).toBe("$0.59");
+  expect(m.usageCell(work).windows[0]?.used).toBeNull();
   o.spend!.reset_at = at;
   expect(m.usageCell(work).fallback).toBe("—");
   o.spend!.reset_at = at + 86400;
@@ -180,14 +181,18 @@ test("single-line limit groups survive narrow terminal rendering", () => {
       if (line.includes("Claude Code")) {
         found[1] += 1;
         rows[1] = line;
-        for (const value of ["5h", "17%", "1h 39m", " │ 7d", "35%", "1d 15h"]) expect(line).toContain(value);
+        for (const value of ["7d", "35%", "1d 15h", " │ 5h", "17%", "1h 39m"]) expect(line).toContain(value);
       }
       expect(displayWidth(line)).toBeLessThanOrEqual(cols);
     }
     expect(found).toEqual([1, 1]);
-    // Codex reports only a weekly limit; it sits under Claude's.
-    for (const needle of ["7d", "·"]) {
-      const columns = rows.map(line => displayWidth(line.slice(0, line.lastIndexOf(needle))));
+    // Codex reports only a weekly limit; it lines up with Claude's.
+    for (const needles of [
+      ["7d", "7d"],
+      ["48%", "35%"],
+      ["6d 18h", "1d 15h"],
+    ]) {
+      const columns = rows.map((line, i) => displayWidth(line.slice(0, line.lastIndexOf(needles[i]))));
       expect(columns[0]).toBe(columns[1]);
     }
     const b = m.bounds(cols, 24, side);
@@ -573,7 +578,7 @@ test("Manage agents shows hidden accounts' own usage, keeps zero, and omits miss
   m.manage();
   const a = m.manageModel().agents.find(a => a.account === "/accounts/work")!;
   expect(a.shown).toBe(false);
-  expect(a.usage.windows.map(w => w?.used)).toEqual([0, 82]);
+  expect(a.usage.windows.map(w => w?.used)).toEqual([82, 0]);
   const side = SidebarView.init(150, 40, true, 0, 0);
   const text = screen(m, 150, 40, side).join("\n");
   expect(text).toContain("Usage (used)");
