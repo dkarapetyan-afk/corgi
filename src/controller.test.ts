@@ -27,6 +27,85 @@ function controller(): any {
 }
 const bytes = (text: string) => new TextEncoder().encode(text);
 
+test.each([
+  ["New", 20, "agent_launcher"],
+  ["workspace scope", 10, "scope_menu"],
+] as const)("%s opens after 150 ms of continuous hover", async (_, x, field) => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.width = 100;
+  s.height = 30;
+  s.input_state.attached = true;
+  const motion = (x: number, y = 14) => `\x1b[<35;${x + 1};${y + 1}M`;
+  try {
+    setSystemTime(new Date(1000));
+    await s.input(bytes(motion(x)));
+    await s.expireInput();
+    expect(s[field]).toBeNull();
+    setSystemTime(new Date(1149));
+    await s.input(bytes(motion(x + 1)));
+    await s.expireInput();
+    expect(s[field]).toBeNull();
+    setSystemTime(new Date(1150));
+    await s.expireInput();
+    expect(s[field]?.pinned).toBe(false);
+
+    await s.input(bytes(motion(90, 1)));
+    await s.expireInput();
+    expect(s[field]).toBeNull();
+    setSystemTime(new Date(2000));
+    await s.input(bytes(motion(x)));
+    setSystemTime(new Date(2050));
+    // Leaving and returning in one input batch still starts a fresh wait.
+    await s.input(bytes(motion(90, 1) + motion(x)));
+    setSystemTime(new Date(2150));
+    await s.expireInput();
+    expect(s[field]).toBeNull();
+    setSystemTime(new Date(2200));
+    await s.expireInput();
+    expect(s[field]?.pinned).toBe(false);
+
+    s.closeMenu();
+    setSystemTime(new Date(2500));
+    await s.expireInput();
+    expect(s[field]).toBeNull();
+    // An explicit click still opens immediately after dismissal.
+    const click = field === "agent_launcher" ? 26 : x + 1;
+    await s.input(bytes(`\x1b[<0;${click};15M\x1b[<0;${click};15m`));
+    expect(s[field]?.pinned).toBe(true);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("moving between hover menus starts a new wait and keyboard opening bypasses it", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.width = 100;
+  s.height = 30;
+  s.input_state.attached = true;
+  try {
+    setSystemTime(new Date(1000));
+    await s.input(bytes("\x1b[<35;21;15M"));
+    setSystemTime(new Date(1140));
+    await s.input(bytes("\x1b[<35;11;15M"));
+    setSystemTime(new Date(1150));
+    await s.expireInput();
+    expect(s.agent_launcher).toBeNull();
+    expect(s.scope_menu).toBeNull();
+    setSystemTime(new Date(1290));
+    await s.expireInput();
+    expect(s.scope_menu?.pinned).toBe(false);
+    await s.input(bytes("\x02A"));
+    expect(s.scope_menu).toBeNull();
+    expect(s.agent_launcher?.pinned).toBe(true);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
 test.each(setupItems.filter(item => item !== "flourishes"))("Escape closes setup from %s", async item => {
   const s = controller();
   s.receiveSnapshot(folders("/a"));

@@ -17,6 +17,9 @@ function same(a: Target, b: Target) {
     JSON.stringify(a.agent ?? null) === JSON.stringify(b.agent ?? null)
   );
 }
+function delay(target: Target | null): number {
+  return target?.resource != null ? 150 : 500;
+}
 export class State {
   suppressed = true;
   target: Target | null = null;
@@ -33,7 +36,7 @@ export class State {
     this.shown = false;
   }
   due(now: number) {
-    return !this.suppressed && this.target !== null && !this.shown && now - this.since >= 500;
+    return !this.suppressed && this.target !== null && !this.shown && now - this.since >= delay(this.target);
   }
   ready(target: Target | null, now: number) {
     if (this.suppressed || !target) {
@@ -47,7 +50,7 @@ export class State {
       this.shown = false;
       return false;
     }
-    this.shown = now - this.since >= 500;
+    this.shown = now - this.since >= delay(target);
     return this.shown;
   }
 }

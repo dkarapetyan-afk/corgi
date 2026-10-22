@@ -152,6 +152,7 @@ class ViewerScenarios extends Viewers {
     await a.input("\x1b[<35;5;15M");
     this.assertNotIn("This workspace", a.state.data);
     await a.input("\x1b[<35;11;15M");
+    await a.advance(0.15);
     let rows = sidebar();
     this.assertIn("This workspace", rows[16]);
     this.assertIn("✓", rows[16]);
@@ -162,6 +163,7 @@ class ViewerScenarios extends Viewers {
     await a.input("\x1b[<35;60;5M");
     await this.until(async () => !(await a.poll()).data.includes("This workspace"));
     await a.input("\x1b[<35;11;15M");
+    await a.advance(0.15);
     await a.input("\x1b[<0;8;18M\x1b[<0;8;18m");
     rows = sidebar();
     this.assertIn("agents: all", rows[14]);
@@ -187,6 +189,7 @@ class ViewerScenarios extends Viewers {
     this.assertIn("agents: all", sidebar()[14]);
     await a.focus(outsider);
     await a.input("\x1b[<35;11;15M");
+    await a.advance(0.15);
     await a.input("\x1b[<0;8;17M\x1b[<0;8;17m");
     rows = sidebar();
     this.assertIn("agents: Other", rows[14]);

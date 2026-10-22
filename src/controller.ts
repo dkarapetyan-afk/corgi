@@ -93,6 +93,7 @@ interface Stopped {
   at: number;
 }
 export type Effect = { write_terminal: string } | { open_url: string };
+type HoverMenu = "launcher" | "scope";
 interface TabDrag {
   workspace_id: number;
   tab_id: number;
@@ -279,6 +280,7 @@ export class Controller {
   stopped: Stopped[] = [];
   corgi_setup: SetupMenu | null = null;
   launcher_hover_blocked = false;
+  private menu_hover: { target: HoverMenu; since: number } | null = null;
   pointer: render.Pointer | null = null;
   iterm2_pointer = false;
   link_tooltip = new LinkTooltip();
@@ -703,7 +705,25 @@ export class Controller {
     this.selection = null;
     this.dirty = true;
   }
-  private pollScopeMenu(): void {
+  private pollMenuHover(): HoverMenu | null {
+    const hit = this.pointer ? this.sidebarView([]).hit(this.pointer.x, this.pointer.y).tag : "none";
+    const target = hit === "agent_new" || hit === "agent_options" ? "launcher" : hit === "agent_scope" ? "scope" : null;
+    if (
+      target === null ||
+      this.launcher_hover_blocked ||
+      this.hasMenu() ||
+      this.name_dialog !== null ||
+      this.ui_mouse_down ||
+      this.copy_mode
+    ) {
+      this.menu_hover = null;
+      return null;
+    }
+    const now = milliTimestamp();
+    if (this.menu_hover?.target !== target) this.menu_hover = { target, since: now };
+    return now - this.menu_hover.since >= 150 ? target : null;
+  }
+  private pollScopeMenu(hover: boolean): void {
     const side = this.sidebarView([]);
     const on_label = this.pointer !== null && side.hit(this.pointer.x, this.pointer.y).tag === "agent_scope";
     if (this.scope_menu) {
@@ -711,14 +731,7 @@ export class Controller {
         this.pointer !== null &&
         sidebar.ScopeMenu.bounds(side, this.width, this.height).contains(this.pointer.x, this.pointer.y);
       if (side.width === 0 || (!this.scope_menu.pinned && !on_label && !inside)) this.closeMenu();
-    } else if (
-      on_label &&
-      !this.launcher_hover_blocked &&
-      !this.hasMenu() &&
-      this.name_dialog === null &&
-      !this.ui_mouse_down &&
-      !this.copy_mode
-    ) {
+    } else if (hover) {
       this.openScopeMenu(false);
     }
   }
@@ -1403,6 +1416,7 @@ export class Controller {
     this.corgi_setup?.close();
     this.corgi_setup = null;
     this.launcher_hover_blocked = true;
+    this.menu_hover = null;
     this.port_menu = null;
     this.tab_menu = null;
     this.menu_highlight = null;
@@ -2393,7 +2407,7 @@ export class Controller {
     this.launch_previews.pending(launch.cwd);
     this.dirty = true;
   }
-  private async pollLauncher(): Promise<void> {
+  private async pollLauncher(hover: boolean): Promise<void> {
     this.updateLaunchPreview();
     await this.previewInlineCommand(false);
     if (
@@ -2423,14 +2437,7 @@ export class Controller {
         return;
       }
       launch.last = this.lastAgent();
-    } else if (
-      on_button &&
-      !this.launcher_hover_blocked &&
-      !this.hasMenu() &&
-      this.name_dialog === null &&
-      !this.ui_mouse_down &&
-      !this.copy_mode
-    ) {
+    } else if (hover) {
       this.openLauncher(false);
     }
   }
@@ -4118,6 +4125,7 @@ export class Controller {
         this.launcher_hover_blocked = false;
       }
     } else {
+      this.menu_hover = null;
       this.link_tooltip.cancel();
       this.dirty = true;
     }
@@ -4125,6 +4133,7 @@ export class Controller {
       this.pointer = { x, y };
       this.dirty = true;
     }
+    if (!release && button === 35) this.pollMenuHover();
     if (cl.port_click) {
       const click = cl.port_click;
       if ((x !== click.x || y !== click.y) && click.pane !== null) {
@@ -4993,8 +5002,9 @@ export class Controller {
     await this.wakeFocused();
     if (this.onboarding && (await this.onboarding.poll(this.rpc()))) this.dirty = true;
     if (this.corgi_setup && (await this.corgi_setup.poll(this.rpc(), this.width, this.height))) this.dirty = true;
-    await this.pollLauncher();
-    this.pollScopeMenu();
+    const hover = this.pollMenuHover();
+    await this.pollLauncher(hover === "launcher");
+    this.pollScopeMenu(hover === "scope");
     if (this.link_tooltip.due(milliTimestamp())) this.dirty = true;
     if (this.resource_aim && milliTimestamp() - this.resource_aim.at >= resourceTooltip.aim_ms) {
       // The pointer stopped short of the card: what it rests on takes over.
