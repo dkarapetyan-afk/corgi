@@ -28,18 +28,23 @@ for await (const line of createInterface({ input: process.stdin })) {
         config: { model: "fixture-codex", mcp_servers: { fixture: {} } },
       },
     });
-  else if (method === "account/read")
+  else if (method === "account/read") {
+    const path = process.env.CORGI_INFERENCE_TEST_CONTROL,
+      control = path ? JSON.parse(readFileSync(path, "utf8")) : {};
     emit({
       id: ident,
       result: {
-        account: {
-          type: "chatgpt",
-          email: "codex@example.com",
-          planType: "pro",
-        },
+        account:
+          "account" in control
+            ? control.account
+            : {
+                type: "chatgpt",
+                email: "codex@example.com",
+                planType: "pro",
+              },
       },
     });
-  else if (method === "account/rateLimits/read")
+  } else if (method === "account/rateLimits/read")
     emit({
       id: ident,
       result: {

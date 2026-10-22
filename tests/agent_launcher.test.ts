@@ -35,6 +35,8 @@ class Launcher extends Runtime {
     const root = this.temp.name;
     this.env.CORGI_CLAUDE_BIN = join(root, "claude-metadata");
     this.env.CORGI_CLAUDE_TEST_LAUNCHES = join(root, "launches.jsonl");
+    this.env.CORGI_INFERENCE_TEST_CONTROL = join(root, "inference-control.json");
+    writeFileSync(this.env.CORGI_INFERENCE_TEST_CONTROL, "{}");
     mkdirSync(join(this.env.CLAUDE_CONFIG_DIR!, "projects"), { recursive: true });
     writeFileSync(join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"), "{}");
     writeExecutable(
@@ -254,6 +256,28 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertNotIn("Claude Code", (await view.poll()).data);
     await this.clickText(view, "Manage agents");
     this.assertIn("Not signed in", (await view.poll()).data);
+  }
+  async test_reopening_viewer_refreshes_codex_after_sign_in() {
+    const auth = join(this.env.CODEX_HOME!, "auth.json"),
+      control = this.env.CORGI_INFERENCE_TEST_CONTROL!;
+    mkdirSync(this.env.CODEX_HOME!, { recursive: true });
+    writeFileSync(auth, "{}");
+    writeFileSync(control, JSON.stringify({ account: null }));
+    const preview = async () =>
+      (await this.rpc({ op: "agent.preview", protocol: 2, workspace: this.ws, cwd: this.launchDir })).preview;
+    const first = await Viewer.create(this, 160, 30);
+    await this.until(async () => !(await preview()).pending, 12);
+    this.assertFalse((await preview()).options.codex.signed_in);
+    await first.input("\x02A");
+    await this.until(async () => !(await first.poll()).data.includes("Codex"));
+    await first.close();
+
+    writeFileSync(auth, JSON.stringify({ tokens: { id_token: "signed-in-fixture" } }));
+    writeFileSync(control, "{}");
+    const reopened = await Viewer.create(this, 160, 30);
+    await reopened.input("\x02A");
+    await this.until(async () => (await reopened.poll()).data.includes("codex@example.com"), 12);
+    this.assertTrue((await preview()).options.codex.signed_in);
   }
   async shellAliasCase(name: string) {
     const shell = Bun.which(name);

@@ -69,7 +69,7 @@ export async function request(server: Server, client: Client, request: Request) 
   const subscribe = request.op === "agent.subscribe";
   if (subscribe && (client.viewer || client.subscribed)) throw Error("AlreadyAttached");
   const preview =
-    request.op === "agent.track_usage" ? s.launch_previews.trackUsage(cwd) : s.launch_previews.preview(cwd);
+    request.op === "agent.track_usage" ? s.launch_previews.trackUsage(cwd) : s.launch_previews.preview(cwd, subscribe);
   if (subscribe) {
     client.launch_preview = {
       cwd,

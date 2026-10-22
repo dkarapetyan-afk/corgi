@@ -68,19 +68,22 @@ export class Worker {
     if (!launcher) this.launchers.set(p, (launcher = adapter(p).launcher?.() ?? Promise.resolve(null)));
     return launcher;
   }
-  preview(cwd: string) {
-    return this.request(cwd, false);
+  preview(cwd: string, refresh = false) {
+    return this.request(cwd, false, refresh);
   }
   trackUsage(cwd: string) {
     return this.request(cwd, true);
   }
-  request(cwd: string, access: boolean) {
+  request(cwd: string, access: boolean, refresh = false) {
     if (Buffer.byteLength(cwd) > 4096) return new Preview();
     const now = Date.now();
     let job = this.jobs.find(j => j.cwd === cwd);
     if (job) {
       job.used = now;
-      if ((now - job.updated > 60000 && !job.queued) || (access && !job.accessing && !job.request_access)) {
+      if (
+        ((refresh || now - job.updated > 60000) && !job.preview.pending) ||
+        (access && !job.accessing && !job.request_access)
+      ) {
         job.queued = true;
         job.request_access ||= access;
         job.preview.pending = true;
