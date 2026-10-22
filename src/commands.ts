@@ -31,7 +31,7 @@ export type Item =
   | "split-down"
   | "zoom"
   | "fork"
-  | "copy-id"
+  | "copy-details"
   | "mark-unread"
   | "review"
   | "close"
@@ -62,11 +62,11 @@ const pane_actions = [
   row("close", "x", "Close pane"),
 ];
 const agent_actions = [
+  row("review", "e", "Review changes"),
+  row("copy-details", "c", "Copy details"),
+  row("mark-unread", "u", "Mark as unread", { rule: true }),
   row("rename", "r", "Rename"),
   row("fork", "f", "Fork"),
-  row("copy-id", "c", "Copy ID"),
-  row("mark-unread", "u", "Mark as unread"),
-  row("review", "e", "Review changes"),
   row("close", "x", "Close", { rule: true }),
 ];
 let border: string;

@@ -1098,7 +1098,7 @@ export class Controller {
     // Review changes says what it would show: the line read ahead, checked
     // again now, or placeholder bars until git answers.
     this.review_summaries.ask(this.reviewCwd(p));
-    if (p.agent.session.length === 0) opened.off.add("copy-id");
+    if (p.agent.session.length === 0) opened.off.add("copy-details");
     if (p.agent.observation.completed === 0n || unread(p.agent.observation)) opened.off.add("mark-unread");
     try {
       await call(this.connection, "session.command", { command: { "agent.rename": { target: id } } });
@@ -1212,7 +1212,7 @@ export class Controller {
           this.prepareName();
           break;
         }
-        case "copy-id":
+        case "copy-details":
           this.copyText(breadcrumbs(p));
           break;
         case "mark-unread":
@@ -5679,7 +5679,7 @@ export function forkName(title: string): string {
   while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString() + suffix;
 }
-/** What Copy ID puts on the clipboard: enough for another agent to find
+/** What Copy details puts on the clipboard: enough for another agent to find
  * this conversation. Unknown fields are left out. */
 export function breadcrumbs(p: Pane): string {
   const name = p.label.length > 0 ? p.label : p.agent.name;

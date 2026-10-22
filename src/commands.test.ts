@@ -30,7 +30,7 @@ test("menu keys pick the rows each menu shows", () => {
   const agent = new TabMenu({ tab: 1, anchor_x: 0, agent: true });
   expect(agent.itemFor(c("r"))).toBe("rename");
   expect(agent.itemFor(c("f"))).toBe("fork");
-  expect(agent.itemFor(c("c"))).toBe("copy-id");
+  expect(agent.itemFor(c("c"))).toBe("copy-details");
   expect(agent.itemFor(c("u"))).toBe("mark-unread");
   expect(agent.itemFor(c("x"))).toBe("close");
   expect(agent.itemFor(c("n"))).toBeNull();
@@ -55,7 +55,7 @@ test("crossed-out rows take no key, click or highlight", () => {
     tab: 1,
     anchor_x: 0,
     agent: true,
-    off: new Set(["rename", "fork", "copy-id", "mark-unread", "review"]),
+    off: new Set(["rename", "fork", "copy-details", "mark-unread", "review"]),
   });
   expect(menu.itemFor(c("r"))).toBeNull();
   expect(menu.itemFor(c("f"))).toBeNull();
@@ -65,13 +65,13 @@ test("crossed-out rows take no key, click or highlight", () => {
   // Close sits apart below a rule; the menu never opens on it.
   menu.highlightFirst();
   expect(menu.highlightedItem()).toBeNull();
-  expect(menu.hit(80, 24, 5, 6)).toBeNull();
-  expect(menu.hit(80, 24, 5, 7)).toBe(5);
+  expect(menu.hit(80, 24, 5, 7)).toBeNull();
+  expect(menu.hit(80, 24, 5, 8)).toBe(5);
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
-  menu.off = new Set(["fork", "copy-id", "mark-unread", "review"]);
+  menu.off = new Set(["fork", "copy-details", "mark-unread", "review"]);
   menu.move(false);
   expect(menu.highlightedItem()).toBe("rename");
   menu.move(false);
@@ -103,8 +103,9 @@ test("a row with a detail takes two lines, both of them its own", () => {
     first = b.y + b.padding + review;
   expect(menu.hit(80, 30, b.x + 3, first)).toBe(review);
   expect(menu.hit(80, 30, b.x + 3, first + 1)).toBe(review);
-  // Close sits past a rule, a line further down.
-  expect(menu.hit(80, 30, b.x + 3, first + 3)).toBe(review + 1);
+  // Copy details sits right under it, then a rule.
+  expect(menu.hit(80, 30, b.x + 3, first + 2)).toBe(review + 1);
+  expect(menu.hit(80, 30, b.x + 3, first + 3)).toBeNull();
   const w = new Writer(),
     terminal = new Terminal(80, 30);
   try {
@@ -121,8 +122,9 @@ test("a row with a detail takes two lines, both of them its own", () => {
 
 test("a detail shows placeholder bars until it arrives, then fades in over them", () => {
   const menu = new TabMenu({ tab: 1, anchor_x: 0, agent: true });
-  const surface = palette.colors.surface,
-    bar = palette.bgRgb(palette.mix(surface, palette.colors.faint, 30)),
+  // The menu opens on Review, so its line sits on the highlight.
+  const selected = palette.colors.selected,
+    bar = palette.bgRgb(palette.mix(selected, palette.colors.faint, 30)),
     runs: dropdown.Run[] = [
       ["2 files  ", "faint"],
       ["+3", "accent"],
@@ -138,7 +140,7 @@ test("a detail shows placeholder bars until it arrives, then fades in over them"
   // The menu keeps its size when the line arrives, and nothing shows at first.
   menu.setDetail("review", runs, 1000);
   expect(menu.lines()).toBe(lines);
-  expect(drawn(1000)).toContain(palette.fgRgb(surface) + "+");
+  expect(drawn(1000)).toContain(palette.fgRgb(selected) + "+");
   expect(drawn(1000)).toContain(bar);
   const done = drawn(1000 + fade_ms);
   expect(done).toContain(palette.fgRgb(palette.colors.accent) + "+");
@@ -147,6 +149,6 @@ test("a detail shows placeholder bars until it arrives, then fades in over them"
   menu.setDetail("review", runs, 5000);
   expect(menu.details.get("review")!.since).toBe(1000);
   menu.setDetail("review", [["No changes", "faint"]], 5000);
-  expect(drawn(5000)).toContain(palette.fgRgb(surface) + "N");
+  expect(drawn(5000)).toContain(palette.fgRgb(selected) + "N");
   expect(drawn(5000)).not.toContain(bar);
 });

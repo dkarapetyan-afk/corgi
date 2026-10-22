@@ -273,7 +273,7 @@ test("a fork's name is its title marked as a fork, cut to fit", () => {
   expect(Buffer.from(long).toString()).toBe(long);
 });
 
-test("Copy ID names the harness, session, id and paths, leaving out what isn't known", () => {
+test("Copy details names the harness, session, id and paths, leaving out what isn't known", () => {
   const pane = (label: string, fields: object) => ({ label, cwd: "/repo/sub", agent: agent(fields) }) as Pane;
   const claude = pane("", {
     provider: "claude",
