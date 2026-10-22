@@ -41,7 +41,7 @@ import * as dropdown from "./dropdown";
 import * as menuAim from "./menu_aim";
 import { milliTimestamp } from "./clock";
 import type { ShellStatus } from "./launch/command";
-import type { Menu as LauncherMenu } from "./agent_launcher";
+import { preferred_width as launcher_width, type Menu as LauncherMenu } from "./agent_launcher";
 import type { Connection } from "./rpc";
 import type { Use, Uses } from "./inference/setup";
 
@@ -428,13 +428,13 @@ function layout(cols: number, rows: number, grown: number, expanded = 0): Layout
     };
   }
   const normal = Math.min(cols - 4, 84),
-    base = normal + (Math.min(cols - 4, 140) - normal) * expanded,
+    base = normal + (Math.min(cols - 4, launcher_width + 2) - normal) * expanded,
     size = detailSize(cols, rows),
     t = size ? grown : 0,
     w = Math.round(base + ((size?.w ?? base) - base) * t),
     h = Math.round(h0 + Math.max(0, (size?.h ?? h0) - h0) * t),
     b = new Rect(Math.floor((cols - w) / 2), Math.floor((rows - h) / 2), w, h),
-    shown = Math.round(list_w * (1 - t)),
+    shown = Math.round(list_w * (1 - Math.max(t, expanded))),
     detail_w = size ? Math.round((size.width + 5) * t) : 0,
     left = b.x + 1,
     right = b.x + w - 1,

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { Menu, items, status, type Hit } from "./corgi_setup";
-import { Menu as LauncherMenu } from "./agent_launcher";
+import { Menu as LauncherMenu, preferred_width, preview } from "./agent_launcher";
+import { Rect } from "./layout";
 import * as shellPicker from "./shell_picker";
 import { Preferences } from "./preferences";
 import { State as ClipboardState } from "./host_clipboard";
@@ -938,23 +939,83 @@ test("Manage agents expands and returns with Keymap's easing, keeping visible po
   const middle = draw(menu, 160, 36, 1100),
     midWidth = width(middle);
   expect(midWidth).toBeGreaterThan(normal);
-  expect(midWidth).toBeLessThan(140);
+  expect(midWidth).toBeLessThan(preferred_width + 2);
   const y = middle.findIndex(row => row.includes("Search")),
     x = middle[y].indexOf("Search");
   const hit = menu.hit(160, 36, x, y, s, prefs);
   expect(hit && "manager" in hit ? hit.manager.x + 3 : null).toBe(x);
-  expect(width(draw(menu, 160, 36, 1280))).toBe(140);
+  expect(width(draw(menu, 160, 36, 1280))).toBe(preferred_width + 2);
   menu.back();
-  expect(width(draw(menu, 160, 36, 1300))).toBe(140);
+  expect(width(draw(menu, 160, 36, 1300))).toBe(preferred_width + 2);
   const shrinking = width(draw(menu, 160, 36, 1400));
   expect(shrinking).toBeGreaterThan(normal);
-  expect(shrinking).toBeLessThan(140);
+  expect(shrinking).toBeLessThan(preferred_width + 2);
   // Reversing midway starts at the current width, with no jump.
   menu.openOptions(s, prefs);
   expect(width(draw(menu, 160, 36, 1400))).toBe(shrinking);
-  expect(width(draw(menu, 160, 36, 1680))).toBe(140);
+  expect(width(draw(menu, 160, 36, 1680))).toBe(preferred_width + 2);
   menu.back();
   draw(menu, 160, 36, 1700);
   expect(width(draw(menu, 160, 36, 1900))).toBe(normal);
   expect(draw(menu, 60, 24, 2000).join("\n")).toContain("Manage agents");
+});
+
+test("expanded settings and the popup render the same account rows and usage bars", () => {
+  const now = Math.floor(Date.now() / 1000),
+    launch = new LauncherMenu();
+  launch.managing = true;
+  launch.preview = preview({
+    pending: false,
+    options: {
+      claude: {
+        signed_in: true,
+        account: "me@example.com",
+        usage_fetched_at: now,
+        limits: {
+          windows: [
+            { minutes: 300, used: 20, reset_at: now + 3600 },
+            { minutes: 10080, used: 40, reset_at: now + 86400 },
+          ],
+        },
+      },
+    },
+    accounts: [
+      {
+        provider: "claude",
+        account: "/accounts/work",
+        name: "work",
+        option: {
+          signed_in: true,
+          account: "me@work.com",
+          limits: "metered",
+          usage_fetched_at: now,
+          spend: {
+            used_minor: 590000,
+            limit_minor: 1000000,
+            currency: "USD",
+            exponent: 2,
+            period_start: now - 60,
+            reset_at: now + 86400,
+          },
+        },
+      },
+    ],
+  });
+  const menu = Menu.open();
+  menu.agents = launch;
+  menu.item = "agents";
+  menu.openOptions(status(), new Preferences());
+  draw(menu, 180, 36, 1000);
+  const expanded = draw(menu, 180, 36, 1300);
+  const w = new Writer();
+  launch.manager.draw(w, new Rect(0, 0, preferred_width, 30), launch.manageModel());
+  const popup = screen(w.s, 180, 36);
+  const accountRows = (rows: string[]) =>
+    rows
+      .filter(row => row.includes("Claude Code") && row.includes("@"))
+      .map(row => row.slice(row.indexOf("Claude Code")).replace(/[│ ]+$/, ""));
+  expect(accountRows(expanded)).toEqual(accountRows(popup));
+  expect(accountRows(expanded)).toHaveLength(2);
+  for (const row of accountRows(expanded)) expect(row).toContain("━");
+  expect(accountRows(expanded)[1]).toContain("$5.9k / $10k");
 });
