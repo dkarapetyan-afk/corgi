@@ -144,6 +144,45 @@ export class ClaudeSummaries extends Runtime {
   async conversation() {
     return (await this.session()).conversations.find((c: any) => c.agent.session === "claude-s");
   }
+  async test_displayed_thinking_refreshes_activity_after_abstention() {
+    writeFileSync(this.control, JSON.stringify({ delay: 0, label: null }));
+    await this.hook("SessionStart");
+    await sleep(0.6);
+    await this.hook("UserPromptSubmit");
+    this.record({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "artifact", name: "Artifact", input: { action: "quickstart", intent: "other" } },
+        ],
+      },
+    });
+    this.record({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "artifact", content: "Page guidance" }] },
+    });
+    await this.until(() => lines(this.log).length > 0);
+    await this.settle();
+    this.assertEqual((await this.agent()).activity, "");
+
+    writeFileSync(this.control, JSON.stringify({ delay: 0, label: "Building launcher prototype" }));
+    await this.advance(8.5);
+    const update = "Building an interactive prototype of Corgi's launcher on a character grid.";
+    this.record({
+      type: "assistant",
+      thinkingDisplay: "updates",
+      message: { content: [{ type: "thinking", thinking: update }] },
+    });
+    await this.until(async () => (await this.agent()).activity === "Building launcher prototype");
+    const evidence = JSON.parse(lines(this.log).at(-1)!).evidence;
+    this.assertIn("Latest agent update: " + update, evidence);
+    this.assertIn("Artifact: quickstart other", evidence);
+    this.assertEqual((await this.agent()).state, "working");
+    this.assertEqual(
+      (await this.conversation()).timeline.points.map((p: any) => p.activity),
+      ["Building launcher prototype"],
+    );
+  }
   async test_running_command_alone_gets_summary_without_completion_or_commentary() {
     writeFileSync(this.control, JSON.stringify({ delay: 0, label: "Running smoke tests" }));
     await this.hook("SessionStart");

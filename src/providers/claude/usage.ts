@@ -76,10 +76,9 @@ export function progress(t: Tools, value: any, live: boolean) {
   const content = field(line.message, "content");
   if (!Array.isArray(content)) return;
   for (const block of content) {
-    const type = str(block, "type");
-    if (line.type === "assistant" && type === "text") {
-      const text = str(block, "text").trim();
-      if (!text) continue;
+    const type = str(block, "type"),
+      text = line.commentary(block).trim();
+    if (text) {
       t.commentary = new Summary(clip("Latest agent update: " + text, 2048));
       t.dirty = true;
     } else if (line.type === "assistant" && type === "tool_use") {
@@ -89,13 +88,18 @@ export function progress(t: Tools, value: any, live: boolean) {
       if (t.seen.includes(key)) continue;
       const call = new Call();
       call.id = key;
-      call.append(str(block, "name") + ": ");
-      for (const name of ["description", "command", "file_path", "pattern", "query", "url", "prompt"]) {
-        const detail = str(field(block, "input"), name);
-        if (!detail) continue;
-        call.detail(name === "file_path" ? shortPath(detail) : detail);
-        break;
-      }
+      const name = str(block, "name"),
+        input = field(block, "input");
+      call.append(name + ": ");
+      if (name === "Artifact")
+        call.detail([str(input, "action"), str(input, "intent"), str(input, "title")].filter(Boolean).join(" "));
+      else
+        for (const key of ["description", "command", "file_path", "pattern", "query", "url", "prompt"]) {
+          const detail = str(input, key);
+          if (!detail) continue;
+          call.detail(key === "file_path" ? shortPath(detail) : detail);
+          break;
+        }
       t.save(call, live);
     } else if (line.type === "user" && type === "tool_result") {
       const id = str(block, "tool_use_id");
@@ -110,8 +114,7 @@ function update(t: Tail, line: Line) {
   if (stamp === null || !Array.isArray(content)) return;
   let latest = "";
   for (const part of content) {
-    if (str(part, "type") !== "text") continue;
-    for (const row of str(part, "text").split("\n")) {
+    for (const row of line.commentary(part).split("\n")) {
       const text = row.replace(/^[ \t\r#*\->`_]+|[ \t\r#*\->`_]+$/g, "");
       if (!text) continue;
       latest = text;

@@ -36,6 +36,7 @@ export class Line {
   timestamp = "";
   isSidechain = false;
   isCompactSummary = false;
+  thinkingUpdates = false;
   message: any = null;
   static parse(v: any) {
     return Object.assign(new Line(), {
@@ -46,8 +47,21 @@ export class Line {
       timestamp: str(v, "timestamp"),
       isSidechain: field(v, "isSidechain") === true,
       isCompactSummary: field(v, "isCompactSummary") === true,
+      thinkingUpdates: str(v, "thinkingDisplay") === "updates",
       message: field(v, "message"),
     });
+  }
+  /** Assistant text and the thinking updates Claude displays as progress. */
+  commentary(block: unknown): string {
+    if (this.type !== "assistant") return "";
+    switch (str(block, "type")) {
+      case "text":
+        return str(block, "text");
+      case "thinking":
+        return this.thinkingUpdates ? str(block, "thinking") : "";
+      default:
+        return "";
+    }
   }
   /** A prompt or tool result opens a turn; `turn_duration`, or the notice
    * written in its place on an interrupt, closes it. Compaction summaries and
