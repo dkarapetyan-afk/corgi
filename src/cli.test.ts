@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { realpathSync } from "node:fs";
-import { asksHelp, help, idle, layout, list, parse, read, usage, words } from "./cli";
+import { asksHelp, help, idle, launcher, launcherText, layout, list, parse, read, usage, words } from "./cli";
 
 test("help is asked for only before --", () => {
   expect(asksHelp(["move", "3", "--help"])).toBe(true);
@@ -59,6 +59,13 @@ test("command lines are rejected before connecting", async () => {
     [["list", "extra"]],
     [["list", "--json", "--json"]],
     [["list", "--text"]],
+    [["launcher"]],
+    [["launcher", "bogus"]],
+    [["launcher", "list", "codex"]],
+    [["launcher", "hide"]],
+    [["launcher", "show", "--workspace", "1"]],
+    [["launcher", "hide", "codex", "--workspace", "0"]],
+    [["launcher", "hide", "codex"], "MissingWorkspace"],
   ];
   for (const [words, error = "Usage", caller = 0] of cases) await expect(parse(words, caller)).rejects.toThrow(error);
 });
@@ -154,6 +161,16 @@ test("command lines parse to the request the daemon receives", async () => {
       ["pane", "idle", "--workspace", "2", "--cwd", "/tmp", "--first"],
       { action: "pane.idle", idle: { workspace: 2, cwd: realpathSync("/tmp"), first: true } },
     ],
+    [["launcher", "list"], { action: "launcher.list", launcher: { workspace: 0, agents: [] } }],
+    [
+      ["launcher", "hide", "codex", "claude/work", "--workspace", "2"],
+      { action: "launcher.hide", launcher: { workspace: 2, agents: ["codex", "claude/work"] } },
+    ],
+    [
+      ["launcher", "show", "review-bot"],
+      { action: "launcher.show", launcher: { workspace: 0, agents: ["review-bot"] } },
+      5,
+    ],
   ];
   for (const [words, want, caller = 0] of cases)
     expect(await parse(words, caller)).toEqual({
@@ -163,6 +180,7 @@ test("command lines parse to the request the daemon receives", async () => {
       viewer: null,
       command: null,
       idle: null,
+      launcher: null,
       ...want,
     });
   expect(await parse(["pane", "read", "current", "--lines", "10", "--json"], 5)).toEqual({
@@ -173,6 +191,7 @@ test("command lines parse to the request the daemon receives", async () => {
     viewer: null,
     command: { "pane.read": { target: 5, lines: 10 } },
     idle: null,
+    launcher: null,
   });
 });
 test("a tab's layout names each split's sides", () => {
@@ -240,6 +259,66 @@ test("list outlines workspaces, tabs, panes and viewers", () => {
       "",
     ].join("\n"),
   );
+});
+test("launcher names each agent and says where it shows", () => {
+  const snapshot = {
+    agent_hidden: { codex: false, claude: false },
+    account_hidden: ["/accounts/side"],
+    accounts: [
+      { provider: "claude", account: "/accounts/work", name: "work", managed: true },
+      { provider: "claude", account: "/accounts/side", name: "codex", managed: false },
+    ],
+    agent_commands: [
+      { command: "", name: "", hidden: false },
+      { command: "claude --model opus", name: "review-bot", hidden: false },
+      { command: "codex --yolo", name: "", hidden: true },
+    ],
+    workspaces: [
+      { id: 1, name: "corgi", launcher_hidden: ["claude:/accounts/work", "custom1"] },
+      { id: 4, name: "", launcher_hidden: [] },
+    ],
+  };
+  expect(launcherText(launcher(snapshot))).toBe(
+    [
+      'workspace 1 "corgi"',
+      "  codex         Codex                shown",
+      "  claude        Claude Code          shown",
+      "  claude/work   Claude Code · work   hidden",
+      "  claude/codex  Claude Code · codex  not in the launcher",
+      "  command/2     review-bot           hidden",
+      "  command/3     Codex command        not in the launcher",
+      "workspace 4",
+      "  codex         Codex                shown",
+      "  claude        Claude Code          shown",
+      "  claude/work   Claude Code · work   shown",
+      "  claude/codex  Claude Code · codex  not in the launcher",
+      "  command/2     review-bot           shown",
+      "  command/3     Codex command        not in the launcher",
+      "",
+    ].join("\n"),
+  );
+  // Its own name comes first; another name must fit one agent.
+  const named = (...names: string[]) => launcher(snapshot, 1, names)[0].agents.map(a => a.agent);
+  expect(named("codex", "work", "review-bot", "command/3", "claude/default", "work")).toEqual([
+    "codex",
+    "claude/work",
+    "command/2",
+    "command/3",
+    "claude",
+  ]);
+  expect(() => named("default")).toThrow("UnknownAgent");
+  expect(() => named("terminal")).toThrow("UnknownAgent");
+  expect(() => launcher(snapshot, 2)).toThrow("NoWorkspace");
+  expect(
+    launcher({ ...snapshot, accounts: [...snapshot.accounts, { provider: "codex", account: "/w", name: "work" }] }, 4, [
+      "codex/work",
+    ])[0].agents,
+  ).toEqual([{ agent: "codex/work", label: "Codex · work", launcher: true, hidden: false }]);
+  expect(() =>
+    launcher({ ...snapshot, accounts: [...snapshot.accounts, { provider: "codex", account: "/w", name: "work" }] }, 4, [
+      "work",
+    ]),
+  ).toThrow("AmbiguousAgent");
 });
 test("other replies say what changed", () => {
   const result = { pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [] };

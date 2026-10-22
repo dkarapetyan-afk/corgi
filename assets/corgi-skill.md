@@ -96,6 +96,24 @@ Use `--` before text beginning with `--`. Input delivery is not proof an agent
 started or completed a turn. Inspect output and reported state; never blindly
 resubmit after a timeout or connection error.
 
+## Launcher agents
+
+`corgi launcher list` outlines each workspace's launcher: every agent, account
+and saved command it offers, and whether it's shown there. `hide` and `show`
+change one workspace's launcher, the calling pane's unless `--workspace` names
+another:
+
+```sh
+corgi launcher list --workspace 2
+corgi launcher hide codex claude/work
+corgi launcher show review-bot --workspace 2
+```
+
+Name agents as `list` does: `codex`, `claude`, an account such as `claude/work`
+(or `work` when no other agent answers to it), a saved command's name, or
+`command/N`. An agent "not in the launcher" was removed in Manage agents for
+every workspace; showing it in one workspace doesn't add it back.
+
 ## Scope and safety
 
 Only send input to agents or terminals when the user's task authorizes it.

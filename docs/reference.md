@@ -165,6 +165,7 @@ corgi pane split current --right
 corgi pane read 3 --lines 100
 corgi pane send 3 --stdin --enter < /path/to/prompt.txt
 corgi pane idle --cwd /path/to/project --first
+corgi launcher hide codex claude/work --workspace 1
 corgi focus 3 --viewer 1
 ```
 
@@ -173,6 +174,9 @@ corgi focus 3 --viewer 1
 do not focus a viewer; `focus` requires an explicit `--viewer` from `list`.
 `pane idle` lists the panes whose shell waits at its prompt, by workspace then
 tab; `--cwd` and `--workspace` narrow them and `--first` stops at one.
+`launcher hide` and `launcher show` take agents out of one workspace's launcher
+or put them back, as Manage agents' **Show in** column does; `launcher list`
+says what each workspace shows.
 Commands do not implicitly start a missing runtime.
 
 When a coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or one

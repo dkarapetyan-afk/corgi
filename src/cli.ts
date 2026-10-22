@@ -2,11 +2,14 @@ import { realpathSync, statSync } from "node:fs";
 import { Connection } from "./rpc";
 import { stringify } from "./json";
 import { logicalKey } from "./keys";
+import { Provider, adapter } from "./providers";
+import { Row } from "./launch/row";
+import { Entry as CommandEntry } from "./launch/command";
 import helpText from "../assets/cli-help.txt" with { type: "text" };
 import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
-const groups = new Set(["tab", "pane", "workspace", "current", "list", "focus", "--skill"]);
-const nested = new Set(["tab", "pane", "workspace"]);
+const groups = new Set(["tab", "pane", "workspace", "launcher", "current", "list", "focus", "--skill"]);
+const nested = new Set(["tab", "pane", "workspace", "launcher"]);
 const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "first", "left", "right", "up", "down"]);
 const options = new Set([
   ...flags,
@@ -47,6 +50,9 @@ const actions = new Set([
   "workspace.edit",
   "workspace.close",
   "workspace.switch",
+  "launcher.list",
+  "launcher.hide",
+  "launcher.show",
 ]);
 export function handles(args: string[]): boolean {
   return groups.has(args[0]);
@@ -162,7 +168,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
     target = 0;
-  if (!["list", "current", "tab.new", "workspace.new", "pane.idle"].includes(action)) {
+  if (group !== "launcher" && !["list", "current", "tab.new", "workspace.new", "pane.idle"].includes(action)) {
     if (start === words.length) throw Error("Usage");
     current = words[start] === "current";
     if (current && group === "workspace") throw Error("Usage");
@@ -181,7 +187,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
           : null
         : null;
   let command: Record<string, any> | null = null,
-    idle: { workspace: number; cwd: string; first: boolean } | null = null;
+    idle: { workspace: number; cwd: string; first: boolean } | null = null,
+    launcher: { workspace: number; agents: string[] } | null = null;
   const set = (op: string, payload: any) => {
     command = { [op]: payload };
   };
@@ -198,6 +205,15 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
         cwd: args.cwd(),
         command: args.option("command"),
       });
+      break;
+    case "launcher.list":
+    case "launcher.hide":
+    case "launcher.show":
+      launcher = {
+        workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
+        agents: action === "launcher.list" ? [] : args.positional.splice(0),
+      };
+      if (action !== "launcher.list" && !launcher.agents.length) throw Error("Usage");
       break;
     case "pane.idle":
       idle = {
@@ -288,7 +304,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (action === "current" && !caller) throw Error("NoCallerPane");
   const created = (command as Record<string, any> | null)?.["pane.create"];
   if (created?.workspace === 0 && !caller) throw Error("MissingWorkspace");
-  return { action, target, current, json, viewer, command, idle };
+  if (launcher?.agents.length && !launcher.workspace && !caller) throw Error("MissingWorkspace");
+  return { action, target, current, json, viewer, command, idle, launcher };
 }
 /** A tab's split tree from the layout's node array, in words: `3 left of (4
  * above 5)`. */
@@ -343,6 +360,113 @@ export function idle(reply: any): string {
   if (!panes.length) return "no idle shells\n";
   return panes.map(p => `pane ${p.pane} (tab ${p.tab}, workspace ${p.workspace}) ${p.cwd}\n`).join("");
 }
+/** A launcher row as `launcher` commands name it, `codex`, `claude/work` or
+ * `command/2`, with the other names it answers to and whether it's in the
+ * launcher at all. */
+type LauncherAgent = { agent: string; names: string[]; label: string; row: Row; launcher: boolean };
+/** Whether each agent shows in one workspace's launcher. */
+export type LauncherWorkspace = {
+  id: number;
+  name: string;
+  agents: { agent: string; label: string; launcher: boolean; hidden: boolean }[];
+};
+const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter(v => typeof v === "string") : []);
+/** The launcher's rows in a snapshot, but the terminal's. */
+function launcherAgents(snapshot: any): LauncherAgent[] {
+  const accounts: any[] = Array.isArray(snapshot?.accounts) ? snapshot.accounts : [],
+    hidden = strings(snapshot?.account_hidden);
+  const agents = Provider.all.flatMap((provider): LauncherAgent[] => [
+    {
+      agent: provider,
+      names: [`${provider}/default`],
+      label: adapter(provider).label,
+      row: Row.of(provider),
+      launcher: snapshot?.agent_hidden?.[provider] !== true,
+    },
+    ...accounts
+      .filter(a => a?.provider === provider && typeof a.account === "string" && typeof a.name === "string")
+      .map(a => ({
+        agent: `${provider}/${a.name}`,
+        names: [a.name],
+        label: `${adapter(provider).label} · ${a.name}`,
+        row: Row.of(provider, a.account),
+        launcher: !hidden.includes(a.account),
+      })),
+  ]);
+  const commands = (Array.isArray(snapshot?.agent_commands) ? snapshot.agent_commands : []).flatMap(
+    (value: any, index: number): LauncherAgent[] => {
+      const entry = Object.assign(new CommandEntry(), value ?? {});
+      if (typeof entry.command !== "string" || !entry.command) return [];
+      return [
+        {
+          agent: `command/${index + 1}`,
+          names: entry.name ? [entry.name] : [],
+          label: entry.label(),
+          row: Row.ofCommand(index),
+          launcher: entry.hidden !== true,
+        },
+      ];
+    },
+  );
+  return [...agents, ...commands];
+}
+/** The agent `name` spells: one by that name, else the one other agent that answers to it. */
+function launcherAgent(agents: LauncherAgent[], name: string): LauncherAgent {
+  const own = agents.find(a => a.agent === name);
+  if (own) return own;
+  const matches = agents.filter(a => a.names.includes(name));
+  if (matches.length > 1) throw Error("AmbiguousAgent");
+  if (!matches.length) throw Error("UnknownAgent");
+  return matches[0];
+}
+/** Each workspace's launcher, or only `workspace`'s, with the agents `names`
+ * spell or every one. */
+export function launcher(snapshot: any, workspace = 0, names: string[] = []): LauncherWorkspace[] {
+  const agents = launcherAgents(snapshot),
+    picked = names.length ? [...new Set(names.map(name => launcherAgent(agents, name)))] : agents,
+    workspaces: any[] = (snapshot?.workspaces ?? []).filter((w: any) => !workspace || w.id === workspace);
+  if (!workspaces.length) throw Error("NoWorkspace");
+  return workspaces.map(w => ({
+    id: w.id,
+    name: w.name ?? "",
+    agents: picked.map(a => ({
+      agent: a.agent,
+      label: a.label,
+      launcher: a.launcher,
+      hidden: strings(w.launcher_hidden).includes(a.row),
+    })),
+  }));
+}
+/** `launcher` replies as an outline: each workspace, then its agents and whether each shows there. */
+export function launcherText(workspaces: LauncherWorkspace[]): string {
+  const all = workspaces.flatMap(w => w.agents),
+    names = Math.max(...all.map(a => a.agent.length)),
+    labels = Math.max(...all.map(a => a.label.length)),
+    out: string[] = [];
+  for (const w of workspaces) {
+    out.push(`workspace ${w.id}${quote(w.name)}`);
+    for (const a of w.agents)
+      out.push(
+        `  ${a.agent.padEnd(names)}  ${a.label.padEnd(labels)}  ${!a.launcher ? "not in the launcher" : a.hidden ? "hidden" : "shown"}`,
+      );
+  }
+  return out.join("\n") + "\n";
+}
+/** Runs `launcher list`, or `hide` or `show`, which change one workspace and
+ * then read back what it shows of the agents they name. */
+async function launcherCommand(conn: Connection, inv: any, caller: number): Promise<LauncherWorkspace[]> {
+  const { agents: names } = inv.launcher,
+    before = (await conn.call("session.list")).result;
+  if (inv.action === "launcher.list") return launcher(before, inv.launcher.workspace);
+  const workspace = inv.launcher.workspace || (await conn.call("session.locate", { pane: caller })).result.workspace,
+    agents = launcherAgents(before),
+    rows = names.map((name: string) => launcherAgent(agents, name).row);
+  for (const row of rows)
+    await conn.call("session.command", {
+      command: { "agent.workspace_visibility": { workspace, row, shown: inv.action === "launcher.show" } },
+    });
+  return launcher((await conn.call("session.list")).result, workspace, names);
+}
 /** A reply other than `list`, `pane idle` and `pane read`, in words. */
 export function words(reply: any): string {
   if ("queued" in reply) return `queued for viewer ${reply.viewer}\n`;
@@ -386,6 +510,11 @@ export async function run(path: string, args: string[], agent = false): Promise<
     lines = reading?.lines;
   if (reading) reading.lines = Math.min(lines + 1, 10000);
   try {
+    if (inv.launcher) {
+      const workspaces = await launcherCommand(conn, inv, caller);
+      process.stdout.write(inv.json ? stringify({ ok: true, workspaces }) + "\n" : launcherText(workspaces));
+      return;
+    }
     if ((inv.current && group === "tab") || (inv.action === "tab.new" && caller)) {
       const { result } = await conn.call("session.locate", { pane: caller });
       const [op, q] = Object.entries(inv.command)[0] as [string, any];

@@ -73,7 +73,9 @@ adds the selected account or saved command back to the launcher.
 **Space**, or a click on its check, toggles **Show in** *workspace*: the row
 leaves or rejoins the picker in the current workspace only, and reads dimmed
 in Manage agents while hidden there. A narrow card heads that column with the
-workspace's name.
+workspace's name. `corgi launcher hide AGENT` and `corgi launcher show AGENT`
+do the same from a script, and `corgi launcher list` says what each workspace
+shows.
 Hold **⌫** or **Delete** for 1.5 seconds to remove it while the corgi buries
 the row; releasing early restores it. Saved commands are deleted. Secondary
 accounts are removed from Corgi; only folders Corgi explicitly created are

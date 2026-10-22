@@ -21,11 +21,16 @@ Agent controls (--json prints the daemon's reply as JSON):
   corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.
   corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt
   corgi focus ID|current --viewer ID  select in exactly one viewer
+  corgi launcher list [--workspace ID] [--json]  agents each launcher shows
+  corgi launcher hide|show AGENT... [--workspace ID]  in one workspace only
   corgi --skill                      print bundled agent instructions
 
 Tab new and pane split accept --command SHELL_COMMAND.
 IDs come from list; current means CORGI_PANE, never UI focus.
-New tabs outside Corgi require --workspace. Operations never auto-start a server.
+New tabs outside Corgi require --workspace, as do launcher hide and show.
+AGENT is codex, claude, an account (claude/work or work), a saved command's
+name, or command/N, as launcher list names them.
+Operations never auto-start a server.
 Layout changes preserve processes and do not select another pane in a viewer.
 
 Control Corgi panes, agents, or workspaces:
