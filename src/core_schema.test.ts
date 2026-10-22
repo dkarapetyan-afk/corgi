@@ -106,7 +106,7 @@ function fixture() {
 test("the runtime wire matches protocol.version", () => {
   expect(protocol.version).toBe(2);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "225872979e803d5aa0394a9078bd0858fcf11ae660d661fb7e31e90cc4ada6d3",
+    "654a0b15d647b77f3fb29b5655eaee9f087774d5066f792ddf25086960bc1071",
   );
   const { server, dispose } = fixture();
   try {
@@ -133,7 +133,7 @@ test("the runtime wire matches protocol.version", () => {
 test("the viewer wire matches viewer_version.version", async () => {
   expect(protocol.viewer_version).toBe(3);
   expect(createHash("sha256").update(schemas.viewer).digest("hex")).toBe(
-    "26de6495b69997a9821764a11c34c1515919fa87f248c8a45ac7555c71e98814",
+    "d4195c7c300255d9829f1c092cac2b70233f2eb8c9551f6e224c9dce02d5174f",
   );
   const { server, client, dispose } = fixture();
   let view: any;

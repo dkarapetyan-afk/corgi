@@ -27,6 +27,7 @@ import * as pasteCard from "./paste_card";
 import * as resourceTooltip from "./resource_tooltip";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
+import type { Images } from "./pane_images";
 import * as worktreeTooltip from "./worktree_tooltip";
 import { milliTimestamp } from "./clock";
 import * as subagentTooltip from "./subagent_tooltip";
@@ -116,6 +117,7 @@ export interface Ui {
   sidebar_drawer: Section | null;
   corgi_badge: corgiBadge.Mode;
   supports_kitty_graphics: boolean;
+  images: Images | null;
   /** The host's cell in pixels, when it reports it. */
   cell_pixels: Cell | null;
   dragged_workspace: Preview | null;
@@ -186,6 +188,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     sidebar_drawer: null,
     corgi_badge: "none",
     supports_kitty_graphics: false,
+    images: null,
     cell_pixels: null,
     dragged_workspace: null,
     dragged_agent: null,
@@ -643,6 +646,22 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         },
         Date.now() - p.restoring_since,
       );
+    }
+    if (
+      u.supports_kitty_graphics &&
+      u.cell_pixels &&
+      u.images &&
+      noOverlay(u) &&
+      !dim &&
+      !u.link_card &&
+      !u.resource_card &&
+      !u.paste_card &&
+      !u.dragged_agent &&
+      !u.dragged_workspace &&
+      !u.copy_mode &&
+      p.restoring.length === 0
+    ) {
+      w.write(u.images.draw(p.terminal.images, r, u.cell_pixels, (id, offset) => p.terminal.image(id, offset)));
     }
   }
   drawDividers(w, view, area, !u.sidebar_focus);

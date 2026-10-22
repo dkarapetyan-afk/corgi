@@ -60,6 +60,7 @@ export const operations = [
   "viewer.open",
   "viewer.sync",
   "viewer.search",
+  "viewer.image",
   "pane.acknowledge",
   "pane.mark_unread",
   "pane.paste",
@@ -416,7 +417,15 @@ const structures = {
   beside: { other: "u32", direction: ["left|right|up|down", "right"] },
   rgb: { r: "u8", g: "u8", b: "u8" },
   stamp: { identity: "u64", revision: "u64", offset: "?u64" },
-  interest: { pane: "u32", cols: "u16", rows: "u16", offset: ["?u64", null], known: ["?stamp", null] },
+  cell: { width: "u16", height: "u16" },
+  interest: {
+    pane: "u32",
+    cols: "u16",
+    rows: "u16",
+    offset: ["?u64", null],
+    known: ["?stamp", null],
+    cell: ["?cell", null],
+  },
   image: { mime: "string", path: "string" },
   ref: {
     root: ["string", ""],
@@ -476,6 +485,7 @@ const requests = {
     resources_hash: ["?u64", null],
   },
   "viewer.search": { pane: "u32", needle: "string", skip: ["u64", 0] },
+  "viewer.image": { pane: "u32", image: "string", offset: "u32" },
   "pane.paste": { pane: "u32", text: ["?string", null], image: ["?image", null] },
   "pane.idle": { workspace: ["u32", 0], cwd: ["string", ""], first: ["bool", false] },
   "pane.acknowledge": {
@@ -578,6 +588,7 @@ export interface ReplyPayloads {
     match?: { x: number; y: number; end_x: number; end_y: number } | null;
   };
   "viewer.list": Ok & { viewers: ViewerInfo[] };
+  "viewer.image": Ok & { data: string | null };
   "pane.paste": Ok & { pasted: boolean };
   "pane.idle": Ok & { panes: { pane: number; tab: number; workspace: number; cwd: string }[] };
   "pane.surface": {

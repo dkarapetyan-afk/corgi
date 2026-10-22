@@ -3,7 +3,7 @@ const pane = @import("pane");
 const a = std.heap.c_allocator;
 const Theme = @typeInfo(@TypeOf(pane.Terminal.applyTheme)).@"fn".params[1].type.?;
 const Request = struct {
-    op: enum { info, surface, search, select, selection, clearSelection, liveText, text, history, snapshot, fadedSnapshot, theme, paste, prefill, flush, refreshRedraw, tick, takeCopied, takePending, restore, adopt, stop, reap, links, probeFormat },
+    op: enum { info, surface, image, pixels, search, select, selection, clearSelection, liveText, text, history, snapshot, fadedSnapshot, theme, paste, prefill, flush, refreshRedraw, tick, takeCopied, takePending, restore, adopt, stop, reap, links, probeFormat },
     pane: u32 = 0,
     offset: ?usize = null,
     text: []const u8 = "",
@@ -62,6 +62,8 @@ fn perform(t: *pane.Terminal, alloc: std.mem.Allocator, req: Request, out: [*]u8
             .synchronized_output = t.vt.modes.get(.synchronized_output),
         }, out, cap),
         .surface => return result(alloc, try pane.surface.captureView(alloc, @enumFromInt(req.pane), t, req.offset), out, cap),
+        .image => return result(alloc, try t.graphics.chunk(alloc, req.text, req.skip), out, cap),
+        .pixels => t.setCellSize(req.start_x, req.start_y),
         .links => {
             try t.updateRender();
             return result(alloc, t.hyperlinks(), out, cap);

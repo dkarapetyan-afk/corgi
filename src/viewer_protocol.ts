@@ -16,6 +16,7 @@ export interface Interest {
   pane: number;
   cols: number;
   rows: number;
+  cell?: { width: number; height: number } | null;
   offset?: number | null;
   known?: {
     identity: bigint;
@@ -164,6 +165,12 @@ export async function search(s: Server, cl: Client, q: Request<"viewer.search">)
   if (!p) throw new Error("NoPane");
   cl.reply("viewer.search", await p.displayed().search(q.needle, viewport(q.skip)!));
 }
+export function image(s: Server, cl: Client, q: Request<"viewer.image">) {
+  if (!cl.viewer) throw new Error("NotAttached");
+  const pane = s.runtime.pane(q.pane);
+  if (!pane || !cl.interests.some(i => i.pane === q.pane)) throw new Error("NoPane");
+  cl.reply("viewer.image", { data: pane.displayed().native({ op: "image", text: q.image, skip: q.offset }) });
+}
 /** The pane `q` names, if it still runs the agent the viewer showed. */
 function shownPane(s: Server, q: Request<"pane.mark_unread">) {
   const p = s.runtime.pane(q.pane);
@@ -232,6 +239,9 @@ export async function resize(s: Server) {
       await p.resize(chosen.cols, chosen.rows);
       s.runtime.changed();
       s.dirty = true;
+    }
+    if (chosen?.cell) {
+      p.terminal.native({ op: "pixels", start_x: chosen.cell.width, start_y: chosen.cell.height });
     }
   }
 }

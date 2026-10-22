@@ -44,6 +44,7 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
       if (op === "size") {
         view.width = Number(value.cols);
         view.height = Number(value.rows);
+        if (value.cell) view.cell_pixels = { width: Number(value.cell.width), height: Number(value.cell.height) };
         view.input_state.active = true;
       }
       await view.expireInput();

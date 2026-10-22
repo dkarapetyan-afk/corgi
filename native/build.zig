@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
     // Terminal emulation, frame diffs, keyboard and mouse encoding.
     const pane = b.createModule(.{ .root_source_file = b.path("zig/pane.zig"), .target = target, .optimize = optimize, .link_libc = true });
     pane.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+    pane.addImport("wuffs", ghostty.module("ghostty-vt").import_table.get("wuffs").?);
     pane.addOptions("corgi_options", opts);
     const mod = b.createModule(.{ .root_source_file = b.path("bridge.zig"), .target = target, .optimize = optimize, .link_libc = true });
     mod.addImport("pane", pane);

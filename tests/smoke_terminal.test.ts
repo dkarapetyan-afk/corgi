@@ -35,6 +35,31 @@ const read = (pw: string, types: string) =>
   `\x1b]5522;type=read:id=corgi:pw=${b64(pw)}:name=${b64("Corgi")};${b64(types)}\x1b\\`;
 
 class SmokeTerminal extends Runtime {
+  async test_child_kitty_image_reaches_viewer_and_is_removed() {
+    const program = join(this.temp.name, "image-child.ts");
+    writeFileSync(
+      program,
+      `process.stdin.setRawMode(true);
+process.stdout.write("\\x1b[2J\\x1b[H\\x1b_Ga=T,f=24,s=1,v=1,i=730140,c=4,r=2,C=1,q=2;/wAA\\x1b\\\\IMAGE_READY");
+process.stdin.on("data", () => process.stdout.write("\\x1b_Ga=d,d=A,q=2\\x1b\\\\IMAGE_GONE"));
+`,
+    );
+    await this.open_pane({ command: shellJoin([process.execPath, program]) });
+    await this.client.request({ op: "badge", visible: true });
+    await this.client.request({ op: "size", cols: 100, rows: 30, cell: { width: 8, height: 16 } });
+    const upload = "\x1b_Ga=t,t=d,f=32,s=32,v=32,i=268435456";
+    await this.until(() => this.client.events.some((event: any) => event.data?.includes(upload)));
+    await this.until(() => this.client.state.data.includes("\x1b_Ga=p,i=268435456"));
+    // A child's id must not overwrite Corgi's hover thumbnail id.
+    this.assertNotIn("\x1b_Ga=p,i=730140", this.client.state.data);
+    const sent = this.client.events.filter((event: any) => event.data?.includes(upload)).length;
+    await this.client.poll();
+    this.assertEqual(this.client.events.filter((event: any) => event.data?.includes(upload)).length, sent);
+    await this.client.input("x");
+    await this.until(() => this.client.events.some((event: any) => event.data?.includes("\x1b_Ga=d,d=I,i=268435456")));
+    this.assertNotIn("\x1b_Ga=p,i=268435456", this.client.state.data);
+  }
+
   async test_kitty_badge_confirms_chunked_upload_after_wrong_id_acknowledgement() {
     const received = join(this.temp.name, "badge-input");
     await this.open_pane({

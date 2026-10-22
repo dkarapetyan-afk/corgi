@@ -107,6 +107,7 @@ export async function sync(view: Controller, bell: { seq: bigint }, play_sound: 
       rows: Math.max(1, place.rect.h),
       offset: p.terminal.offset,
       known: p.terminal.known,
+      cell: view.cell_pixels,
     });
   }
   // The sidebar's ghost needs its agent's screen, sized as entering will size it.
@@ -118,6 +119,7 @@ export async function sync(view: Controller, bell: { seq: bigint }, play_sound: 
       rows: Math.max(1, ghost.rect.h),
       offset: ghost.pane.terminal.offset,
       known: ghost.pane.terminal.known,
+      cell: view.cell_pixels,
     });
   let reply: Reply<"viewer.sync">;
   try {
@@ -318,10 +320,12 @@ export async function run(
           view.dirty = true;
         }
         const size = dimensions();
+        const cell_changed =
+          view.cell_pixels?.width !== size.cell?.width || view.cell_pixels?.height !== size.cell?.height;
         view.cell_pixels = size.cell;
         // Over SSH, TERM may not name the terminal; XTVERSION does.
         if (branchGlyphs(probe.clipboard.terminal.text())) view.branch_glyphs = true;
-        if (view.width !== size.cols || view.height !== size.rows) {
+        if (view.width !== size.cols || view.height !== size.rows || cell_changed) {
           view.width = size.cols;
           view.height = size.rows;
           view.input_state.active = true;
@@ -437,6 +441,7 @@ export async function run(
       host?.destroy();
       if (probe.badge.uploaded) writeAll(corgiBadge.remove);
       if (view.thumbnails.sent !== null) writeAll(linkThumbnail.remove);
+      writeAll(view.images.clear());
       if (view.name_dialog?.hero.motion) writeAll(forkMotion.remove);
       if (view.moonlander) {
         writeAll(view.moonlander.close());

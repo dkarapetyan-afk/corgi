@@ -42,6 +42,7 @@
     "needle": "x",
     "skip": 1
   },
+  "viewer.image": { "pane": 1, "image": "1-1", "offset": 0 },
   "pane.acknowledge": {
     "pane": 1,
     "session": "s",

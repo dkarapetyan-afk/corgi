@@ -132,6 +132,9 @@ $.requests|viewer.sync: versioned protocol.Request.Sync
 $.requests|viewer.search.pane: u32
 $.requests|viewer.search.needle: string
 $.requests|viewer.search.skip: usize
+$.requests|viewer.image.pane: u32
+$.requests|viewer.image.image: string
+$.requests|viewer.image.offset: u32
 $.requests|pane.acknowledge.pane: u32
 $.requests|pane.acknowledge.session: string
 $.requests|pane.acknowledge.through: u64
@@ -803,3 +806,5 @@ $.launch_history.entries[].updated_at: i64
 $.launch_history.entries[].interrupted: bool
 $.launch_history.removed[].provider: enum codex claude
 $.launch_history.removed[].session: string
+$.replies.viewer.image.data: optional
+$.replies.viewer.image.data?: string

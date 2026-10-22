@@ -61,6 +61,7 @@ import * as shellPicker from "./shell_picker";
 import { installedShells } from "./launch/command";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
+import * as paneImages from "./pane_images";
 import * as resourceTooltip from "./resource_tooltip";
 import * as worktreeTooltip from "./worktree_tooltip";
 import * as worktreeAgents from "./worktree_agents";
@@ -287,6 +288,10 @@ export class Controller {
   link_tooltip = new linkTooltip.State();
   link_copy_press: linkTooltip.Link | null = null;
   thumbnails = new linkThumbnail.Loader(() => {
+    this.dirty = true;
+    this.wake();
+  });
+  images = new paneImages.Images(() => {
     this.dirty = true;
     this.wake();
   });
@@ -5457,6 +5462,13 @@ export class Controller {
     return this.link_tooltip.ready(target, milliTimestamp());
   }
   frame(): string {
+    const hide = this.images.begin();
+    const frame = this.renderFrame();
+    const writes = this.images.end();
+    if (writes) this.queueEffect({ write_terminal: writes });
+    return hide ? "\x1b[?2026h" + hide + frame + "\x1b[?2026l" : frame;
+  }
+  private renderFrame(): string {
     palette.use(this.corgi_setup?.previewTheme(this.prefs) ?? this.prefs.theme, this.terminal_colors);
     if (this.moonlander) {
       const frame = this.moonlander.frame(this.width, this.height, this.cell_pixels, this.supports_kitty_graphics);
@@ -5562,6 +5574,7 @@ export class Controller {
         sidebar_drawer: this.sidebar_focus?.drawer ?? null,
         corgi_badge: this.corgi_badge,
         supports_kitty_graphics: this.supports_kitty_graphics,
+        images: this.images,
         cell_pixels: this.cell_pixels,
         dragged_workspace:
           this.workspace_drag && this.workspace_drag.preview !== null

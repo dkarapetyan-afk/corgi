@@ -1,11 +1,31 @@
 import type { Terminal } from "./terminal";
 import type { Wire } from "../protocol";
+export interface Image {
+  id: string;
+  width: number;
+  height: number;
+  format: number;
+  bytes: number;
+}
+export interface ImagePlacement {
+  image: Image;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  source_x: number;
+  source_y: number;
+  source_width: number;
+  source_height: number;
+  z: number;
+}
 export interface Surface {
   pane: number;
   cols: number;
   rows: number;
   lines: string[];
   cursor: { x: number; y: number } | null;
+  images?: ImagePlacement[];
 }
 export interface Modes {
   bracketed_paste: boolean;

@@ -2,6 +2,7 @@ const std = @import("std");
 const terminal = @import("terminal.zig");
 const vt = terminal.vt;
 const hyperlink = @import("hyperlinks.zig");
+const graphics = @import("graphics.zig");
 
 /// The daemon's id for a pane, which link ids carry.
 pub const PaneId = enum(u32) { _ };
@@ -12,6 +13,7 @@ pub const Surface = struct {
     rows: u16,
     lines: []const []const u8,
     cursor: ?struct { x: u16, y: u16 },
+    images: []const graphics.Placement = &.{},
 };
 
 /// Each line starts with its own style and ends with SGR reset. Coordinates,
@@ -37,6 +39,7 @@ pub fn capture(allocator: std.mem.Allocator, id: PaneId, t: *terminal.Terminal) 
         .cols = state.cols,
         .rows = state.rows,
         .lines = lines,
+        .images = try allocator.dupe(graphics.Placement, t.graphics.placements.items),
         .cursor = if (state.cursor.visible) if (state.cursor.viewport) |pos| .{ .x = pos.x, .y = pos.y } else null else null,
     };
 }

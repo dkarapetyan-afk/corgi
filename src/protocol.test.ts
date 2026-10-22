@@ -149,6 +149,7 @@ test("protocol normalizes small, wide, and default integer fields by their width
     rows: 24,
     offset: 0n,
     known: { identity: 1n, revision: 2n, offset: null },
+    cell: null,
   });
   expect(protocol.decode("viewer.search", { pane: 1, needle: "x" }).skip).toBe(0n);
   expect(protocol.decode("pane.acknowledge", { pane: 1 }).through).toBe(0n);
@@ -269,6 +270,7 @@ test("command schemas reject unknown nested fields while requests stay lenient",
     rows: 24,
     offset: null,
     known: null,
+    cell: null,
   });
 });
 

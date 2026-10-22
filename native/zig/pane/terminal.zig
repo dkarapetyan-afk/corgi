@@ -4,6 +4,7 @@ const os = @import("../os.zig");
 const c = os.c;
 const a = os.allocator;
 const hyperlink = @import("hyperlinks.zig");
+const graphics = @import("graphics.zig");
 const detection = @import("../detection.zig");
 const BoundedText = @import("../bounded_text.zig").BoundedText;
 
@@ -19,6 +20,7 @@ pub const Terminal = struct {
     vt: vt.Terminal,
     stream: vt.TerminalStream,
     render: vt.RenderState = .empty,
+    graphics: graphics.Snapshot = .{},
     // New terminal instances (including handoff imports) invalidate viewer receipts.
     surface_identity: u64,
     surface_revision: u64 = 0,
@@ -73,9 +75,12 @@ pub const Terminal = struct {
     }
 
     pub fn create(cols: u16, rows: u16) !*Terminal {
+        vt.sys.decode_png = graphics.decodePng;
         const t = try a.create(Terminal);
         errdefer a.destroy(t);
-        t.* = .{ .vt = try vt.Terminal.init(os.io(), a, .{ .cols = @max(1, cols), .rows = @max(1, rows), .max_scrollback_bytes = 10_000 }), .stream = undefined, .surface_identity = os.random.int(u64) };
+        t.* = .{ .vt = try vt.Terminal.init(os.io(), a, .{ .cols = @max(1, cols), .rows = @max(1, rows), .max_scrollback_bytes = 10_000, .kitty_image_loading_limits = .{ .file = true, .temporary_file = .disabled, .shared_memory = false } }), .stream = undefined, .surface_identity = os.random.int(u64) };
+        t.vt.width_px = @as(u32, t.vt.cols) * 8;
+        t.vt.height_px = @as(u32, t.vt.rows) * 16;
         // Answer OSC 10/11 even before a client supplies its host theme. These
         // match RenderState's fallback colors for headless or non-querying hosts.
         t.vt.colors.foreground = .init(.{ .r = 255, .g = 255, .b = 255 });
@@ -233,6 +238,7 @@ pub const Terminal = struct {
         t.initial_input = null;
     }
     pub fn destroy(t: *Terminal) void {
+        t.graphics.deinit();
         t.stop();
         t.pending.deinit(a);
         if (t.copied) |bytes| a.free(bytes);
@@ -336,6 +342,8 @@ pub const Terminal = struct {
         var ws = std.mem.zeroes(c.struct_winsize);
         ws.ws_col = t.vt.cols;
         ws.ws_row = t.vt.rows;
+        ws.ws_xpixel = @intCast(@min(t.vt.width_px, std.math.maxInt(u16)));
+        ws.ws_ypixel = @intCast(@min(t.vt.height_px, std.math.maxInt(u16)));
         if (t.redraw_pending) {
             ws.ws_col = if (ws.ws_col > 1) ws.ws_col - 1 else 2;
             if (c.ioctl(t.fd, c.TIOCSWINSZ, &ws) != 0) return;
@@ -350,11 +358,28 @@ pub const Terminal = struct {
         const w = @max(1, cols);
         const h = @max(1, rows);
         if (t.vt.cols == w and t.vt.rows == h) return;
-        try t.vt.resize(a, .{ .cols = w, .rows = h });
+        try t.vt.resize(a, .{ .cols = w, .rows = h, .cell_size_px = .{ .width = t.vt.width_px / t.vt.cols, .height = t.vt.height_px / t.vt.rows } });
         t.surface_revision +%= 1;
         var ws = std.mem.zeroes(c.struct_winsize);
         ws.ws_col = w;
         ws.ws_row = h;
+        ws.ws_xpixel = @intCast(@min(t.vt.width_px, std.math.maxInt(u16)));
+        ws.ws_ypixel = @intCast(@min(t.vt.height_px, std.math.maxInt(u16)));
+        if (t.fd >= 0) _ = c.ioctl(t.fd, c.TIOCSWINSZ, &ws);
+    }
+    pub fn setCellSize(t: *Terminal, width: u16, height: u16) void {
+        if (width == 0 or height == 0) return;
+        const w = @as(u32, width) * t.vt.cols;
+        const h = @as(u32, height) * t.vt.rows;
+        if (t.vt.width_px == w and t.vt.height_px == h) return;
+        t.vt.width_px = w;
+        t.vt.height_px = h;
+        t.surface_revision +%= 1;
+        var ws = std.mem.zeroes(c.struct_winsize);
+        ws.ws_col = t.vt.cols;
+        ws.ws_row = t.vt.rows;
+        ws.ws_xpixel = @intCast(@min(w, std.math.maxInt(u16)));
+        ws.ws_ypixel = @intCast(@min(h, std.math.maxInt(u16)));
         if (t.fd >= 0) _ = c.ioctl(t.fd, c.TIOCSWINSZ, &ws);
     }
     pub fn feed(t: *Terminal, bytes: []const u8) void {
@@ -383,6 +408,7 @@ pub const Terminal = struct {
         if (t.vt.modes.get(.synchronized_output)) return;
         try t.render.update(a, &t.vt);
         try t.links.capture(&t.render);
+        try t.graphics.capture(&t.vt, t.surface_identity);
     }
     // Wait until the interactive shell has installed its line editor. No newline
     // is sent: this is editable input, and only the user can execute it.

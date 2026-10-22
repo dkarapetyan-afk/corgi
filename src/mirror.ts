@@ -68,6 +68,7 @@ export class Terminal {
   selection: Selection | null = null;
   holding_selection = false;
   known: Stamp | null = null;
+  images: surface.ImagePlacement[] = [];
   render_dirty = true;
   /** Bytes for the program, sent with the next sync. */
   pending: number[] = [];
@@ -175,6 +176,10 @@ export class Terminal {
     // Only acknowledge surfaces actually installed. A mouse gesture may
     // hold the old display while the daemon continues collecting output.
     this.known = view.stamp ?? null;
+    this.images = frame.images ?? [];
+  }
+  async image(id: string, offset: number): Promise<string | null> {
+    return (await call(this.conn, "viewer.image", { pane: this.id, image: id, offset })).data;
   }
   /** Whether its program asked for mouse events. */
   mouseEvents(): boolean {

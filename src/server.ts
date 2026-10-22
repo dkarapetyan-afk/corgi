@@ -469,6 +469,9 @@ export class Server {
       case "viewer.search":
         await viewer.search(this, cl, request.payload);
         return;
+      case "viewer.image":
+        viewer.image(this, cl, request.payload);
+        return;
       case "viewer.watch":
         if (cl.viewer || cl.subscribed || cl.launch_preview) throw Error("AlreadyAttached");
         cl.watching = true;
