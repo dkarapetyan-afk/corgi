@@ -25,6 +25,8 @@ import * as rowGlide from "./row_glide";
 import type { Cell } from "./fork_motion";
 import * as pasteCard from "./paste_card";
 import * as resourceTooltip from "./resource_tooltip";
+import * as linkTooltip from "./link_tooltip";
+import * as linkThumbnail from "./link_thumbnail";
 import * as worktreeTooltip from "./worktree_tooltip";
 import { milliTimestamp } from "./clock";
 import * as subagentTooltip from "./subagent_tooltip";
@@ -77,6 +79,7 @@ export interface Ui {
   pointer: Pointer | null;
   iterm2_pointer: boolean;
   link_tooltip: boolean;
+  link_card: linkTooltip.Card | null;
   resources: any;
   resource_hover: number | null;
   resource_card: resourceTooltip.State | null;
@@ -147,6 +150,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     pointer: null,
     iterm2_pointer: false,
     link_tooltip: false,
+    link_card: null,
     resources: { workspaces: [] },
     resource_hover: null,
     resource_card: null,
@@ -487,6 +491,8 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   let hovered_uri: string | null = null;
   let link_pointer = false;
   let resize_hover: Axis | null = null;
+  const link_rect = u.link_card ? linkTooltip.geometry(width, height, u.link_card.link, u.link_card.thumbnail) : null;
+  const on_link_card = u.pointer !== null && link_rect !== null && link_rect.contains(u.pointer.x, u.pointer.y);
   const card_rect =
     !u.link_tooltip || u.agent_launcher !== null || u.corgi_setup !== null || u.pointer === null
       ? null
@@ -502,7 +508,9 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     side.hit(u.pointer.x, u.pointer.y).tag !== "workspace";
   if (u.pointer) {
     const pointer = u.pointer;
-    if (on_card) {
+    if (on_link_card) {
+      link_pointer = linkTooltip.copyAt(link_rect!, pointer.x, pointer.y);
+    } else if (on_card) {
       link_pointer = resourceTooltip.sortAt(card_rect!, pointer.x, pointer.y) !== null;
     } else if (u.scope_menu !== null) {
       link_pointer =
@@ -605,7 +613,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     const r = place.rect;
     p.terminal.updateRender();
     let hovered: bigint | null = null;
-    if (u.pointer && r.contains(u.pointer.x, u.pointer.y) && !on_card && noOverlay(u)) {
+    if (u.pointer && r.contains(u.pointer.x, u.pointer.y) && !on_card && !on_link_card && noOverlay(u)) {
       for (const link of p.terminal.hyperlinks()) {
         if (link.row === u.pointer.y - r.y && link.start <= u.pointer.x - r.x && u.pointer.x - r.x < link.end) {
           hovered = link.id;
@@ -644,8 +652,8 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   if (u.pointer && u.pointer.x > 0 && !dragging && !on_card && noOverlay(u))
     side.hovered = sidebar.agentIndexAt(side, entries, u.pointer.x, u.pointer.y);
   side.spotlight = u.worktree_spotlight;
-  // A moving row's tint is placed again by each frame that shows it.
-  if (u.supports_kitty_graphics) w.write(rowGlide.hide);
+  // A moving row's tint and a link's thumbnail are placed again by each frame that shows them.
+  if (u.supports_kitty_graphics) w.write(rowGlide.hide + linkThumbnail.hide);
   side.draw(w, entries, workspaces);
   if (u.git_hover !== null) sidebar.drawGitAction(w, side, u.workspaces, u.git_hover);
   if (u.review_draw) u.review_draw(w);
@@ -707,7 +715,10 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     }
   } else if (u.link_tooltip && u.agent_launcher === null && u.corgi_setup === null && u.pointer) {
     const pointer = u.pointer;
-    if (u.resource_card) {
+    if (u.link_card && link_rect) {
+      linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, pointer.x, pointer.y));
+      if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
+    } else if (u.resource_card) {
       if (card_rect) {
         const name = u.workspaces.find(ws => ws.id === u.resource_card!.workspace)?.name ?? "workspace";
         resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card);

@@ -7,6 +7,7 @@ import { Controller } from "./controller";
 import { call, unread, acknowledge, type Transport } from "./mirror";
 import { parse as parseAction } from "./action";
 import * as corgiBadge from "./corgi_badge";
+import * as linkThumbnail from "./link_thumbnail";
 import * as forkMotion from "./fork_motion";
 import { Differ } from "./frame_diff";
 import * as framePacing from "./frame_pacing";
@@ -435,6 +436,7 @@ export async function run(
       waker?.destroy();
       host?.destroy();
       if (probe.badge.uploaded) writeAll(corgiBadge.remove);
+      if (view.thumbnails.sent !== null) writeAll(linkThumbnail.remove);
       if (view.name_dialog?.hero.motion) writeAll(forkMotion.remove);
       if (view.moonlander) {
         writeAll(view.moonlander.close());

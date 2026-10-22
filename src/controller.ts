@@ -59,7 +59,8 @@ import { Menu as SetupMenu, Summarizer, type Apply as SetupApply } from "./corgi
 import type { Use } from "./inference/setup";
 import * as shellPicker from "./shell_picker";
 import { installedShells } from "./launch/command";
-import { State as LinkTooltip, type Target as TooltipTarget } from "./link_tooltip";
+import * as linkTooltip from "./link_tooltip";
+import * as linkThumbnail from "./link_thumbnail";
 import * as resourceTooltip from "./resource_tooltip";
 import * as worktreeTooltip from "./worktree_tooltip";
 import * as worktreeAgents from "./worktree_agents";
@@ -283,7 +284,12 @@ export class Controller {
   private menu_hover: { target: HoverMenu; since: number } | null = null;
   pointer: render.Pointer | null = null;
   iterm2_pointer = false;
-  link_tooltip = new LinkTooltip();
+  link_tooltip = new linkTooltip.State();
+  link_copy_press: linkTooltip.Link | null = null;
+  thumbnails = new linkThumbnail.Loader(() => {
+    this.dirty = true;
+    this.wake();
+  });
   git_hover: number | null = null;
   worktree_card = new worktreeTooltip.State();
   /** The worktree the overview selects once the removed one is gone. */
@@ -1864,6 +1870,14 @@ export class Controller {
       case "copy":
         this.copyText(String(act.value ?? ""));
         break;
+      case "copy-link": {
+        const card = this.linkCard();
+        if (card) {
+          this.copyQuietly(linkTooltip.filePath(card.link.uri) ?? card.link.uri);
+          this.link_tooltip.copied_until = milliTimestamp() + 1000;
+        }
+        break;
+      }
       case "paste":
         if (this.clipboard !== null) {
           const p = this.focused();
@@ -4045,6 +4059,28 @@ export class Controller {
       }
       return this.openSidebarRow(false);
     }
+    const link_card = this.linkCard();
+    const link_rect = link_card
+      ? linkTooltip.geometry(this.width, this.height, link_card.link, link_card.thumbnail)
+      : null;
+    const on_link_card = link_rect?.contains(x, y) ?? false;
+    if (this.link_copy_press !== null) {
+      this.pointer = { x, y };
+      this.dirty = true;
+      if (release) {
+        const pressed = this.link_copy_press;
+        this.link_copy_press = null;
+        if (button === 0 && link_card?.link === pressed && link_rect && linkTooltip.copyAt(link_rect, x, y))
+          await this.perform({ name: "copy-link" });
+      }
+      return;
+    }
+    if (on_link_card && !release && (button === 35 || button === 0)) {
+      this.pointer = { x, y };
+      if (button === 0) this.link_copy_press = link_card!.link;
+      this.dirty = true;
+      return;
+    }
     // A press gives the keyboard back to the panes, or to the review panel below when it lands there.
     if (!release && (button & 0xe0) === 0) this.giveKeyboard("pane");
     // The prefix bar has no mouse targets. A click resumes normal UI input.
@@ -4119,7 +4155,12 @@ export class Controller {
       }
     }
     if (!release && (button & 32) !== 0 && (button & 3) === 3 && (button & 64) === 0) {
-      if (moved && !this.resourceHoverContains(x, y) && !this.worktreeHoverContains(x, y)) {
+      if (
+        moved &&
+        !this.linkHoverContains(x, y) &&
+        !this.resourceHoverContains(x, y) &&
+        !this.worktreeHoverContains(x, y)
+      ) {
         const resource_hit = sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), x, y);
         if (resource_hit === null || this.resourceDetail() !== resource_hit.id) this.link_tooltip.move();
         this.launcher_hover_blocked = false;
@@ -5006,6 +5047,10 @@ export class Controller {
     await this.pollLauncher(hover === "launcher");
     this.pollScopeMenu(hover === "scope");
     if (this.link_tooltip.due(milliTimestamp())) this.dirty = true;
+    if (this.link_tooltip.copied_until !== 0 && milliTimestamp() >= this.link_tooltip.copied_until) {
+      this.link_tooltip.copied_until = 0;
+      this.dirty = true;
+    }
     if (this.resource_aim && milliTimestamp() - this.resource_aim.at >= resourceTooltip.aim_ms) {
       // The pointer stopped short of the card: what it rests on takes over.
       this.resource_aim = null;
@@ -5312,8 +5357,45 @@ export class Controller {
       this.workspace_drag === null
     );
   }
+  private linkAt(x: number, y: number): linkTooltip.Link | null {
+    if (this.sidebarView([]).hit(x, y).tag !== "none") return null;
+    for (const place of this.layoutView().placements(this.area())) {
+      if (!place.rect.contains(x, y)) continue;
+      const pane = this.pane(place.id);
+      if (!pane || pane.restoring) return null;
+      pane.terminal.updateRender();
+      const link = pane.terminal
+        .hyperlinks()
+        .find(link => link.row === y - place.rect.y && link.start <= x - place.rect.x && x - place.rect.x < link.end);
+      return link ? { pane: place.id, id: link.id, uri: link.uri, x, y } : null;
+    }
+    return null;
+  }
+  private linkCard(): linkTooltip.Card | null {
+    const link = this.link_tooltip.target?.link;
+    if (!link || !this.link_tooltip.shown || !this.hoverIdle() || this.paste_card || this.ui_mouse_down) return null;
+    const source = this.linkAt(link.x, link.y);
+    if (!source || source.pane !== link.pane || source.id !== link.id || source.uri !== link.uri) return null;
+    let thumbnail = this.linkThumbnail(link.uri);
+    if (thumbnail && !linkTooltip.geometry(this.width, this.height, link, thumbnail)) thumbnail = null;
+    return { link, copied: this.link_tooltip.copied_until > milliTimestamp(), thumbnail };
+  }
+  /** The thumbnail of the image `uri` links to, where the host shows Kitty
+   * images and reports its cell size; it starts loading on first ask. */
+  private linkThumbnail(uri: string): linkTooltip.Thumbnail | null {
+    const cell = this.cell_pixels;
+    return this.supports_kitty_graphics && cell ? this.thumbnails.get(uri, cell) : null;
+  }
+  private linkHoverContains(x: number, y: number): boolean {
+    const card = this.linkCard();
+    if (!card) return false;
+    const rect = linkTooltip.geometry(this.width, this.height, card.link, card.thumbnail);
+    if (rect?.contains(x, y)) return true;
+    const link = this.linkAt(x, y);
+    return link !== null && link.pane === card.link.pane && link.id === card.link.id && link.uri === card.link.uri;
+  }
   private linkTooltipReady(): boolean {
-    let target: TooltipTarget | null = null;
+    let target: linkTooltip.Target | null = null;
     const pointer = this.pointer;
     if (
       pointer &&
@@ -5324,6 +5406,7 @@ export class Controller {
       this.selection === null &&
       !this.ui_mouse_down
     ) {
+      if (this.linkHoverContains(pointer.x, pointer.y)) return true;
       if (this.worktreeHoverContains(pointer.x, pointer.y)) return true;
       if (this.resourceHoverContains(pointer.x, pointer.y)) return true;
       const ws = sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), pointer.x, pointer.y);
@@ -5363,6 +5446,12 @@ export class Controller {
       if (pointer.x > 0) {
         const entry = sidebar.agentAt(this.sidebarView(entries), entries, pointer.x, pointer.y);
         if (entry) target = { conversation: entry.conversation, agent: entry.target };
+      }
+      const link = !this.paste_card ? this.linkAt(pointer.x, pointer.y) : null;
+      if (link && linkTooltip.geometry(this.width, this.height, link)) {
+        target = { link };
+        // Loads while the card waits to open.
+        this.linkThumbnail(link.uri);
       }
     }
     return this.link_tooltip.ready(target, milliTimestamp());
@@ -5410,6 +5499,9 @@ export class Controller {
     if (this.agent_drag) this.agent_drag.valid(this.sidebarView(entries), this.current().id);
     if (this.workspace_drag) this.workspace_drag.valid(this.sidebarView(entries), this.workspaceIds());
     const tooltip_ready = this.linkTooltipReady();
+    const link_card = tooltip_ready ? this.linkCard() : null;
+    const thumbnail = this.thumbnails.sync(link_card?.thumbnail ?? null);
+    if (thumbnail) this.queueEffect({ write_terminal: thumbnail });
     const detail = this.resourceDetail();
     if (detail !== null) {
       const rect = this.resourceRect();
@@ -5437,6 +5529,7 @@ export class Controller {
         pointer: this.pointer,
         iterm2_pointer: this.iterm2_pointer,
         link_tooltip: tooltip_ready,
+        link_card,
         resources: this.runtime.resources,
         resource_hover: this.link_tooltip.target?.resource ?? null,
         resource_card: tooltip_ready && detail !== null ? this.resource_card : null,

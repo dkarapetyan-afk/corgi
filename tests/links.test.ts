@@ -28,7 +28,7 @@ class Links extends Runtime {
   }
   async test_named_link_survives_real_server_and_viewer() {
     const url = "https://example.com/corgi-link-test";
-    const output = `\x1b]8;id=docs;${url}\x1b\\\x1b[4mNamed docs\x1b]8;;\x1b\\\x1b[0m ordinary\r\n`;
+    const output = `\x1b]8;id=docs;${url}\x1b\\\x1b[1;4;38;5;33mNamed docs\x1b]8;;\x1b\\\x1b[0m ordinary\r\n`;
     const pane = await this.new(`printf %s ${quote(output)}; exec /bin/sh`);
     await this.until(async () =>
       (await this.command("pane.read", { target: pane, view: "screen" })).text.includes("Named docs"),
@@ -41,6 +41,11 @@ class Links extends Runtime {
     const y = rows.findIndex(row => row.includes("Named docs")),
       x = rows[y].indexOf("Named docs");
     this.assertIn("\x1b]22;pointer\x1b\\", (await viewer.input(`\x1b[<35;${x + 1};${y + 1}M`)).data);
+    this.assertIn("Copy link", (await viewer.advance(0.15)).data);
+    await viewer.input(`\x1b[<35;${x + 3};${y + 3}M\x1b[<0;${x + 3};${y + 3}M`);
+    const copied = await viewer.input(`\x1b[<0;${x + 3};${y + 3}m`);
+    this.assertEqual(copied.effects, [{ write_terminal: `\x1b]52;c;${Buffer.from(url).toString("base64")}\x07` }]);
+    this.assertIn("Copied", copied.data);
   }
   async test_pointer_names_follow_each_viewers_terminal() {
     const url = "https://example.com/pointer";
@@ -170,6 +175,36 @@ writeFileSync(process.argv[2], String(server.port));
     pty.write(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`);
     await this.until(() => existsSync(opened));
     this.assertEqual(readFileSync(opened, "utf8"), `http://localhost:${port}`);
+  }
+  async test_link_popover_appears_while_idle_and_copies_in_attached_client() {
+    const url = "https://example.com/copy-this-link";
+    const pane = await this.new(`printf %s ${quote(url + "\r\n")}; exec /bin/sh`);
+    await this.until(async () =>
+      (await this.command("pane.read", { target: pane, view: "screen" })).text.includes(url),
+    );
+    const other = await Viewer.create(this);
+    const pty = await Pty.spawn([EXE, "attach"], {
+      env: this.env,
+      cwd: this.temp.name,
+      cols: 100,
+      rows: 30,
+    });
+    this.pty = pty;
+    const [x, y] = (await this.until(() => {
+      const frame = [...pty.output.matchAll(/\x1b\[\?2026h([\s\S]*?)\x1b\[\?2026l/g)].at(-1);
+      if (!frame) return null;
+      const rows = screen_text(frame[1], 100, 30);
+      const y = rows.findIndex(row => row.includes(url));
+      return y < 0 ? null : [rows[y].indexOf(url) + 2, y];
+    }))!;
+    // No more input or polling: the hover deadline must wake the actual viewer.
+    pty.write(`\x1b[<35;${x + 1};${y + 1}M`);
+    await pty.waitFor("Copy link");
+    this.assertNotIn("Copy link", (await other.poll()).data);
+    pty.write(`\x1b[<35;${x + 1};${y + 2}M\x1b[<35;${x + 3};${y + 3}M`);
+    pty.write(`\x1b[<0;${x + 3};${y + 3}M\x1b[<0;${x + 3};${y + 3}m`);
+    await pty.waitFor(`\x1b]52;c;${Buffer.from(url).toString("base64")}\x07`);
+    await pty.waitFor("Copied");
   }
 }
 registerCase("Links", Links, { inherited: false });
