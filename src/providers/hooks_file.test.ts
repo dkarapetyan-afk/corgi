@@ -1,5 +1,14 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { File, command, counted, merged, removed } from "./hooks_file";
@@ -67,6 +76,32 @@ test("installing leaves hook settings that already have every hook untouched", (
     expect(counted(readFileSync(file.path, "utf8"), claude.events, ours)).toEqual([12, 12]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+test("an account whose settings link to the default's gets its hooks there, and the link stays", () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-hooks-")),
+    home = join(root, "home"),
+    work = join(root, "work"),
+    elsewhere = join(root, "dotfiles.json");
+  try {
+    mkdirSync(home);
+    mkdirSync(work);
+    writeFileSync(join(home, "settings.json"), '{"theme":"dark"}');
+    symlinkSync(join(home, "settings.json"), join(work, "settings.json"));
+    const file = new File("claude", work, "settings.json", claude.events, home);
+    expect(file.install().outcome).toBe("added");
+    expect(lstatSync(join(work, "settings.json")).isSymbolicLink()).toBe(true);
+    expect(counted(readFileSync(join(home, "settings.json"), "utf8"), claude.events, ours)).toEqual([12, 12]);
+    expect(new File("claude", home, "settings.json", claude.events).install().outcome).toBe("present");
+    expect(readdirSync(work)).toEqual(["settings.json"]);
+    // A link anywhere else stays as it is.
+    writeFileSync(elsewhere, "{}");
+    rmSync(join(work, "settings.json"));
+    symlinkSync(elsewhere, join(work, "settings.json"));
+    expect(new File("claude", work, "settings.json", claude.events, home).install().outcome).toBe("failed");
+    expect(readFileSync(elsewhere, "utf8")).toBe("{}");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 test("hook install names Corgi's handlers and leaves ones it added unnamed as they are", () => {

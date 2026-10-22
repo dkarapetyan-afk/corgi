@@ -34,18 +34,23 @@ $.requests|session.command.command|agent.command.create.cwd: string
 $.requests|session.command.command|agent.command.create.index: usize
 $.requests|session.command.command|agent.visibility.hidden.codex: bool
 $.requests|session.command.command|agent.visibility.hidden.claude: bool
+$.requests|session.command.command|agent.visibility.hidden_accounts: optional
+$.requests|session.command.command|agent.visibility.hidden_accounts?[]: string
 $.requests|session.command.command|agent.yolo.provider: enum codex claude
 $.requests|session.command.command|agent.yolo.enabled: bool
+$.requests|session.command.command|agent.yolo.account: string
 $.requests|session.command.command|agent.create.workspace: u32
 $.requests|session.command.command|agent.create.cwd: string
 $.requests|session.command.command|agent.create.provider: optional
 $.requests|session.command.command|agent.create.provider?: enum codex claude
+$.requests|session.command.command|agent.create.account: string
 $.requests|session.command.command|agent.resume.workspace: u32
 $.requests|session.command.command|agent.resume.cwd: string
 $.requests|session.command.command|agent.resume.provider: enum codex claude
 $.requests|session.command.command|agent.resume.session: string
 $.requests|session.command.command|agent.resume.asleep: bool
 $.requests|session.command.command|agent.resume.name: string
+$.requests|session.command.command|agent.resume.account: string
 $.requests|session.command.command|agent.rename.target: u32
 $.requests|session.command.command|agent.rename.name: optional
 $.requests|session.command.command|agent.rename.name?: string
@@ -345,6 +350,8 @@ $.snapshot.agent_yolo.codex: bool
 $.snapshot.agent_yolo.claude: bool
 $.snapshot.agent_hidden.codex: bool
 $.snapshot.agent_hidden.claude: bool
+$.snapshot.account_yolo[]: string
+$.snapshot.account_hidden[]: string
 $.snapshot.agent_commands[6].command: custom bounded_text.BoundedText(2048)
 $.snapshot.agent_commands[6].original: custom bounded_text.BoundedText(2048)
 $.snapshot.agent_commands[6].hidden: bool
@@ -358,6 +365,10 @@ $.snapshot.agent_commands[6].semantics.account: custom bounded_text.BoundedText(
 $.snapshot.agent_commands[6].semantics.mode: custom bounded_text.BoundedText(160)
 $.snapshot.agent_commands[6].semantics.yolo: bool
 $.snapshot.agent_commands[6].semantics.default_account: bool
+$.snapshot.accounts[].provider: enum codex claude
+$.snapshot.accounts[].account: string
+$.snapshot.accounts[].name: string
+$.snapshot.accounts[].managed: bool
 $.snapshot.conversations[].background_tasks.items[].id: string
 $.snapshot.conversations[].background_tasks.items[].label: string
 $.snapshot.conversations[].background_tasks.items[].group: enum tests builds servers commands
@@ -612,6 +623,7 @@ $.snapshot.panes[].agent.tool_active: bool
 $.snapshot.panes[].agent.compacting: bool
 $.snapshot.panes[].agent.compacting_since: i64
 $.snapshot.panes[].agent.paused: bool
+$.snapshot.panes[].account: string
 $.snapshot.panes[].restoring: string
 $.snapshot.panes[].forking: bool
 $.snapshot.panes[].dormant: bool
@@ -737,6 +749,7 @@ $.replies.agent.command.preview.resolution.command.semantics.default_account: bo
 $.replies.agent.command.preview.resolution.error_message: custom bounded_text.BoundedText(160)
 $.replies.agent.history.history.pending: bool
 $.replies.agent.history.history.entries[].provider: enum codex claude
+$.replies.agent.history.history.entries[].account: string
 $.replies.agent.history.history.entries[].session: string
 $.replies.agent.history.history.entries[].title: string
 $.replies.agent.history.history.entries[].first: string
@@ -746,6 +759,8 @@ $.replies.agent.history.history.entries[].branch: string
 $.replies.agent.history.history.entries[].updated_at: i64
 $.replies.agent.history.history.entries[].interrupted: bool
 $.launch_preview.pending: bool
+$.launch_preview.options.codex.pending: optional
+$.launch_preview.options.codex.pending?: bool
 $.launch_preview.options.codex.signed_in: optional
 $.launch_preview.options.codex.signed_in?: bool
 $.launch_preview.options.codex.model: custom bounded_text.BoundedText(160)
@@ -768,6 +783,8 @@ $.launch_preview.options.codex.usage_error: custom bounded_text.BoundedText(160)
 $.launch_preview.options.codex.usage_needs_consent: bool
 $.launch_preview.options.codex.history[2][11]: optional
 $.launch_preview.options.codex.history[2][11]?: u8
+$.launch_preview.options.claude.pending: optional
+$.launch_preview.options.claude.pending?: bool
 $.launch_preview.options.claude.signed_in: optional
 $.launch_preview.options.claude.signed_in?: bool
 $.launch_preview.options.claude.model: custom bounded_text.BoundedText(160)

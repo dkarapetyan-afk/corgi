@@ -52,3 +52,17 @@ test("a hold with shorter gaps notices a tap's release sooner", () => {
   expect(shared.held(500)).toBe(true);
   expect(shared.held(700)).toBe(false);
 });
+
+test("repeats at the release boundary stay quiet until the key is let go", () => {
+  const hold = new KeyHold(1500, 400);
+  hold.press(0);
+  expect(hold.active).toBe(true);
+  hold.quiet(1000);
+  hold.reset();
+  for (let now = 1250; now <= 5000; now += 250) {
+    expect(hold.press(now)).toBe(false);
+    expect(hold.active).toBe(false);
+  }
+  hold.press(5251);
+  expect(hold.active).toBe(true);
+});

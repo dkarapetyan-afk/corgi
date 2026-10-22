@@ -33,12 +33,13 @@ import { milliTimestamp } from "./clock";
 import * as subagentTooltip from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as corgiAnimation from "./corgi_animation";
+import * as signinExit from "./signin_exit";
 import * as keymap from "./keymap";
 import * as bindings from "./bindings";
 import { Preferences } from "./preferences";
 import { providerName, type Pane } from "./mirror";
 import type { Notice } from "./host_clipboard";
-import { Writer, displayWidth, writeEllipsis, directoryLabel, sat, byteLength, byteSlice } from "./text";
+import { Writer, displayWidth, writeEllipsis, ellipsis, directoryLabel, sat, byteLength, byteSlice } from "./text";
 
 export type Pointer = { x: number; y: number };
 /** The focused pane's outline. The divider tests parse it back. */
@@ -99,6 +100,9 @@ export interface Ui {
   message: string;
   copy_mode: boolean;
   copy_feedback: boolean;
+  /** The agent just added, shown briefly above the launcher or its new pane. */
+  added_feedback: string;
+  signin_exit: signinExit.State | null;
   /** The prefix key was pressed and waits for the next one. */
   prefix: boolean;
   /** The sidebar list with the keyboard instead of the focused pane. */
@@ -145,6 +149,8 @@ export interface Ui {
   review_keys: boolean;
   /** Draws the review panel over its columns. */
   review_draw: ((w: Writer) => void) | null;
+  /** Draws an account's sign-in over the whole screen, its cursor included. */
+  signin_draw: ((w: Writer, pointer: Pointer | null) => linkTooltip.Link | null) | null;
 }
 export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }): Ui {
   return {
@@ -173,6 +179,8 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
       uses: { activity: true, worktrees: true },
     },
     copy_feedback: false,
+    added_feedback: "",
+    signin_exit: null,
     prefix: false,
     sidebar_focus: null,
     ghost: null,
@@ -209,6 +217,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     review_focused: false,
     review_keys: false,
     review_draw: null,
+    signin_draw: null,
     ...fields,
   };
 }
@@ -359,6 +368,8 @@ function noOverlay(u: Ui): boolean {
     u.port_menu === null &&
     u.worktree_card === null &&
     u.dialog === null &&
+    u.signin_draw === null &&
+    u.signin_exit === null &&
     !u.sidebar_focus
   );
 }
@@ -617,13 +628,9 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     p.terminal.updateRender();
     let hovered: bigint | null = null;
     if (u.pointer && r.contains(u.pointer.x, u.pointer.y) && !on_card && !on_link_card && noOverlay(u)) {
-      for (const link of p.terminal.hyperlinks()) {
-        if (link.row === u.pointer.y - r.y && link.start <= u.pointer.x - r.x && u.pointer.x - r.x < link.end) {
-          hovered = link.id;
-          hovered_uri = link.uri;
-          break;
-        }
-      }
+      const link = linkTooltip.at(p.terminal, r, u.pointer.x, u.pointer.y);
+      hovered = link?.id ?? null;
+      hovered_uri = link?.uri ?? hovered_uri;
     }
     // Dialogs, the launcher, Corgi setup, the workspace drawer and the review panel's keys dim the panes behind them.
     const dim =
@@ -732,12 +739,9 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         if (u.pointer && worktreeTooltip.sortAt(rect, u.pointer.x, u.pointer.y) !== null) link_pointer = true;
       } else writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer);
     }
-  } else if (u.link_tooltip && u.agent_launcher === null && u.corgi_setup === null && u.pointer) {
+  } else if (u.link_tooltip && !u.link_card && u.agent_launcher === null && u.corgi_setup === null && u.pointer) {
     const pointer = u.pointer;
-    if (u.link_card && link_rect) {
-      linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, pointer.x, pointer.y));
-      if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
-    } else if (u.resource_card) {
+    if (u.resource_card) {
       if (card_rect) {
         const name = u.workspaces.find(ws => ws.id === u.resource_card!.workspace)?.name ?? "workspace";
         resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card);
@@ -760,7 +764,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
       if (git) sidebar.drawGitTooltip(w, git, width, height, pointer.x, pointer.y);
       else {
         const agent = sidebar.agentAt(side, u.agents, pointer.x, pointer.y);
-        if (agent) subagentTooltip.draw(w, u.conversations, agent, width, height, pointer.x, pointer.y);
+        if (agent) subagentTooltip.draw(w, u.conversations, agent, width, height, pointer.x, pointer.y, u.accounts);
       }
     }
   }
@@ -798,7 +802,19 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   if (u.scope_menu) u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope);
   if (u.agent_launcher) u.agent_launcher.draw(w, width, height, side);
   if (u.corgi_setup) u.corgi_setup.draw(w, u.inference, u.prefs, width, height);
-  side.searchCursor(w);
+  signinExit.draw(w, u.added_feedback, width, height, u.signin_exit);
+  // A sign-in takes the whole screen, its cursor included.
+  if (u.signin_draw) {
+    hovered_uri = u.signin_draw(w, on_link_card ? null : u.pointer)?.uri ?? null;
+    link_pointer = on_link_card && linkTooltip.copyAt(link_rect!, u.pointer!.x, u.pointer!.y);
+    resize_hover = null;
+  } else side.searchCursor(w);
+  if (u.signin_exit) w.write("\x1b[?25l");
+  if (u.link_card && link_rect && u.pointer) {
+    w.write("\x1b[?25l");
+    linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, u.pointer.x, u.pointer.y));
+    if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
+  }
   if (dragging) w.write("\x1b[?25l");
   // Include the shape in each complete frame so reconnects and overlay changes
   // cannot leave the host pointer stuck on a previously hovered link.

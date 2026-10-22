@@ -1,8 +1,27 @@
-import { test, expect } from "bun:test";
+import { afterAll, beforeAll, test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { service, publish, request, stop } from "./launch_service";
 import { Preview, Worker as PreviewWorker } from "./launch/preview";
 import { Text } from "./providers";
 import * as protocol from "./protocol";
+import * as accounts from "./accounts";
+// Previews list the user's accounts; these tests see none.
+const saved = { HOME: process.env.HOME, CORGI_ENV_BASE: process.env.CORGI_ENV_BASE },
+  home = mkdtempSync(join(tmpdir(), "corgi-launch-service-"));
+beforeAll(() => {
+  process.env.HOME = home;
+  process.env.CORGI_ENV_BASE = home;
+  accounts.reset();
+});
+afterAll(() => {
+  for (const [key, value] of Object.entries(saved))
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  accounts.reset();
+  rmSync(home, { recursive: true, force: true });
+});
 test("new preview subscribers refresh cached sign-in asynchronously and share pending work", async () => {
   const server: any = { runtime: { getWorkspace: () => ({ cwd: "/tmp" }) } },
     messages: any[] = [],
@@ -117,6 +136,18 @@ test("preview subscriptions schedule stale refreshes and publish completion with
   expect(client.launch_preview.preview.options.claude.model.text()).toBe("before");
   messages.length = 0;
   client.launch_preview.checked = 0;
+  s.launch_previews.jobs[0].preview = Object.assign(new Preview(), {
+    ...s.launch_previews.jobs[0].preview,
+    options: {
+      ...s.launch_previews.jobs[0].preview.options,
+      claude: Object.assign(new Preview().options.claude, { pending: false, model: new Text("partial") }),
+    },
+  });
+  publish(server, client);
+  expect(messages[0].preview.pending).toBe(true);
+  expect(messages[0].preview.options.claude.model.text()).toBe("partial");
+  messages.length = 0;
+  client.launch_preview.checked = 0;
   s.launch_previews.jobs[0].updated = Date.now();
   s.launch_previews.jobs[0].queued = false;
   s.launch_previews.jobs[0].preview = new Preview();
@@ -137,6 +168,7 @@ test("restored preview subscriptions restart their workers without a new request
     messages: any[] = [],
     before = new Preview();
   before.pending = false;
+  before.options.claude.model = new Text("before reload");
   const client: any = {
     dead: false,
     output: Buffer.alloc(0),
@@ -157,6 +189,7 @@ test("restored preview subscriptions restart their workers without a new request
     expect(service(server).launch_previews.jobs.length).toBe(1);
     expect(messages[0].type).toBe("agent.preview");
     expect(messages[0].preview.pending).toBe(true);
+    expect(messages[0].preview.options.claude.model.text()).toBe("before reload");
   } finally {
     stop(server);
     PreviewWorker.prototype.pump = pump;

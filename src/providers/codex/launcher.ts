@@ -7,11 +7,12 @@ import { Cache, interval } from "../../usage/account_cache";
 import * as errors from "../../errors";
 import { configDir } from "./index";
 import * as appServer from "./app_server";
-export function open(): Launcher {
-  const server = new appServer.AppServer(5000);
+/** What the launcher shows about `account`, "" for the default. */
+export function open(account = ""): Launcher {
+  const server = new appServer.AppServer(5000, null, account);
   return {
     async account(quit) {
-      const root = configDir();
+      const root = account || configDir();
       let auth: string;
       try {
         auth = readFileSync(join(root, "auth.json"), "utf8");

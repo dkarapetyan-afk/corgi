@@ -16,3 +16,12 @@ export function of(executable: string): string {
 export function executablePath(modulePath: string, processPath: string, sourcePath: string, override?: string): string {
   return modulePath.startsWith("/$bunfs/") ? processPath : (override ?? sourcePath);
 }
+/** The Corgi executable this process runs: the binary, or the checkout's `corgi` script. */
+export function self(): string {
+  return executablePath(
+    import.meta.filename,
+    process.execPath,
+    resolve(import.meta.dir, "../corgi"),
+    process.env.CORGI_APP_EXE,
+  );
+}

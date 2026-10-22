@@ -276,6 +276,8 @@ export interface Pane {
   label: string;
   cwd: string;
   agent: Agent;
+  /** The provider account its agent runs in, "" for the default. */
+  account: string;
   terminal: Terminal;
   /** The command a reopened agent runs while its old screen shows, or a
    * dormant one will run. */
@@ -412,7 +414,12 @@ export class Runtime {
   last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
+  /** The accounts whose rows have their own YOLO on, and those the picker hides. */
+  account_yolo: string[] = [];
+  account_hidden: string[] = [];
   agent_commands: CommandEntry[] = Array.from({ length: 6 }, () => commandEntry());
+  /** The accounts Corgi knows besides each provider's default. */
+  accounts: Account[] = [];
   pane(id: number): Pane | null {
     return this.panes.find(p => p.id === id) ?? null;
   }
@@ -450,6 +457,7 @@ export class Runtime {
           label: info.name ?? "",
           cwd: info.cwd ?? "",
           agent: agent(info.agent),
+          account: typeof info.account === "string" ? info.account : "",
           terminal: term,
           restoring: info.restoring ?? "",
           forking: info.forking === true,
@@ -482,6 +490,28 @@ export class Runtime {
     this.last_agent = snapshot.last_agent ?? Provider.first;
     this.agent_yolo = byProvider(p => snapshot.agent_yolo?.[p] === true);
     this.agent_hidden = byProvider(p => snapshot.agent_hidden?.[p] === true);
+    this.account_yolo = strings(snapshot.account_yolo);
+    this.account_hidden = strings(snapshot.account_hidden);
     this.agent_commands = Array.from({ length: 6 }, (_, i) => commandEntry(snapshot.agent_commands?.[i]));
+    this.accounts = (Array.isArray(snapshot.accounts) ? snapshot.accounts : []).flatMap(account);
   }
+  /** What `provider`'s `account` is called, "" for the default. */
+  accountName(provider: Provider | null, account: string): string {
+    if (!account || !provider) return "";
+    return (
+      this.accounts.find(a => a.provider === provider && a.account === account)?.name ??
+      account.slice(account.lastIndexOf("/") + 1)
+    );
+  }
+}
+/** A list of strings; an older daemon sends none. */
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter(v => typeof v === "string") : [];
+}
+/** An account Corgi knows, as the snapshot lists it. */
+export type Account = { provider: Provider; account: string; name: string; managed: boolean };
+function account(value: any): Account[] {
+  const provider = Provider.parse(value?.provider);
+  if (!provider || typeof value.account !== "string" || !value.account || typeof value.name !== "string") return [];
+  return [{ provider, account: value.account, name: value.name, managed: value.managed === true }];
 }

@@ -34,7 +34,7 @@ export async function renamePane(pane: Pane, name: string | null, runtime: Runti
   const rename = adapter(agent.provider).rename;
   if (!rename) throw new Error("RenameUnavailable");
   const channel = agent.session.len
-    ? await rename.channel(agent.sessionId(), microTimestamp() - agent.protocol_at < 5e6)
+    ? await rename.channel(agent.sessionId(), microTimestamp() - agent.protocol_at < 5e6, pane.account())
     : null;
   if (channel) {
     if (name !== null) {

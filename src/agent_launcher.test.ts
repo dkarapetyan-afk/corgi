@@ -1,6 +1,6 @@
 // Mirrors the tests in agent_launcher.zig.
 import { expect, test } from "bun:test";
-import { Menu } from "./agent_launcher";
+import { Menu, Row, preview } from "./agent_launcher";
 import { View as SidebarView } from "./sidebar";
 import { analyze } from "./launch/command";
 import { Terminal } from "./pane/terminal";
@@ -9,6 +9,18 @@ import { Writer, displayWidth } from "./text";
 const menu = (fields: Partial<Menu> = {}) =>
   new Menu({ workspace: 1, selected: "codex", last: "codex", pinned: true, ...fields });
 const now = () => Math.floor(Date.now() / 1000);
+/** The screen `m` draws, as text. */
+function screen(m: Menu, cols: number, rows: number, side: SidebarView): string[] {
+  const w = new Writer();
+  m.draw(w, cols, rows, side);
+  const host = new Terminal(cols, rows);
+  host.feed(w.s);
+  const text = host.text();
+  host.destroy();
+  return text.split("\n");
+}
+const work = Row.of("claude", "/accounts/work");
+const workAccount = (option: object = {}) => ({ provider: "claude", account: "/accounts/work", name: "work", option });
 
 test("launcher menu bounds", () => {
   const side = SidebarView.init(80, 24, true, 0, 0);
@@ -32,6 +44,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
     entries: [
       {
         provider: "claude",
+        account: "",
         session: "a",
         title: "First",
         first: "",
@@ -43,6 +56,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
       },
       {
         provider: "codex",
+        account: "",
         session: "b",
         title: "Second",
         first: "",
@@ -65,18 +79,17 @@ test("conversations sit below the agents and their rows hit-test", () => {
   expect(m.resumeHit(120, 40, side, b.x + 2, first_line - 1)).toBeNull();
   expect(b.h).toBeGreaterThanOrEqual(m.rowsHeight());
   m.resume_view.expand();
-  expect(m.bounds(120, 40, side).w).toBe(104);
+  expect(m.bounds(120, 40, side).w).toBe(b.w);
 });
 
-test("launcher fits long content and keeps usage hit targets aligned", () => {
+test("launcher clips long content and keeps usage hit targets aligned", () => {
   const m = menu({ selected: "claude" });
+  const widths = m.columns(200);
   m.preview.pending = false;
   m.preview.options.codex.model = "a-long-model-name-that-needs-room";
   m.preview.options.claude.account = "person.with.a.long.name@example.com";
   m.preview.options.claude.usage_needs_consent = true;
-  const widths = m.columns(200);
-  expect(widths[2]).toBe(35);
-  expect(widths[3]).toBe(37);
+  expect(m.columns(200)).toEqual(widths);
   for (const cols of [24, 40, 64, 80, 120, 200]) {
     const side = SidebarView.init(cols, 24, true, 0, 0);
     const b = m.bounds(cols, 24, side);
@@ -153,13 +166,13 @@ test("viewer expires a delivered usage reading after ten minutes", () => {
   o.usage_fetched_at = now() - 590;
   expect(m.usageCell("codex").limited()).toBe(true);
   o.usage_fetched_at = now() - 600;
-  expect(m.usageCell("codex").fallback).toBe("Unavailable · last success 10m+ ago");
+  expect(m.usageCell("codex").fallback).toBe("—");
   o.limits = "metered";
   expect(m.usageCell("codex").fallback).toBe("Metered");
   o.limits = "rate_limited";
   o.usage_fetched_at = 0;
   o.usage_error = "server returned 429";
-  expect(m.usageCell("codex").fallback).toBe("Unavailable · server returned 429");
+  expect(m.usageCell("codex").fallback).toBe("—");
 });
 
 test("launcher hides providers that are not installed", () => {
@@ -183,19 +196,21 @@ test("launcher hides providers that are not installed", () => {
   expect(m.first()).toBe("terminal");
 });
 
-test("signed-out and hidden agents remain editable in management", () => {
+test("Manage agents lists the signed-out and hidden agents the picker leaves out", () => {
   const m = menu();
+  m.preview.pending = false;
   m.preview.options.codex.signed_in = false;
+  m.preview.options.claude.account = "me@example.com";
   m.hidden.claude = true;
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(!m.shown("codex") && !m.shown("claude")).toBe(true);
-  m.managing = true;
-  expect(m.shown("codex") && m.shown("claude") && m.shown("add")).toBe(true);
+  expect(m.manageModel().agents.map(a => [a.label, a.who, a.shown, a.signed_out])).toEqual([
+    ["Codex", "Not signed in", true, true],
+    ["Claude Code", "me@example.com", false, false],
+  ]);
   m.commands[0].set("FOO=123 claude --whatever");
   m.commands[0].hidden = true;
-  expect(m.shown("custom0")).toBe(true);
-  m.managing = false;
   expect(m.shown("custom0")).toBe(false);
   m.commands[0].hidden = false;
   expect(m.shown("custom0")).toBe(true);
@@ -317,4 +332,289 @@ test("the title names the worktree once, on a button that drops the checkouts an
       [bx.from + 1].slice(bx.field_x, bx.field_x + 4),
   ).toBe("main");
   expect(m.worktreeHit(100, 30, side, pick.x, pick.y + 1)).toEqual({ pick: 1 });
+});
+
+test("an account's row reads its own account and has its own YOLO and launcher membership", () => {
+  const m = menu({ selected: work });
+  m.preview = preview({ accounts: [workAccount()] });
+  m.normalize();
+  expect(m.selected).toBe(work);
+  expect(m.rows().slice(0, 3)).toEqual(["codex", "claude", work]);
+  expect(m.cells(work)).toEqual(["Claude Code · work", "·", "Reading…", "Reading…", "…"]);
+  // Narrow, the provider's name gives way to the account's.
+  expect([m.label(work, 13), m.label(work, 11)]).toEqual(["Claude · work", "Cla… · work"]);
+  expect(m.usageCell(work).fallback).toBe("Reading…");
+  m.preview.pending = false;
+  expect(m.cells(work).slice(2)).toEqual(["Default", "Unavailable", "Unknown"]);
+  expect(m.usageCell(work).fallback).toBe("—");
+  const o = m.accountOf(work)!.option;
+  o.usage_needs_consent = true;
+  expect([m.trackable(work), m.trackable("claude")]).toEqual([true, false]);
+  expect(m.usageCell(work).fallback).toBe("Track usage");
+  o.usage_needs_consent = false;
+  // Its own model, account, plan, limits and YOLO.
+  Object.assign(o, { model: "opus", model_name: "Opus", account: "work@example.com", plan: "Team" });
+  o.limits = { windows: [{ minutes: 300, used: 17, reset_at: now() + 99 * 60 }, null] } as any;
+  o.usage_fetched_at = now();
+  m.yolo.claude = true;
+  expect([m.yoloOf("claude"), m.yoloOf(work)]).toEqual([true, false]);
+  m.yolo.claude = false;
+  m.account_yolo = ["/accounts/work"];
+  expect([m.yoloOf("claude"), m.yoloOf(work)]).toEqual([false, true]);
+  expect(m.cells(work)).toEqual(["Claude Code · work", "✓", "Opus", "work@example.com", "Team"]);
+  const side = SidebarView.init(120, 24, true, 0, 0);
+  const b = m.bounds(120, 24, side);
+  const line = screen(m, 120, 24, side)[b.y + 4];
+  for (const value of [" 2 ", "Claude Code · work", "✓", "Opus", "work@example.com", "Team", "5h", "17%"])
+    expect(line).toContain(value);
+  expect(m.hit(120, 24, side, b.x + 2, b.y + 4)).toBe(work);
+  const widths = m.columns(b.w);
+  expect(m.yoloHit(120, 24, side, b.x + 3 + widths[0], b.y + 4)).toBe(work);
+  const usage_x = b.x + 3 + widths[0] + widths[1] + widths[2] + widths[3] + widths[4];
+  expect(m.usageHit(120, 24, side, usage_x, b.y + 4)).toBe(work);
+  // Hidden on its own, or when its agent isn't installed.
+  m.hidden.claude = true;
+  expect([m.shown("claude"), m.shown(work)]).toEqual([false, true]);
+  m.hidden.claude = false;
+  m.account_hidden = ["/accounts/work"];
+  expect([m.shown("claude"), m.shown(work), m.hiddenOf(work)]).toEqual([true, false, true]);
+  m.account_hidden = [];
+  m.preview.installed.claude = false;
+  expect(m.shown(work)).toBe(false);
+  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")?.who).toBe("Not installed");
+});
+
+test("a completed account stops reading in both screens while other rows are pending", () => {
+  const m = menu();
+  m.preview = preview({ pending: true, accounts: [workAccount({ pending: false, account: "work@example.com" })] });
+  expect(m.cells(work).slice(2)).toEqual(["Default", "work@example.com", "Unknown"]);
+  expect(m.usageCell(work).fallback).toBe("—");
+  expect(m.cells("codex")).toContain("Reading…");
+  const managed = m.manageModel().agents.find(a => a.account === "/accounts/work")!;
+  expect(managed.who).toBe("work@example.com");
+  expect(managed.usage.fallback).toBe("—");
+});
+
+test("a signed-out account's row stays listed and offers to sign in", () => {
+  const m = menu({ selected: work });
+  m.preview = preview({ pending: false, accounts: [workAccount({ signed_in: false, usage_needs_consent: true })] });
+  // A signed-out default's row is still left out.
+  m.preview.options.claude.signed_in = false;
+  m.normalize();
+  expect([m.shown("claude"), m.shown(work), m.selected]).toEqual([false, true, work]);
+  expect([m.signsIn(work)?.name, m.signsIn("claude"), m.signsIn("codex")]).toEqual(["work", null, null]);
+  expect(m.cells(work).slice(3)).toEqual(["—", "—"]);
+  expect([m.usageCell(work).fallback, m.trackable(work)]).toEqual(["Sign in", false]);
+  const side = SidebarView.init(120, 24, true, 0, 0);
+  const b = m.bounds(120, 24, side);
+  const lines = screen(m, 120, 24, side);
+  expect(lines[b.y + 3]).toMatch(/ 1 +Claude Code · work .* — +— +Sign in +│/);
+  expect(lines[b.y + b.h - 2]).toMatch(/a +sign in +y +YOLO/);
+  m.account_hidden = ["/accounts/work"];
+  expect(m.shown(work)).toBe(false);
+});
+
+test("digits count account rows like the agents'", () => {
+  const m = menu();
+  const side = Row.of("codex", "/accounts/side");
+  m.preview = preview({ accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }] });
+  m.commands[0].set("claude --model opus");
+  const c = (s: string) => s.charCodeAt(0);
+  expect([..."01234"].map(digit => m.shortcutRow(c(digit)))).toEqual(["codex", side, "claude", work, "custom0"]);
+  m.hidden.codex = true;
+  expect([m.shortcutRow(c("0")), m.shortcutRow(c("1"))]).toEqual([side, "claude"]);
+  m.account_hidden = ["/accounts/side"];
+  expect([m.shortcutRow(c("0")), m.shortcutRow(c("1"))]).toEqual(["claude", work]);
+});
+
+test("a default account that has a name shows it on its row", () => {
+  const m = menu();
+  m.preview = preview({ pending: false, names: { claude: "acme" }, accounts: [workAccount()] });
+  m.accounts = [{ provider: "claude", account: "/accounts/work", name: "work" }];
+  expect([m.label("claude"), m.label("codex"), m.label(work)]).toEqual([
+    "Claude Code · acme",
+    "Codex",
+    "Claude Code · work",
+  ]);
+  expect(m.manageModel().agents.find(a => a.provider === "claude" && !a.account)?.name).toBe("acme");
+  // Conversations name it once there's another account to tell it from.
+  const entry = { provider: "claude", account: "", session: "s" } as any;
+  expect(m.resumeContext().accountName(entry)).toBe("acme");
+  m.accounts = [];
+  expect(m.resumeContext().accountName(entry)).toBe("");
+});
+
+test("a row whose account went away leaves its provider's selected", () => {
+  const m = menu({ selected: work });
+  m.preview = preview({ accounts: [workAccount()] });
+  m.normalize();
+  expect(m.selected).toBe(work);
+  m.preview = preview();
+  m.normalize();
+  expect(m.selected).toBe("claude");
+  m.selected = work;
+  m.hidden.claude = true;
+  m.normalize();
+  expect(m.selected).toBe("codex");
+});
+
+test("Manage agents takes the card with its own selection", () => {
+  const m = menu({ selected: work });
+  m.preview = preview({ pending: false, accounts: [workAccount({ account: "work@example.com" })] });
+  m.commands[0].set("claude --model opus");
+  const before = m.bounds(120, 40, SidebarView.init(120, 40, true, 0, 0));
+  m.manage();
+  expect(m.managing).toBe(true);
+  expect(m.manager.focus).toBe("search");
+  m.manager.sequence("\x1b[B", m.manageModel());
+  const side = SidebarView.init(120, 40, true, 0, 0),
+    b = m.bounds(120, 40, side),
+    lines = screen(m, 120, 40, side);
+  expect(b.w).toBe(before.w);
+  expect(lines[b.y]).toMatch(/╭─ ← New tab ─ Manage agents ─+ +esc +close ─╮/);
+  expect(lines[b.y + 6]).toMatch(/│› +Codex /);
+  expect(lines[b.y + 8]).toMatch(/│ +Claude Code · work +work@example.com +(— +)?│/);
+  // The picker's rows don't answer clicks under it.
+  expect(m.hit(120, 40, side, b.x + 6, b.y + 8)).toBeNull();
+  expect(lines[b.y + b.h - 2]).toMatch(/↵ +rename +hold ⌫ +remove/);
+  m.back();
+  expect(m.selected).toBe(work);
+});
+
+test("Manage agents shows hidden accounts' own usage, keeps zero, and omits missing readings", () => {
+  const m = menu({ selected: work });
+  const at = now();
+  m.preview = preview({
+    pending: false,
+    accounts: [
+      workAccount({
+        account: "work@example.com",
+        usage_fetched_at: at,
+        limits: {
+          windows: [
+            { minutes: 300, used: 0, reset_at: at + 3600 },
+            { minutes: 10080, used: 82, reset_at: at + 86400 },
+          ],
+        },
+      }),
+    ],
+  });
+  m.account_hidden = ["/accounts/work"];
+  m.preview.options.codex.usage_error = "no usage returned";
+  m.manage();
+  const a = m.manageModel().agents.find(a => a.account === "/accounts/work")!;
+  expect(a.shown).toBe(false);
+  expect(a.usage.windows.map(w => w?.used)).toEqual([0, 82]);
+  const side = SidebarView.init(150, 40, true, 0, 0);
+  const text = screen(m, 150, 40, side).join("\n");
+  expect(text).toContain("Usage (used)");
+  expect(text).toContain("0%");
+  expect(text).toContain("82%");
+  expect(text).not.toContain("no usage returned");
+  m.preview.accounts[0].option.usage_fetched_at = at - 600;
+  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")!.usage.fallback).toBe("—");
+});
+
+test("both cards keep the same width with expanded history and on narrow terminals", () => {
+  const m = menu();
+  m.history.entries = [
+    {
+      provider: "claude",
+      account: "",
+      session: "a",
+      title: "First",
+      first: "",
+      last: "",
+      cwd: "/w",
+      branch: "",
+      updated_at: 5,
+      interrupted: false,
+    },
+  ];
+  m.resume_view.expand();
+  for (const cols of [40, 80, 120, 180]) {
+    const side = SidebarView.init(cols, 40, true, 0, 0);
+    const before = m.bounds(cols, 40, side);
+    m.manage();
+    expect(m.bounds(cols, 40, side).w).toBe(before.w);
+    m.back();
+    expect(m.resume_view.expanded).toBe(true);
+  }
+});
+
+test("Removing and restoring keeps both cards and their columns the same width", () => {
+  const m = menu(),
+    at = now();
+  m.preview = preview({
+    pending: false,
+    accounts: [workAccount({ account: "work@example.com", model: "a-long-account-model-name" })],
+    options: {
+      claude: {
+        account: "personal@example.com",
+        model: "a-long-claude-model-name",
+        usage_fetched_at: at,
+        limits: {
+          windows: [
+            { minutes: 300, used: 3, reset_at: at + 3 * 3600 },
+            { minutes: 10080, used: 67, reset_at: at + 3 * 86400 },
+          ],
+        },
+      },
+    },
+  });
+  m.commands[0].set("claude --model an-even-longer-saved-command-model-name");
+  for (const cols of [80, 120, 200]) {
+    const side = SidebarView.init(cols, 40, true, 0, 0);
+    m.hidden.claude = false;
+    m.account_hidden = [];
+    m.commands[0].hidden = false;
+    const expected = m.bounds(cols, 40, side),
+      widths = m.columns(expected.w);
+    for (const hidden of [true, false, true]) {
+      m.hidden.claude = hidden;
+      m.account_hidden = hidden ? ["/accounts/work"] : [];
+      m.commands[0].hidden = hidden;
+      for (const managing of [true, false]) {
+        m.managing = managing;
+        const actual = m.bounds(cols, 40, side);
+        expect([actual.x, actual.w]).toEqual([expected.x, expected.w]);
+        expect(m.columns(actual.w)).toEqual(widths);
+      }
+    }
+  }
+});
+
+test("both cards keep their bounds and columns as account details and usage arrive", () => {
+  for (const cols of [60, 80, 120, 180]) {
+    const m = menu(),
+      side = SidebarView.init(cols, 40, true, 0, 0);
+    m.preview = preview({ accounts: [workAccount()] });
+    const before = m.bounds(cols, 40, side),
+      widths = m.columns(before.w);
+    m.manage();
+    const managing = m.bounds(cols, 40, side);
+    m.back();
+    const stages = [
+      { account: "person.with.a.long.name@example.com", model: "a-long-model-name-that-needs-room", plan: "Pro" },
+      {
+        usage_fetched_at: now(),
+        limits: {
+          windows: [
+            { minutes: 300, used: 3, reset_at: now() + 2 * 3600 },
+            { minutes: 10080, used: 67, reset_at: now() + 3 * 86400 },
+          ],
+        },
+      },
+    ];
+    for (const stage of stages) {
+      Object.assign(m.preview.options.claude, stage);
+      Object.assign(m.preview.accounts[0].option, stage);
+      m.preview.pending = false;
+      expect(m.bounds(cols, 40, side)).toEqual(before);
+      expect(m.columns(before.w)).toEqual(widths);
+      m.manage();
+      expect(m.bounds(cols, 40, side)).toEqual(managing);
+      m.back();
+    }
+  }
 });

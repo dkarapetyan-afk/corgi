@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Menu, items, status, type Hit } from "./corgi_setup";
+import { Menu as LauncherMenu } from "./agent_launcher";
 import * as shellPicker from "./shell_picker";
 import { Preferences } from "./preferences";
 import { State as ClipboardState } from "./host_clipboard";
@@ -209,7 +210,7 @@ test("setup aims only at the options a click acts on", () => {
   }
   // Terminal capabilities has nothing to click, so nothing guards it.
   const menu = Menu.open();
-  menu.hover(100, 30, 15, 12, s, prefs, 0);
+  menu.hover(100, 30, 15, 14, s, prefs, 0);
   menu.hover(100, 30, 22, 10, s, prefs, 100);
   expect(menu.item).toBe("source_control");
 });
@@ -882,4 +883,78 @@ test("About links its acknowledgements and makes the whole spaceship a keyboard 
     "https://bun.sh",
   ])
     expect(w.s).toContain(`\x1b]8;;${url}\x1b\\`);
+});
+
+test("Manage agents shares the launcher's view inside wide and narrow settings", () => {
+  for (const cols of [60, 100, 160]) {
+    const menu = Menu.open(),
+      s = status(),
+      prefs = new Preferences(),
+      launch = new LauncherMenu();
+    launch.managing = true;
+    launch.manager.back_label = "Settings";
+    menu.agents = launch;
+    menu.item = "agents";
+    expect(menu.openOptions(s, prefs)).toBe(true);
+    expect(menu.managing()).toBe(true);
+    let rows = draw(menu, cols, 24);
+    expect(rows.join("\n")).toContain("Search");
+    expect(rows.join("\n")).toContain("Available to add");
+    expect(rows.join("\n")).not.toContain("New tab");
+    const searchY = rows.findIndex(row => row.includes("Search")),
+      searchX = rows[searchY].indexOf("Search"),
+      hit = menu.hit(cols, 24, searchX, searchY, s, prefs);
+    expect(hit).toHaveProperty("manager");
+    for (const ch of "custom") menu.paste(ch.charCodeAt(0));
+    expect(launch.manager.query.name()).toBe("custom");
+    launch.manager.key(9, launch.manageModel());
+    launch.manager.key(13, launch.manageModel());
+    expect(launch.manager.page).toBe("command");
+    rows = draw(menu, cols, 24);
+    expect(rows.join("\n")).toContain("Paste a command");
+    expect(rows.join("\n")).toContain("[Cancel]  [Add]");
+    expect(menu.back()).toBe(true);
+    expect(menu.managing()).toBe(false);
+    const w = new Writer();
+    menu.drawAt(w, s, prefs, cols, 24, 0);
+    expect(w.s).not.toContain("\x1b[?25h");
+  }
+});
+
+test("Manage agents expands and returns with Keymap's easing, keeping visible pointer targets", () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences();
+  menu.agents = new LauncherMenu();
+  menu.agents.managing = true;
+  menu.item = "agents";
+  const width = (rows: string[]) => {
+    const top = rows.find(row => row.includes("Corgi setup"))!;
+    return top.lastIndexOf("╮") - top.indexOf("╭") + 1;
+  };
+  const normal = width(draw(menu, 160, 36, 1000));
+  menu.openOptions(s, prefs);
+  expect(width(draw(menu, 160, 36, 1000))).toBe(normal);
+  const middle = draw(menu, 160, 36, 1100),
+    midWidth = width(middle);
+  expect(midWidth).toBeGreaterThan(normal);
+  expect(midWidth).toBeLessThan(140);
+  const y = middle.findIndex(row => row.includes("Search")),
+    x = middle[y].indexOf("Search");
+  const hit = menu.hit(160, 36, x, y, s, prefs);
+  expect(hit && "manager" in hit ? hit.manager.x + 3 : null).toBe(x);
+  expect(width(draw(menu, 160, 36, 1280))).toBe(140);
+  menu.back();
+  expect(width(draw(menu, 160, 36, 1300))).toBe(140);
+  const shrinking = width(draw(menu, 160, 36, 1400));
+  expect(shrinking).toBeGreaterThan(normal);
+  expect(shrinking).toBeLessThan(140);
+  // Reversing midway starts at the current width, with no jump.
+  menu.openOptions(s, prefs);
+  expect(width(draw(menu, 160, 36, 1400))).toBe(shrinking);
+  expect(width(draw(menu, 160, 36, 1680))).toBe(140);
+  menu.back();
+  draw(menu, 160, 36, 1700);
+  expect(width(draw(menu, 160, 36, 1900))).toBe(normal);
+  expect(draw(menu, 60, 24, 2000).join("\n")).toContain("Manage agents");
 });

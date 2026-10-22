@@ -62,3 +62,20 @@ test("mirrored observations keep exact completion counters", () => {
   expect(large.observation.read).toBe(0xffffffffffffffffn);
   expect(mirror.unread(large.observation)).toBe(false);
 });
+
+test("an account's YOLO and Show come from the snapshot, and an older daemon's has none", () => {
+  const runtime = new mirror.Runtime(),
+    workspaces = [{ id: 1, model: { nodes: [], tabs: [], revision: 0 } }];
+  try {
+    runtime.receive(null as any, {
+      workspaces,
+      account_yolo: ["/accounts/work", 3],
+      account_hidden: ["/accounts/side"],
+    });
+    expect([runtime.account_yolo, runtime.account_hidden]).toEqual([["/accounts/work"], ["/accounts/side"]]);
+    runtime.receive(null as any, { workspaces });
+    expect([runtime.account_yolo, runtime.account_hidden]).toEqual([[], []]);
+  } finally {
+    runtime.destroy();
+  }
+});

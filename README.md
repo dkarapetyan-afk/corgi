@@ -40,6 +40,14 @@ their settings. Codex asks you to trust the hooks once, in `/hooks`.
 | Context, tokens and rate limits      |      ✓      |   ✓   |
 | Rename and fork                      |      ✓      |   ✓   |
 | Resume after a crash or reboot       |      ✓      |   ✓   |
+| Several accounts at once             |      ✓      |   ✓   |
+
+For a second account, pick the agent under **Add account** in the launcher's
+Manage agents, or run `corgi account add`: it walks you through the agent's own
+sign-in, over SSH too, and names the account for who signed in;
+`corgi account add claude work --dir ~/.claude-work` uses a folder you have,
+and Omarchy's accounts show up on their own. Each account gets its own
+launcher row and usage.
 
 ## Scripting
 

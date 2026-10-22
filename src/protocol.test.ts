@@ -234,7 +234,11 @@ test("command defaults normalize nested semantics and tagged destinations", () =
     },
   });
   expect(protocol.decodeCommand({ "agent.visibility": { hidden: { codex: true } } })).toEqual({
-    "agent.visibility": { hidden: { codex: true, claude: false } },
+    "agent.visibility": { hidden: { codex: true, claude: false }, hidden_accounts: null },
+  });
+  // An older viewer sends no account, which picks the provider's own row.
+  expect(protocol.decodeCommand({ "agent.yolo": { provider: "claude", enabled: true } })).toEqual({
+    "agent.yolo": { provider: "claude", enabled: true, account: "" },
   });
   expect(protocol.decodeCommand({ "agent.move": { workspace: 1n, target: { headless: 2n } } })).toEqual({
     "agent.move": { workspace: 1, target: { headless: 2 }, before: null },

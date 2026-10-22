@@ -30,8 +30,10 @@ test("a session attaches only to the live background job that holds it", () => {
       expect(jobIn(directory, session)).toBeNull();
     expect(jobIn("/nonexistent/sessions", "bg")).toBeNull();
     process.env.CLAUDE_CONFIG_DIR = root;
-    expect(adapter.launch.attach?.("bg")).toEqual(["attach", "19e909c5"]);
-    expect(adapter.launch.attach?.("terminal")).toBeNull();
+    expect(adapter.launch.attach?.("bg", "")).toEqual(["attach", "19e909c5"]);
+    expect(adapter.launch.attach?.("terminal", "")).toBeNull();
+    delete process.env.CLAUDE_CONFIG_DIR;
+    expect(adapter.launch.attach?.("bg", root)).toEqual(["attach", "19e909c5"]);
   } finally {
     if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prior;

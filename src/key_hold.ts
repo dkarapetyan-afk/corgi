@@ -25,7 +25,7 @@ export class KeyHold {
   /** Held until then, unless the key arrives again. */
   private until = 0;
   /** Presses before this are the tail of a hold that already ended. */
-  private quiet_until = 0;
+  private quiet_until = -Infinity;
 
   /** Filled in `hold_ms`; let go, emptied in `heal_ms`. A silence of `gap`
    * after a repeat, or of `first_gap` past the host's repeat delay, is a release. */
@@ -109,7 +109,7 @@ export class KeyHold {
   }
   /** Whether presses now are the tail of a hold that already ended. */
   quieted(now: number): boolean {
-    return now < this.quiet_until;
+    return now <= this.quiet_until;
   }
   /** Ignores the key until it has been let go. */
   quiet(now: number): void {

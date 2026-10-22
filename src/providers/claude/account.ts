@@ -60,6 +60,8 @@ export function defaultModel(value: any): string {
   return "";
 }
 export class Client {
+  /** `env` picks the account it reads. */
+  constructor(readonly env: NodeJS.ProcessEnv = process.env) {}
   session: Control | null = null;
   identity: string | null = null;
   account = new Info();
@@ -92,6 +94,7 @@ export class Client {
       this.account = new Info();
       const output = await subprocessRun([executable, "auth", "status", "--json"], {
         cwd: "/tmp",
+        env: this.env,
         timeout_ms: 5000,
         max_output: 16384,
         quit,
@@ -114,7 +117,7 @@ export class Client {
         account.usage_error = new Text("usage account unavailable");
       const identity = JSON.stringify({
         executable,
-        root: claude.configDir(),
+        root: claude.configDir(this.env),
         email: d.email ?? "",
         organization: d.orgId ?? "",
         method: d.authMethod ?? "",
@@ -166,7 +169,7 @@ export class Client {
   }
   /** Starts the control session; its initialize reply names the default model. */
   private async start(executable: string, stopping: any, quit: Quit | undefined, deadline: number) {
-    this.session = new Control(executable);
+    this.session = new Control(executable, this.env);
     const initialized = await this.session.ready({ stopping, quit, deadline });
     const model = defaultModel(initialized);
     if (model) this.default_model = new Text(model);

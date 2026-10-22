@@ -9,7 +9,22 @@ import { ResumeHint } from "./resume_hint";
 import { Text } from "./providers";
 import { logicalKey } from "./keys";
 import { encode } from "./keyboard";
+import * as accounts from "./accounts";
+import * as integration from "./integration";
+import type { Provider } from "./providers";
 export type Context = { socket: string; executable: string; theme: any };
+/** The account a request names for `provider`: "" for the default. */
+function named(provider: Provider, spelled: string) {
+  if (!spelled) return "";
+  if (!spelled.startsWith("/")) throw Error("InvalidAccount");
+  return accounts.normalize(provider, spelled);
+}
+/** The account a request names for `provider`, ready for an agent. */
+async function account(provider: Provider, spelled: string) {
+  const account = named(provider, spelled);
+  if (account) await integration.prepare(provider, account);
+  return account;
+}
 export type Result = {
   pane?: number;
   tab?: number;
@@ -104,17 +119,27 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       r.pane(pane)!.launch = new Launch(undefined, e.command);
       return location(r, pane);
     }
-    case "agent.visibility":
+    case "agent.visibility": {
+      const hidden = request.payload.hidden_accounts;
+      if (hidden?.some(a => !a.startsWith("/"))) throw Error("InvalidAccount");
       r.agent_hidden = { ...request.payload.hidden };
+      // An older viewer sends no accounts, which keeps the hidden ones.
+      if (hidden) r.account_hidden = [...new Set(hidden)];
       r.changed();
       return {};
-    case "agent.yolo":
-      r.agent_yolo[request.payload.provider] = request.payload.enabled;
+    }
+    case "agent.yolo": {
+      const { provider, enabled } = request.payload,
+        account = named(provider, request.payload.account);
+      if (!account) r.agent_yolo[provider] = enabled;
+      else r.account_yolo = [...r.account_yolo.filter(a => a !== account), ...(enabled ? [account] : [])];
       r.changed();
       return {};
+    }
     case "agent.create": {
       const provider = request.payload.provider ?? r.lastAgent(r.getWorkspace(request.payload.workspace)),
-        launch = new Launch({ provider, yolo: r.agent_yolo[provider] }),
+        chosen = await account(provider, request.payload.account),
+        launch = Launch.in(provider, chosen, r.yolo(provider, chosen)),
         pane = await r.create({
           ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd ?? ""),
           ...launch.run(ctx.executable, launch.typed()),
@@ -134,14 +159,12 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       h.provider = request.payload.provider;
       h.session = new Text(request.payload.session);
       h.name = new Text(request.payload.name ?? "");
+      const chosen = await account(request.payload.provider, request.payload.account);
       return location(
         r,
         await r.resumeAgent(
           opts,
-          new Launch({
-            provider: request.payload.provider,
-            yolo: r.agent_yolo[request.payload.provider],
-          }),
+          Launch.in(request.payload.provider, chosen, r.yolo(request.payload.provider, chosen)),
           h,
           null,
         ),
@@ -533,7 +556,10 @@ function build(r: Runtime, viewer: boolean) {
     last_agent: r.last_agent,
     agent_yolo: r.agent_yolo,
     agent_hidden: r.agent_hidden,
+    account_yolo: r.account_yolo,
+    account_hidden: r.account_hidden,
     agent_commands: r.agent_commands,
+    accounts: accounts.known().map(a => ({ provider: a.provider, account: a.dir, name: a.name, managed: a.managed })),
     workspaces: r.workspaces.items.map((w: any) => ({
       agent_order: w.agent_order.slice(),
       last_agent: w.last_agent,
@@ -570,6 +596,7 @@ function build(r: Runtime, viewer: boolean) {
       rows: p.terminal.vt.rows,
       exited: p.terminal.exited,
       agent: agentView(p.agent(), p.attachment.actor?.id ?? 0),
+      account: p.account(),
       restoring: p.restoring(),
       forking: p.ghost?.fork !== null && p.ghost !== null,
       dormant: p.dormant,

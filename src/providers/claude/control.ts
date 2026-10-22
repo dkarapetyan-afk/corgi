@@ -29,7 +29,10 @@ export class Control {
     }
   >();
   initialized: Promise<any> | null = null;
-  constructor(public executable = "claude") {}
+  constructor(
+    public executable = "claude",
+    readonly env: NodeJS.ProcessEnv = process.env,
+  ) {}
   start() {
     if (this.child) return;
     this.buffer = "";
@@ -54,7 +57,7 @@ export class Control {
     this.child = spawn(this.executable, args, {
       cwd: "/tmp",
       env: {
-        ...process.env,
+        ...this.env,
         CLAUDECODE: undefined,
         CLAUDE_CODE_ENTRYPOINT: undefined,
       },

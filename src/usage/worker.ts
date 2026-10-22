@@ -13,6 +13,7 @@ import { Counter, View } from "./live";
 import { Reading } from "./context_window";
 import { Tracker as Tools, View as Progress } from "../activity/tools";
 import { Ended } from "../activity/background_tasks";
+import * as accounts from "../accounts";
 export type Request = {
   actor: number;
   workspace: number;
@@ -177,7 +178,12 @@ export class Worker {
     for (const reader of this.readers.values()) reader?.close?.();
   }
   reader(p: Provider) {
-    if (!this.readers.has(p)) this.readers.set(p, adapter(p).transcript?.reader() ?? null);
+    const others = () =>
+      accounts
+        .known()
+        .filter(a => a.provider === p)
+        .map(a => a.dir);
+    if (!this.readers.has(p)) this.readers.set(p, adapter(p).transcript?.reader(others) ?? null);
     return this.readers.get(p)!;
   }
   reconcile(runtime: Runtime) {

@@ -1,6 +1,7 @@
 //! The agent launcher popover: rows, keys, hit areas and drawing. The daemon
 //! fills the preview; this file only shows it, and the shared runtime
-//! remembers the choice. Mirrors agent_launcher.zig.
+//! remembers the choice. Its Manage agents is agent_manager.ts, in its card.
+//! Mirrors agent_launcher.zig.
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import { Provider, byProvider, adapter } from "./providers";
@@ -8,6 +9,10 @@ import type { ByProvider } from "./providers";
 import { Rect } from "./layout";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
 import { Entry as CommandEntry, Semantics, Resolution, capacity as command_capacity } from "./launch/command";
+import * as accounts from "./accounts";
+import * as agentManager from "./agent_manager";
+import { Slide } from "./card_transition";
+import { milliTimestamp } from "./clock";
 import { restoreLimits, type Limits } from "./usage/account";
 import { Cell, Grid, expired } from "./launcher_usage";
 import * as launcherResume from "./launcher_resume";
@@ -17,24 +22,40 @@ import * as worktreeFolder from "./worktree_folder";
 import * as dropdown from "./dropdown";
 import type * as worktrees from "./worktrees";
 import type { View as SidebarView, Spotlight } from "./sidebar";
-import { Writer, displayWidth, writeEllipsis, sat } from "./text";
+import { Writer, displayWidth, ellipsis, writeEllipsis, sat } from "./text";
 
 const providers = Provider.all;
 const customs = ["custom0", "custom1", "custom2", "custom3", "custom4", "custom5"] as const;
 
-/** Launcher rows: one per provider, then saved commands and a plain terminal. */
-export type Row = Provider | (typeof customs)[number] | "terminal" | "add" | "manage";
-export const rows: Row[] = [...providers, ...customs, "terminal", "add", "manage"];
+/** One of a provider's accounts' rows: the provider, then the account's folder. */
+type AccountRow = `${Provider}:${string}`;
+/** Launcher rows: each provider's and its accounts', saved commands and a
+ * plain terminal. */
+export type Row = Provider | AccountRow | (typeof customs)[number] | "terminal";
+/** What a row starts: a provider's agent in one of its accounts, "" the default. */
+export type Launch = { provider: Provider; account: string };
 export const Row = {
-  of(provider: Provider): Row {
-    return provider;
+  /** `provider`'s row, or the row of its `account`. */
+  of(provider: Provider, account = ""): Row {
+    return account.length > 0 ? `${provider}:${account}` : provider;
   },
   custom(row: Row): number | null {
     const i = customs.indexOf(row as (typeof customs)[number]);
     return i >= 0 ? i : null;
   },
+  /** The provider of its own row; null for its accounts' rows. */
   agent(row: Row): Provider | null {
     return Provider.parse(row);
+  },
+  /** What a provider's or an account's row starts. */
+  launch(row: Row): Launch | null {
+    const colon = row.indexOf(":");
+    const provider = Provider.parse(colon < 0 ? row : row.slice(0, colon));
+    return provider === null ? null : { provider, account: colon < 0 ? "" : row.slice(colon + 1) };
+  },
+  /** Rows with a digit and the agent columns: a provider's, an account's or a saved command's. */
+  starts(row: Row): boolean {
+    return Row.launch(row) !== null || Row.custom(row) !== null;
   },
 };
 /** The agent a launcher key starts. */
@@ -45,6 +66,8 @@ export function keyAgent(byte: number): Provider | null {
 
 /** A launch preview's option for one provider, as launch/preview.zig's `Option`. */
 export interface Option {
+  /** Null for older previews, which only report loading for the whole list. */
+  pending: boolean | null;
   signed_in: boolean | null;
   /** As configured, such as "opus" or "gpt-6-astra". */
   model: string;
@@ -61,6 +84,7 @@ export interface Option {
 }
 export function option(value: any = {}): Option {
   return {
+    pending: typeof value.pending === "boolean" ? value.pending : null,
     signed_in: typeof value.signed_in === "boolean" ? value.signed_in : null,
     model: value.model ?? "",
     model_name: value.model_name ?? "",
@@ -78,16 +102,34 @@ export function option(value: any = {}): Option {
 export function modelLabel(o: { model: string; model_name: string }): string {
   return o.model_name.length > 0 ? o.model_name : o.model;
 }
+/** An account besides a provider's default, and what its launcher row reads. */
+export interface AccountOption {
+  provider: Provider;
+  /** Its settings folder, which picks it. */
+  account: string;
+  name: string;
+  managed: boolean;
+  option: Option;
+}
 export interface Preview {
   pending: boolean;
   options: ByProvider<Option>;
   installed: ByProvider<boolean>;
+  /** What each default account is called; "" for one that goes by its agent's name. */
+  names: ByProvider<string>;
+  accounts: AccountOption[];
 }
 export function preview(value: any = {}): Preview {
   return {
     pending: value.pending !== false,
     options: byProvider(p => option(value.options?.[p])),
     installed: byProvider(p => value.installed?.[p] !== false),
+    names: byProvider(p => (typeof value.names?.[p] === "string" ? value.names[p] : "")),
+    accounts: (Array.isArray(value.accounts) ? value.accounts : []).flatMap((a: any): AccountOption[] => {
+      const provider = Provider.parse(a?.provider);
+      if (!provider || typeof a.account !== "string" || !a.account || typeof a.name !== "string") return [];
+      return [{ provider, account: a.account, name: a.name, managed: a.managed === true, option: option(a.option) }];
+    }),
   };
 }
 /** A saved launch command from the snapshot, with its methods. */
@@ -103,6 +145,8 @@ export function resolution(value: any = {}): Resolution {
   return result;
 }
 const headings = ["Agent", "YOLO", "Model", "Account", "Plan", "Usage (used) · resets in"];
+// Reserve metadata and two usage windows before their readings arrive.
+const column_widths = [28, 6, 18, 28, 10, 50];
 type Hint = { key: string; label: string };
 const manage_label = " Manage agents ";
 const now = () => Math.floor(Date.now() / 1000);
@@ -117,23 +161,16 @@ export class Menu {
   /** Conversations panes run now, which the list jumps to instead. */
   open: launcherResume.Open[] = [];
   selected: Row = Provider.first;
+  /** Each provider's own row's YOLO and Show; an account's row has its own. */
   yolo = byProvider(() => false);
   hidden = byProvider(() => false);
+  /** The accounts whose rows have YOLO on, and those the picker hides. */
+  account_yolo: string[] = [];
+  account_hidden: string[] = [];
+  /** Manage agents has the card. */
   managing = false;
-  editor = Object.assign(Dialog.init({ agent_command: 0 }, ""), { selected: false });
-  name_editor = Object.assign(Dialog.init({ rename: 0 }, ""), { selected: false });
-  name_focused = false;
-  show_command = false;
-  name_customized = false;
-  edit_index: number | null = null;
-  edit_provider: Provider | null = null;
-  save_error = "";
-  draft = new CommandEntry();
-  draft_changed = 0;
-  request_id = 0;
-  resolution_checked = 0;
-  resolution = new Resolution();
-  save_requested = false;
+  manager = new agentManager.View();
+  transition = new Slide();
   commands: CommandEntry[] = Array.from({ length: command_capacity }, () => new CommandEntry());
   last: Provider = Provider.first;
   pinned = false;
@@ -141,6 +178,8 @@ export class Menu {
    * repeat is ignored instead of read as a launcher key. */
   prefix = false;
   preview: Preview = preview();
+  /** The accounts Corgi knows besides each default, which name the conversations they ran. */
+  accounts: launcherResume.Account[] = [];
   /** The workspace's checkouts, for the title's button and its list. */
   worktrees: worktrees.Snapshot | null = null;
   worktree = new launcherWorktree.Chooser();
@@ -150,15 +189,55 @@ export class Menu {
   constructor(fields: Partial<Menu> = {}) {
     Object.assign(this, fields);
   }
-  /** The text columns; `usageCell` draws the last one. */
-  cells(provider: Provider): string[] {
-    const o = this.preview.options[provider];
+  /** The account a row starts in, as the preview lists it; null for a
+   * provider's own row and for an account it no longer lists. */
+  accountOf(row: Row): AccountOption | null {
+    return this.preview.accounts.find(a => Row.of(a.provider, a.account) === row) ?? null;
+  }
+  /** What a provider's or an account's row reads; null for any other row. */
+  optionOf(row: Row): Option | null {
+    const provider = Row.agent(row);
+    return provider !== null ? this.preview.options[provider] : (this.accountOf(row)?.option ?? null);
+  }
+  /** Whether a provider's or an account's row starts its agent with YOLO. */
+  yoloOf(row: Row): boolean {
+    const l = Row.launch(row);
+    return l === null ? false : l.account ? this.account_yolo.includes(l.account) : this.yolo[l.provider];
+  }
+  /** Whether Manage agents took a provider's or an account's row out of the picker. */
+  hiddenOf(row: Row): boolean {
+    const l = Row.launch(row);
+    return l === null ? false : l.account ? this.account_hidden.includes(l.account) : this.hidden[l.provider];
+  }
+  /** The account a row signs in to instead of starting its agent: one signed out. */
+  signsIn(row: Row): AccountOption | null {
+    const a = this.accountOf(row);
+    return a !== null && a.option.signed_in === false ? a : null;
+  }
+  /** A provider's or an account's row's name, such as `Claude Code · work`,
+   * or for a default account that has no name, its provider's. Short of
+   * `room`, it shortens its provider's name first. */
+  label(row: Row, room = Infinity): string {
+    const l = Row.launch(row)!,
+      name = l.account ? (this.accountOf(row)?.name ?? "") : this.preview.names[l.provider],
+      p = adapter(l.provider);
+    if (!name) return p.label;
+    const suffix = ` · ${name}`;
+    if (displayWidth(p.label + suffix) <= room) return p.label + suffix;
+    const short = ellipsis(p.name, sat(room, displayWidth(suffix)));
+    return short.length > 0 ? short + suffix : name;
+  }
+  /** A provider's or an account's row's text columns; `usageCell` draws the last one. */
+  cells(row: Row): string[] {
+    const o = this.optionOf(row) ?? option();
+    const pending = o.pending ?? this.preview.pending;
+    const out = this.signsIn(row) !== null;
     return [
-      adapter(provider).label,
-      this.yolo[provider] ? "✓" : "·",
-      o.model.length > 0 ? modelLabel(o) : this.preview.pending ? "Reading…" : "Default",
-      o.account.length > 0 ? o.account : this.preview.pending ? "Reading…" : "Unavailable",
-      o.plan.length > 0 ? o.plan : this.preview.pending ? "…" : "Unknown",
+      this.label(row),
+      this.yoloOf(row) ? "✓" : "·",
+      o.model.length > 0 ? modelLabel(o) : pending ? "Reading…" : "Default",
+      out ? "—" : o.account.length > 0 ? o.account : pending ? "Reading…" : "Unavailable",
+      out ? "—" : o.plan.length > 0 ? o.plan : pending ? "…" : "Unknown",
     ];
   }
   customCells(index: number): string[] {
@@ -173,63 +252,68 @@ export class Menu {
     return values;
   }
   usageCell(row: Row): Cell {
-    let provider = Row.agent(row);
     const custom = Row.custom(row);
-    if (provider === null && custom !== null) {
-      const info = this.commands[custom].semantics;
-      provider = info.default_account ? info.provider : null;
-    }
-    if (provider === null) return Cell.status("—");
-    const o = this.preview.options[provider];
-    // Built-in rows offer an actionable "Track usage" link instead; saved
+    const shared = custom === null ? null : this.commands[custom].semantics;
+    const o =
+      shared === null
+        ? this.optionOf(row)
+        : shared.default_account && shared.provider
+          ? this.preview.options[shared.provider]
+          : null;
+    if (o === null) return Cell.status("—");
+    if (custom === null && this.signsIn(row)) return Cell.status("Sign in");
+    // Agent rows offer an actionable "Track usage" link instead; saved
     // commands sharing that provider show unavailable data (no action).
-    if (this.trackable(provider)) return Row.custom(row) === null ? Cell.status("Track usage") : unavailableCell(o);
+    if (this.consenting(o)) return custom === null ? Cell.status("Track usage") : Cell.status("—");
     const at = now();
     const limits = o.limits;
-    if (limits === "none") return this.preview.pending ? Cell.status("Reading…") : unavailableCell(o);
+    if (limits === "none") return (o.pending ?? this.preview.pending) ? Cell.status("Reading…") : Cell.status("—");
     if (limits === "metered") return Cell.status("Metered");
-    if (limits === "rate_limited") return unavailableCell(o);
-    return expired(o.usage_fetched_at, at) ? unavailableCell(o) : Cell.init(limits.windows as any, at);
+    if (limits === "rate_limited") return Cell.status("—");
+    return expired(o.usage_fetched_at, at) ? Cell.status("—") : Cell.init(limits.windows as any, at);
   }
-  /** Management includes unavailable providers so preferences stay editable. */
   shown(row: Row): boolean {
-    // Outside management, Manage is the title's button.
-    if (row === "manage") return this.managing;
-    if (row === "add") return this.managing;
     const index = Row.custom(row);
-    if (index !== null)
-      return this.commands[index].command.length > 0 && (this.managing || !this.commands[index].hidden);
-    if (row === "terminal") return !this.managing;
-    if (this.managing) return true;
-    const provider = Row.agent(row)!;
-    return (
-      this.preview.installed[provider] && !this.hidden[provider] && this.preview.options[provider].signed_in !== false
-    );
+    if (index !== null) return this.commands[index].command.length > 0 && !this.commands[index].hidden;
+    if (row === "terminal") return true;
+    const o = this.optionOf(row);
+    if (o === null) return false;
+    // A signed-out account's row offers to sign in; a signed-out default's is left out.
+    const l = Row.launch(row)!;
+    return this.preview.installed[l.provider] && !this.hiddenOf(row) && (l.account.length > 0 || o.signed_in !== false);
+  }
+  /** Every row, shown or not: each provider's and then its accounts'. */
+  rows(): Row[] {
+    const agents = providers.flatMap((p): Row[] => [
+      p,
+      ...this.preview.accounts.filter(a => a.provider === p).map(a => Row.of(p, a.account)),
+    ]);
+    return [...agents, ...customs, "terminal"];
   }
   emptyCommand(): number | null {
     const i = this.commands.findIndex(entry => entry.command.length === 0);
     return i < 0 ? null : i;
   }
-  countRows(): number {
-    return this.count() - 2;
-  }
   count(): number {
-    return rows.filter(row => this.shown(row)).length;
+    return this.rows().filter(row => this.shown(row)).length;
   }
   rowAt(index: number): Row | null {
-    return rows.filter(row => this.shown(row))[index] ?? null;
+    return this.rows().filter(row => this.shown(row))[index] ?? null;
   }
   position(row: Row): number {
     let n = 0;
-    for (const candidate of rows) {
+    for (const candidate of this.rows()) {
       if (candidate === row) return n;
       n += this.shown(candidate) ? 1 : 0;
     }
     return n;
   }
-  /** Keep the selection on a visible row after the installed set changes. */
+  /** Keep the selection on a visible row after the installed set changes.
+   * An account's row that went away leaves its provider's selected. */
   normalize(): void {
-    if (!this.shown(this.selected)) this.selected = this.rowAt(0)!;
+    if (this.shown(this.selected)) return;
+    const provider = Row.launch(this.selected)?.provider ?? null;
+    this.selected = provider !== null && this.shown(provider) ? provider : this.rowAt(0)!;
   }
   first(): Row {
     return this.rowAt(0)!;
@@ -241,8 +325,7 @@ export class Menu {
   shortcutRow(key: number): Row | null {
     if (this.managing || key < 48 || key > 57) return null;
     const row = this.rowAt(key - 48);
-    if (row === null) return null;
-    return Row.agent(row) !== null || Row.custom(row) !== null ? row : null;
+    return row !== null && Row.starts(row) ? row : null;
   }
   move(next: boolean, wrap: boolean): void {
     this.normalize();
@@ -255,7 +338,7 @@ export class Menu {
   /** Rows the menu needs: border, headings, agent rows and a gap, the
    * conversations and a gap, footer and border. */
   rowsHeight(): number {
-    if (this.managing) return this.count() + 20;
+    if (this.managing) return this.manager.height(this.manageModel());
     const conversations = !this.hasResume()
       ? 0
       : this.resume_view.expanded
@@ -274,14 +357,11 @@ export class Menu {
     return Math.max(5 + this.count() + conversations, hanging);
   }
   bounds(cols: number, rowsCount: number, side: SidebarView): Rect {
-    let content = 4;
-    for (const width of this.columnSizes().preferred) content += width;
-    let width = Math.min(cols, this.managing ? 82 : Math.max(this.hasResume() ? 80 : 40, content));
+    const width = Math.min(cols, 4 + column_widths.reduce((sum, size) => sum + size, 0));
     let height = Math.min(rowsCount, this.rowsHeight());
     // Expanded conversations take the room a table of them needs.
-    if (this.resume_view.expanded && this.hasResume()) {
-      width = Math.max(width, Math.min(cols, 104));
-      height = Math.min(rowsCount, Math.max(30, height));
+    if (this.resume_view.expanded && this.history.entries.length > 0) {
+      if (!this.managing) height = Math.min(rowsCount, Math.max(30, height));
     }
     return new Rect(
       Math.min(sat(side.width, 10), cols - width),
@@ -290,35 +370,23 @@ export class Menu {
       height,
     );
   }
+  /** Hidden entries share the usage grid with the rows in the picker. */
+  private tableRows(): Row[] {
+    return this.rows().filter(row => {
+      const custom = Row.custom(row);
+      return custom !== null ? this.commands[custom].command.length > 0 : Row.starts(row);
+    });
+  }
   /** Every row's usage shares one grid, so limits and resets line up. */
   usageGrid(): Grid {
     const grid = new Grid();
-    for (const row of rows) {
-      if (!this.shown(row) || (Row.agent(row) === null && Row.custom(row) === null)) continue;
-      grid.add(this.usageCell(row));
-    }
+    for (const row of this.tableRows()) grid.add(this.usageCell(row));
     return grid;
   }
-  columnSizes(): { preferred: number[]; usage_minimum: number } {
-    const widths = headings.map(heading => displayWidth(heading));
-    for (const row of rows) {
-      if (!this.shown(row) || (Row.agent(row) === null && Row.custom(row) === null)) continue;
-      const custom = Row.custom(row);
-      const values = custom !== null ? this.customCells(custom) : this.cells(Row.agent(row)!);
-      values.forEach((text, i) => (widths[i] = Math.max(widths[i], displayWidth(text))));
-    }
-    const grid = this.usageGrid();
-    const usage_minimum = Math.max(widths[5], grid.minimumWidth());
-    widths[5] = Math.max(widths[5], grid.preferredWidth());
-    widths.forEach((size, column) => (widths[column] = size + (column === 5 ? 1 : 2)));
-    widths[0] += 4; // Left shortcut keycap and its following space.
-    return { preferred: widths, usage_minimum: usage_minimum + 1 };
-  }
   columns(width: number): number[] {
-    const sizes = this.columnSizes();
-    const widths = sizes.preferred.slice();
+    const widths = column_widths.slice();
     const available = sat(width, 4);
-    const minimum = [17, 6, 9, 18, 6, sizes.usage_minimum];
+    const minimum = [width >= 100 ? 26 : 17, 6, 9, 18, 6, 36];
     if (width < 64) {
       widths[1] = 3; // A one-cell Y heading and toggle, plus its gutter.
       minimum[1] = 3;
@@ -351,49 +419,54 @@ export class Menu {
   }
   hit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     const b = this.bounds(cols, rowsCount, side);
-    if (this.managing) {
-      if (x <= b.x || x >= b.x + b.w - 1) return null;
-      const n = this.count() - 2;
-      if (y >= b.y + 4 && y < b.y + 4 + n) return this.rowAt(y - b.y - 4);
-      if (y >= b.y + n + 5 && y <= b.y + n + 17 + (this.show_command ? 2 : 0)) return "add";
-      if (y === b.y + b.h - 2 && x >= sat(b.x + b.w, 10)) return "manage";
-      return null;
-    }
+    if (this.managing) return null;
     if (x <= b.x || x >= b.x + b.w - 1 || y < b.y + 2) return null;
     const index = y - b.y - 2;
     return index < this.count() ? this.rowAt(index) : null;
   }
-  private providerHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Provider | null {
+  /** A provider's or an account's row under a pointer. */
+  private agentHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     if (this.managing) return null;
     const row = this.hit(cols, rowsCount, side, x, y);
-    return row === null ? null : Row.agent(row);
+    return row !== null && Row.launch(row) !== null ? row : null;
   }
-  yoloHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Provider | null {
-    const provider = this.providerHit(cols, rowsCount, side, x, y);
-    if (provider === null) return null;
+  /** The row whose YOLO toggle is under a pointer. */
+  yoloHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
+    const row = this.agentHit(cols, rowsCount, side, x, y);
+    if (row === null) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
     const start = b.x + 3 + widths[0];
-    return x >= start && x < start + sat(widths[1], 2) ? provider : null;
+    return x >= start && x < start + sat(widths[1], 2) ? row : null;
   }
   trackable(row: Row): boolean {
-    if (this.managing) return false;
-    const provider = Row.agent(row);
-    if (provider === null) return false;
-    return !this.preview.pending && this.preview.options[provider].usage_needs_consent;
+    const o = Row.launch(row) !== null ? this.optionOf(row) : null;
+    return o !== null && this.consenting(o) && this.signsIn(row) === null;
   }
-  usageHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Provider | null {
-    const provider = this.providerHit(cols, rowsCount, side, x, y);
-    if (provider === null) return null;
+  /** Usage waits on the user's consent to read it. */
+  private consenting(o: Option): boolean {
+    return !this.managing && !(o.pending ?? this.preview.pending) && o.usage_needs_consent;
+  }
+  usageHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
+    const row = this.agentHit(cols, rowsCount, side, x, y);
+    if (row === null) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
     const start = b.x + 3 + widths[0] + widths[1] + widths[2] + widths[3] + widths[4];
-    return x >= start && x < start + sat(widths[5], 1) ? provider : null;
+    return x >= start && x < start + sat(widths[5], 1) ? row : null;
   }
   resumeContext(): launcherResume.Context {
-    return new launcherResume.Context(this.history, this.destination(), this.workspace_cwd, this.open, now());
+    return new launcherResume.Context(
+      this.history,
+      this.destination(),
+      this.workspace_cwd,
+      this.open,
+      now(),
+      this.accounts,
+      this.preview.names,
+    );
   }
   /** Where agents start: the new worktree named for them, else `cwd`. */
   destination(): string {
@@ -522,43 +595,58 @@ export class Menu {
       w.write(` ${hint.label}`);
     });
   }
-  edit(row: Row): void {
-    this.draft = new CommandEntry();
-    this.request_id = 0;
-    this.resolution = new Resolution();
-    this.save_requested = false;
-    this.edit_index = Row.custom(row);
-    this.edit_provider = Row.agent(row);
-    const source =
-      this.edit_index !== null
-        ? this.commands[this.edit_index].inputText()
-        : this.edit_provider !== null
-          ? this.edit_provider
-          : "";
-    this.editor = Dialog.init({ agent_command: 0 }, source);
-    this.name_focused = false;
-    this.show_command = false;
-    this.name_customized = this.edit_index !== null;
-    this.name_editor = Dialog.init(
-      { rename: 0 },
-      this.edit_index !== null ? this.commands[this.edit_index].label() : "",
-    );
-    if (this.edit_index !== null) {
-      try {
-        this.draft.set(source);
-      } catch {}
-      const resolved = new Resolution();
-      resolved.pending = false;
-      resolved.command = this.commands[this.edit_index];
-      resolved.semantics = this.commands[this.edit_index].semantics;
-      this.resolution = resolved;
-    }
-    this.selected = "add";
+  input(): Dialog {
+    return this.managing ? this.manager.input() : this.worktree.input();
+  }
+  /** Opens Manage agents in the card with its own selection. */
+  manage(at = milliTimestamp()): void {
+    if (this.managing) return;
+    this.transition.start(1, at);
+    this.managing = true;
+    this.manager.open();
     this.pinned = true;
   }
-  input(): Dialog {
-    if (this.worktree.mode === "open" && this.worktree.focus !== "list") return this.worktree.input();
-    return this.name_focused ? this.name_editor : this.editor;
+  /** Returns to the picker with its selection and conversation search intact. */
+  back(at = milliTimestamp()): void {
+    if (!this.managing) return;
+    this.transition.start(-1, at);
+    this.managing = false;
+    this.normalize();
+  }
+  /** What Manage agents lists: each provider's and its accounts', as the
+   * launcher orders them, whether its agent is there or not. */
+  manageModel(): agentManager.Model {
+    const agents: agentManager.Agent[] = [];
+    for (const row of this.rows()) {
+      const l = Row.launch(row),
+        o = this.optionOf(row);
+      if (!l || !o) continue;
+      const a = this.accountOf(row),
+        installed = this.preview.installed[l.provider],
+        out = installed && o.signed_in === false;
+      agents.push({
+        provider: l.provider,
+        account: l.account,
+        name: l.account ? (a?.name ?? "") : this.preview.names[l.provider],
+        label: this.label(row),
+        who: !installed
+          ? "Not installed"
+          : out
+            ? "Not signed in"
+            : o.account || ((o.pending ?? this.preview.pending) ? "Reading…" : "Unavailable"),
+        signed_out: out,
+        shown: !this.hiddenOf(row),
+        managed: a?.managed ?? false,
+        usage: !installed || out || o.usage_needs_consent ? Cell.status("—") : this.usageCell(row),
+      });
+    }
+    return {
+      agents,
+      commands: this.commands,
+      add: providers.filter(p => this.preview.installed[p]),
+      account: info => this.account(info),
+      suggest: a => accounts.suggest(a.provider, accounts.identity(a.provider, a.account), a.account),
+    };
   }
   account(info: Semantics): string {
     if (info.account.length > 0) return info.account;
@@ -566,7 +654,7 @@ export class Menu {
       const o = this.preview.options[info.provider];
       return o.account.length > 0
         ? o.account
-        : this.preview.pending
+        : (o.pending ?? this.preview.pending)
           ? "Reading default account…"
           : "Default account · unavailable";
     }
@@ -591,119 +679,18 @@ export class Menu {
     else writeField(w, editor, DialogView.scroll(editor, width), width, plain, { selecting: focused });
     w.write(new Style({ fg: "text", bg: "surface" }).sgr());
   }
-  private drawManager(w: Writer, cols: number, rowsCount: number, side: SidebarView): void {
-    const m = this;
-    const b = m.bounds(cols, rowsCount, side);
-    if (b.w < 40 || b.h < m.rowsHeight()) return;
-    const panel = new Style({ fg: "text", bg: "surface" }).sgr();
-    const rule = new Style({ fg: "line", bg: "surface" }).sgr();
-    for (let y = 0; y < b.h; y++) {
-      w.write(`\x1b[${b.y + y + 1};${b.x + 1}H${rule}${y === 0 ? "╭" : y === b.h - 1 ? "╰" : "│"}`);
-      if (y === 0 || y === b.h - 1) w.write("─".repeat(b.w - 2));
-      else w.splat(" ", b.w - 2);
-      w.write(y === 0 ? "╮" : y === b.h - 1 ? "╯" : "│");
-    }
-    w.write(`\x1b[${b.y + 1};${b.x + 3}H${panel} Manage agents `);
-    const name_width = Math.min(24, Math.floor(b.w / 3));
-    const command_x = b.x + 10 + name_width;
-    w.write(`\x1b[${b.y + 3};${b.x + 4}HShow\x1b[${b.y + 3};${b.x + 10}HAgent\x1b[${b.y + 3};${command_x}HAccount`);
-    w.write(`\x1b[${b.y + 4};${b.x + 4}H${rule}`);
-    w.write("─".repeat(b.w - 6));
-    w.write(panel);
-    const n = m.count() - 2;
-    for (let i = 0; i < n; i++) {
-      const row = m.rowAt(i)!;
-      const custom = Row.custom(row);
-      const hidden = custom !== null ? m.commands[custom].hidden : m.hidden[Row.agent(row)!];
-      const label = custom !== null ? m.commands[custom].label() : adapter(Row.agent(row)!).label;
-      const info =
-        custom !== null
-          ? m.commands[custom].semantics
-          : Object.assign(new Semantics(), { provider: Row.agent(row)!, default_account: true });
-      const source = m.account(info);
-      w.write(
-        `\x1b[${b.y + 5 + i};${b.x + 2}H${m.selected === row ? "›" : " "} [${hidden ? " " : "✓"}]\x1b[${b.y + 5 + i};${b.x + 10}H`,
-      );
-      writeEllipsis(w, label, name_width - 2);
-      w.write(`\x1b[${b.y + 5 + i};${command_x}H`);
-      writeEllipsis(w, cleanControls(source), sat(sat(b.x + b.w, 19), command_x));
-      w.write(`\x1b[${b.y + 5 + i};${b.x + b.w - 17}H[Edit]`);
-      if (custom !== null) w.write(`\x1b[${b.y + 5 + i};${b.x + b.w - 10}H[Delete]`);
-    }
-    const field_y = b.y + n + 6;
-    const input_x = b.x + 5;
-    const width = sat(b.w, 10);
-    const dim = palette.fg("faint");
-    for (let i = 0; i < 2; i++) {
-      const top = field_y + i * 4;
-      const focused = m.selected === "add" && m.name_focused === (i === 1);
-      w.write(`\x1b[${top};${b.x + 4}H${dim}${i === 0 ? "Command" : "Name"}`);
-      const border = focused ? palette.fg("accent") : palette.fg("line");
-      for (let line = 0; line < 3; line++) {
-        w.write(`\x1b[${top + line + 1};${b.x + 4}H${border}${line === 0 ? "┌" : line === 2 ? "└" : "│"}`);
-        if (line !== 1) w.write("─".repeat(width + 2));
-        else w.splat(" ", width + 2);
-        w.write(line === 0 ? "┐" : line === 2 ? "┘" : "│");
-      }
-      w.write(panel);
-      Menu.drawInput(
-        w,
-        i === 0 ? m.editor : m.name_editor,
-        i === 0 ? "Paste a command…" : "Suggested automatically",
-        input_x + 1,
-        top + 2,
-        width,
-        focused,
-      );
-    }
-    if (m.editor.len > 0) {
-      const matches = m.draft.text() === m.editor.name();
-      const resolved = matches && !m.resolution.pending && m.resolution.error_message.length === 0;
-      const status =
-        m.editor.failed && m.save_error.length > 0
-          ? m.save_error
-          : m.editor.overflow
-            ? "Command too long"
-            : !matches || m.resolution.pending
-              ? "Resolving command…"
-              : m.resolution.error_message.length > 0
-                ? m.resolution.error_message
-                : m.account(m.resolution.semantics);
-      w.write(`\x1b[${field_y + 9};${b.x + 4}H`);
-      const info = m.resolution.semantics;
-      const provider = info.provider ? adapter(info.provider).label : "Custom agent";
-      writeEllipsis(w, resolved ? `${provider} · ${status}` : status, b.w - 8);
-      w.write(`\x1b[${field_y + 10};${b.x + 4}H${dim}`);
-      if (resolved) {
-        const mode = info.yolo ? info.mode : "";
-        writeEllipsis(
-          w,
-          `${info.modelLabel()}${info.model.length > 0 && mode.length > 0 ? " · " : ""}${mode}`,
-          b.w - 26,
-        );
-        w.write(`\x1b[${field_y + 10};${b.x + b.w - 17}H[${m.show_command ? "Hide" : "Show"} command]`);
-        if (m.show_command) {
-          w.write(`\x1b[${field_y + 12};${b.x + 4}HRuns: `);
-          writeEllipsis(w, cleanControls(m.resolution.command.text()), b.w - 14);
-        }
-      }
-    }
-    const action = m.edit_index !== null || m.edit_provider !== null ? "Save" : "Add";
-    w.write(`${panel}\x1b[${field_y + 12 + (m.show_command ? 2 : 0)};${b.x + b.w - 19}H[Cancel]  [${action}]`);
-    w.write(
-      `\x1b[${b.y + b.h - 1};${b.x + 4}H${dim}Tab: command / name\x1b[${b.y + b.h - 1};${b.x + b.w - 9}H${panel}[Done]\x1b[?25l`,
-    );
-    if (m.selected === "add") {
-      const editor = m.name_focused ? m.name_editor : m.editor;
-      const offset = DialogView.scroll(editor, width),
-        cursor = Math.min(sat(width, 1), displayWidth(editor.bytes(offset, editor.cursor)));
-      w.write(`\x1b[${field_y + 2 + (m.name_focused ? 4 : 0)};${input_x + 1 + cursor}H\x1b[?25h`);
-    }
-  }
   draw(w: Writer, cols: number, rowsCount: number, side: SidebarView): void {
+    const body = new Writer();
+    this.drawCard(body, cols, rowsCount, side);
+    this.transition.draw(w, body.s, this.bounds(cols, rowsCount, side), cols, rowsCount);
+  }
+  private drawCard(w: Writer, cols: number, rowsCount: number, side: SidebarView): void {
     const m = this;
-    if (m.managing) return m.drawManager(w, cols, rowsCount, side);
     const b = m.bounds(cols, rowsCount, side);
+    if (m.managing) {
+      if (b.w >= 40 && b.h >= m.rowsHeight()) m.manager.draw(w, b, m.manageModel());
+      return;
+    }
     if (b.w < 24 || b.h < m.rowsHeight()) return;
     const panel = new Style({ fg: "faint", bg: "surface" }).sgr();
     const rule = new Style({ fg: "line", bg: "surface" }).sgr();
@@ -719,7 +706,7 @@ export class Menu {
     let heading_x = b.x + 4;
     headings.forEach((heading, column) => {
       const width = widths[column];
-      if (width === 0 || (m.managing && column !== 0)) return;
+      if (width === 0) return;
       w.write(`\x1b[${b.y + 2};${heading_x + (column === 0 ? 4 : 0)}H${panel}`);
       const room = sat(width, column === 0 ? 6 : column === 5 ? 1 : 2);
       const label =
@@ -737,52 +724,16 @@ export class Menu {
     for (let visible = 0; visible < m.count(); visible++) {
       const current = m.rowAt(visible)!;
       const selected = current === m.selected && !m.resume_view.focused;
-      const row = b.y + 3 + visible + (current === "manage" ? 2 : 0);
-      if (current === "manage") {
-        w.write(`\x1b[${row - 1};${b.x + 4}H${rule}`);
-        w.write("─".repeat(b.w - 6));
-      }
+      const row = b.y + 3 + visible;
       const style = selected
         ? new Style({ fg: "strong", bg: "selected" }).sgr()
         : new Style({ fg: "text", bg: "surface" }).sgr();
       w.write(`\x1b[${row};${b.x + 2}H${style}`);
       w.splat(" ", b.w - 2);
       w.write(`\x1b[${row};${b.x + 2}H${selected ? "›" : " "}`);
-      if (Row.agent(current) !== null || Row.custom(current) !== null) {
+      if (Row.starts(current)) {
         w.write(`\x1b[${row};${b.x + 4}H`);
         writeKey(w, String.fromCharCode(48 + visible), style);
-      }
-      if (current === "add") {
-        w.write(`\x1b[${row};${b.x + 4}H`);
-        writeEllipsis(w, "+ Add agent…", sat(b.w, 6));
-        continue;
-      }
-      if (current === "manage") {
-        // A step above a selected row, so the button keeps its edge.
-        const button = selected
-          ? new Style({ fg: "strong", bg: "line", bold: true }).sgr()
-          : new Style({ fg: "strong", bg: "selected", bold: true }).sgr();
-        w.write(`\x1b[${row};${b.x + 4}H${button}`);
-        writeEllipsis(w, " → Manage agents… ", sat(b.w, 6));
-        w.write(style);
-        continue;
-      }
-      if (m.managing) {
-        const provider = Row.agent(current)!;
-        const status = !m.preview.installed[provider]
-          ? "Not installed"
-          : m.preview.options[provider].signed_in === false
-            ? "Not signed in"
-            : m.hidden[provider]
-              ? "Hidden"
-              : "In picker";
-        w.write(`\x1b[${row};${b.x + 4}H`);
-        writeEllipsis(
-          w,
-          `${adapter(provider).label} · ${status}   [${m.hidden[provider] ? "Add" : "Remove"}]`,
-          sat(b.w, 6),
-        );
-        continue;
       }
       if (current === "terminal") {
         w.write(`\x1b[${row};${b.x + 4}H`);
@@ -793,8 +744,9 @@ export class Menu {
       }
       let x = b.x + 4;
       const custom = Row.custom(current);
-      const values = custom !== null ? m.customCells(custom) : m.cells(Row.agent(current)!);
-      const yolo = custom !== null ? m.commands[custom].semantics.yolo : m.yolo[Row.agent(current)!];
+      const values = custom !== null ? m.customCells(custom) : m.cells(current);
+      if (custom === null) values[0] = m.label(current, sat(widths[0], 6));
+      const yolo = custom !== null ? m.commands[custom].semantics.yolo : m.yoloOf(current);
       widths.forEach((width, column) => {
         if (width === 0) return;
         w.write(`\x1b[${row};${x + (column === 0 ? 4 : 0)}H`);
@@ -866,19 +818,7 @@ export class Menu {
         { key: "↵", label: "resume" },
         { key: "/", label: "search" },
       ];
-    else if (m.managing || m.selected === "manage") {
-      const label =
-        m.selected === "manage"
-          ? "back/open"
-          : m.selected === "add"
-            ? "add"
-            : Row.custom(m.selected) !== null
-              ? "edit"
-              : Row.agent(m.selected) !== null && m.hidden[Row.agent(m.selected)!]
-                ? "add"
-                : "remove";
-      hints = [{ key: "↵", label }];
-    } else if (Row.custom(m.selected) !== null) hints = [{ key: "a", label: "launch" }];
+    else if (Row.custom(m.selected) !== null) hints = [{ key: "a", label: "launch" }];
     else if (m.selected === "terminal") hints = [{ key: "a", label: "open" }];
     else if (m.trackable(m.selected))
       hints = [
@@ -888,7 +828,7 @@ export class Menu {
       ];
     else
       hints = [
-        { key: "a", label: "launch" },
+        { key: "a", label: m.signsIn(m.selected) ? "sign in" : "launch" },
         { key: "y", label: "YOLO" },
       ];
     const planned = m.worktree.planned;
@@ -964,11 +904,6 @@ export class Menu {
     const y = c.focus === "from" ? bx.from : bx.branch;
     w.write(`\x1b[0m${at(bx.field_x + caret, y)}\x1b[?25h`);
   }
-}
-function unavailableCell(o: Option): Cell {
-  const reason =
-    o.usage_error.length > 0 ? o.usage_error : o.usage_fetched_at > 0 ? "last success 10m+ ago" : "no usage received";
-  return Cell.unavailable(reason);
 }
 function cleanControls(text: string): string {
   return Buffer.from(Uint8Array.from(Buffer.from(text), ch => (ch < 32 || ch === 127 ? 32 : ch))).toString();

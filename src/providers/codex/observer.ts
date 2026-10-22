@@ -256,11 +256,12 @@ export class Worker implements Observer {
   socket: string;
   timer: ReturnType<typeof setInterval> | null = null;
   running = false;
-  constructor() {
-    this.socket = path.join(configDir(), "app-server-control/app-server-control.sock");
+  /** It watches the panes of `account`, through that account's daemon. */
+  constructor(readonly account = "") {
+    this.socket = path.join(account || configDir(), "app-server-control/app-server-control.sock");
   }
-  static start() {
-    const w = new Worker();
+  static start(account = "") {
+    const w = new Worker(account);
     w.timer = setInterval(() => void w.run(), 500);
     return w;
   }
@@ -291,6 +292,7 @@ export class Worker implements Observer {
       if (
         p.terminal.exited ||
         p.agent().provider !== "codex" ||
+        p.account() !== this.account ||
         p.detection.pid <= 0 ||
         p.detection.missing ||
         p.terminal.title_pid !== p.detection.pid
@@ -320,7 +322,17 @@ export class Worker implements Observer {
         });
       if (this.requests.length === 64) break;
     }
-    const actors = runtime.conversations.items;
+    const actors = runtime.conversations.items,
+      shown = (actor: (typeof actors)[number]) => panes.find(p => !p.terminal.exited && p.attachment.actor === actor);
+    /** The account of the nearest conversation up from `actor` that a pane shows; "" without one. */
+    const account = (actor: (typeof actors)[number]) => {
+      for (let at: typeof actor | null = actor, i = 0; at && i < 16; i++) {
+        const pane = shown(at);
+        if (pane) return pane.account();
+        at = at.parent === null ? null : runtime.conversations.byId(at.parent);
+      }
+      return "";
+    };
     for (let offset = 0; offset < actors.length && this.requests.length < 64; offset++) {
       const actor = actors[(this.cursor + offset) % actors.length];
       if (
@@ -329,7 +341,7 @@ export class Worker implements Observer {
         (!["working", "blocked"].includes(actor.state.state) && !actor.child_refresh)
       )
         continue;
-      if (panes.some(p => !p.terminal.exited && p.attachment.actor === actor)) continue;
+      if (shown(actor) || account(actor) !== this.account) continue;
       this.requests.push({
         pane: 0,
         pid: 0,

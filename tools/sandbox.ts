@@ -228,12 +228,52 @@ export class Sandbox {
 }
 
 /** The fake agent: hook-driven like the integration tests' ordinary agent,
- * with bracketed paste so notes arrive as a paste. */
+ * with bracketed paste so notes arrive as a paste. Its first run in a folder
+ * no one signed in to signs in, as the real ones' do: Claude's takes the code
+ * typed at its prompt as the login, Codex's a one-time code. Claude's answers
+ * its account and usage. */
 const agent = String.raw`
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const provider = basename(process.argv[1]);
+const settings = provider === 'codex' ? process.env.CODEX_HOME : process.env.CLAUDE_CONFIG_DIR;
+const words = process.argv.slice(2).join(' ');
+const loginFile = join(settings, provider === 'codex' ? 'auth.json' : '.claude.json');
+const email = () => {
+  try {
+    const saved = JSON.parse(readFileSync(loginFile, 'utf8'));
+    if (provider !== 'codex') return saved.oauthAccount?.emailAddress ?? null;
+    return JSON.parse(Buffer.from(saved.tokens.id_token.split('.')[1], 'base64url').toString()).email ?? null;
+  } catch { return null; }
+};
+function signIn(who) {
+  const address = (who || basename(settings)).replace(/[^A-Za-z0-9._-]/g, '') + '@example.com';
+  writeFileSync(loginFile, JSON.stringify(provider === 'codex'
+    ? { tokens: { id_token: 'x.' + Buffer.from(JSON.stringify({ email: address, sub: address })).toString('base64url') + '.x' } }
+    : { oauthAccount: { emailAddress: address, accountUuid: address }, hasCompletedOnboarding: true }));
+}
+if (words === 'auth status' || words === 'login status') process.exit(email() ? 0 : 1);
+if (words === 'auth logout' || words === 'logout') { rmSync(loginFile, { force: true }); process.exit(0); }
+if (provider === 'claude' && words === 'auth status --json') {
+  const who = email();
+  console.log(JSON.stringify(who ? { loggedIn: true, authMethod: 'claude.ai', email: who, subscriptionType: 'max' } : { loggedIn: false, authMethod: 'none' }));
+  process.exit(0);
+}
+if (provider === 'claude' && process.argv.includes('--input-format')) {
+  // Usage differs by account, so each launcher row reads its own.
+  const used = [...(email() ?? '')].reduce((n, c) => (n * 31 + c.charCodeAt(0)) % 97, 7);
+  const soon = s => new Date(Date.now() + s * 1000).toISOString();
+  for await (const line of (await import('node:readline')).createInterface({ input: process.stdin })) {
+    const request = JSON.parse(line);
+    if (request.type !== 'control_request') continue;
+    const body = request.request.subtype === 'get_usage'
+      ? { subscription_type: 'max', rate_limits_available: true, rate_limits: { five_hour: { utilization: used, resets_at: soon(7200) }, seven_day: { utilization: Math.min(99, used + 20), resets_at: soon(345600) } } }
+      : {};
+    console.log(JSON.stringify({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success', response: body } }));
+  }
+  process.exit(0);
+}
 const hooks = provider === 'codex' ? join(process.env.CODEX_HOME, 'hooks.json') : join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
 const session = 'sandbox-' + provider + '-' + process.pid;
 const transcript = join(process.env.HOME, session + '.jsonl');
@@ -252,12 +292,40 @@ const out = s => process.stdout.write(s);
 const title = t => out('\x1b]2;' + t + '\x07');
 let line = '', pasted = '', pasting = false, busy = false;
 function prompt() { out('\r\x1b[2K› ' + (pasted ? '\x1b[33m[Pasted text #1 +' + pasted.split('\n').length + ' lines]\x1b[0m ' : '') + line); }
-out('\x1b[2J\x1b[H\x1b[?2004h');
-title('✳ Ready');
-event('SessionStart');
-out(provider + ' · a fake agent in a Corgi sandbox (' + process.cwd().split('/').pop() + ')\r\n');
-out('  work, stop, block, exit · or paste notes on path:line and press Enter\r\n\r\n');
-prompt();
+function begin() {
+  out('\x1b[2J\x1b[H\x1b[?2004h');
+  title('✳ Ready');
+  event('SessionStart');
+  out(provider + ' · a fake agent in a Corgi sandbox (' + process.cwd().split('/').pop() + ')\r\n');
+  out('  work, stop, block, exit · or paste notes on path:line and press Enter\r\n\r\n');
+  prompt();
+}
+// Its first run in a folder no one signed in to: how, then a link.
+let signing = email() ? null : 'method';
+function signinScreen() {
+  out('\x1b[2J\x1b[H');
+  if (provider === 'codex' && signing === 'method')
+    out("  Welcome to Codex, OpenAI's command-line coding agent\r\n\r\n> 1. Sign in with ChatGPT\r\n  2. Sign in with Device Code\r\n     Sign in from another device with a one-time code\r\n\r\n  Press enter to continue\r\n");
+  else if (provider === 'codex')
+    out('  Finish signing in via your browser\r\n\r\n  1. Open this link in your browser and sign in\r\n  https://auth.openai.com/codex/device\r\n\r\n  2. Enter this one-time code after you are signed in\r\n  SAND-B0X42\r\n\r\n  (This sandbox signs in when you press Enter.)\r\n');
+  else if (signing === 'method')
+    out(' Select login method:\r\n\r\n ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise\r\n   2. Anthropic Console account · API usage billing\r\n');
+  else
+    out(" Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nhttps://claude.com/cai/oauth/authorize?code=true&sandbox=1\r\n\r\n (In this sandbox any word is a code: it signs in as word@example.com.)\r\n Paste code here if prompted > " + line);
+}
+function signinKeys(s) {
+  for (const ch of s) {
+    if (ch === '\r' || ch === '\n') {
+      if (signing === 'method') signing = 'code';
+      else { signIn(line.trim()); signing = null; line = ''; return begin(); }
+    } else if (ch === '\x03') process.exit(0);
+    else if (ch === '\x7f') line = line.slice(0, -1);
+    else if (ch >= ' ' && ch !== '\x1b') line += ch;
+    signinScreen();
+  }
+}
+if (signing) signinScreen();
+else begin();
 // Each note block starts with path:line; the fake answers by commenting there.
 function address(text) {
   const done = [];
@@ -301,6 +369,7 @@ function submit() {
 process.stdin.setRawMode(true);
 process.stdin.on('data', data => {
   let s = data.toString('utf8');
+  if (signing) return signinKeys(s.replace(/\x1b\[20[01]~/g, ''));
   while (s.length) {
     if (pasting) {
       const end = s.indexOf('\x1b[201~');

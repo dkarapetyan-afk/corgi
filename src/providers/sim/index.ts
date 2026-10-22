@@ -8,7 +8,9 @@ import * as hooksFile from "../hooks_file";
 import * as commandLine from "../command_line";
 const events = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"],
   configDir = (env = process.env) => configHome(env, "SIM_HOME", ".sim"),
-  settings = () => new hooksFile.File("sim", configDir(), "hooks.json", events),
+  dir = (account: string) => account || configDir(),
+  settings = (account: string) =>
+    new hooksFile.File("sim", dir(account), "hooks.json", events, account ? configDir() : null),
   hooks = new Hooks();
 export const adapter: Adapter = {
   id: "sim",
@@ -38,6 +40,26 @@ export const adapter: Adapter = {
       account: () => null,
     }),
   installs: ({ home }) => (home ? [home + "/.local/bin/sim"] : []),
+  accounts: {
+    env: "SIM_HOME",
+    home: configDir,
+    prefix: ".sim-",
+    identity: root => {
+      const login = commandLine.cached(root, "login.json");
+      return typeof login?.email === "string" ? { email: login.email, id: String(login.id ?? login.email) } : null;
+    },
+    shared: { dirs: ["notes"], files: ["hooks.json"] },
+    signin: {
+      started: text => /\S/.test(text),
+      step: text => (text.includes("Paste the code") ? "code" : text.includes("Sign in how?") ? "method" : null),
+      hints: { code: "Paste the code the page shows." },
+      ready: root => commandLine.cached(root, "login.json")?.ready === true,
+      check: ["status"],
+      logout: ["logout"],
+      first: [],
+      again: null,
+    },
+  },
   watch: () => new ScreenWatcher((_title, text) => sharedPrompt(text)),
   hook: v => hooks.decode(v),
   launch: {
@@ -63,11 +85,11 @@ export const adapter: Adapter = {
     },
   },
   integration: {
-    directory: () => configDir(),
-    install: async () => [settings().install()],
-    uninstall: async () => [settings().uninstall().result],
-    status: async () => [settings().status()],
-    startup: async () => void settings().install(),
+    directory: dir,
+    install: async account => [settings(account).install()],
+    uninstall: async account => [settings(account).uninstall().result],
+    status: async account => [settings(account).status()],
+    startup: async account => void settings(account).install(),
     snippet: executable => hooksFile.snippet("sim", events, executable),
   },
 };

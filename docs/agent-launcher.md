@@ -58,15 +58,47 @@ commit-only conversations, which search can still find. Conversations whose
 folders no longer exist cannot be resumed from this list. An agent that exits
 with an error leaves its last output and exit code visible until its tab closes.
 
+## Manage agents
+
+Choose **Manage agents** or press `m` in the picker, or open its section in
+**Corgi setup** (**prefix i**). Both show the same controls. The view lists the
+accounts and saved commands in the launcher, followed by **Available to add**:
+removed default accounts, previously hidden items, new account sign-in, and
+**+ Custom command**.
+The search starts focused. **Tab** or **↓** moves into the list; **↑** enters
+at the last row. Arrows wrap around the list; **Tab** or **Shift-Tab** returns
+to search. On a row,
+**↵** renames an account or edits a command; under **Available to add**, it
+adds the selected account or saved command back to the launcher.
+Hold **⌫** or **Delete** for 1.5 seconds to remove it while the corgi buries
+the row; releasing early restores it. Saved commands are deleted. Secondary
+accounts are removed from Corgi; only folders Corgi explicitly created are
+signed out and deleted. External folders and their sign-in stay intact. Close
+any agents using a secondary account before deleting it. Default accounts
+are the exception: they move to **Available to add**, keeping their files and
+sign-in, and **↵** adds them back.
+In search, those keys only edit text.
+**Esc** returns from the command editor to Manage agents without saving,
+cancels a rename or hold, or closes the list.
+**← New tab** returns to the picker; the Left arrow does the same from the
+list or an empty search. In setup, **← Settings** returns focus to the section
+list. The launcher cards slide between views and share a width.
+On wide terminals, accounts also show their usage and reset countdowns.
+Adding an account, custom command, or previously removed row shows a brief
+**✓ Added …** overlay without taking keyboard focus. New accounts are named
+from their email domain (`me@acme.com` becomes `acme`). Common mail providers,
+including Gmail, Outlook, Yahoo, iCloud, Proton and Fastmail, use the mailbox
+instead (`me@gmail.com` becomes `me`). Duplicate names get a numbered suffix;
+an explicitly supplied name is kept.
+
 ## Save a launch command
 
-Choose **Manage agents** or press `m` in the picker:
+In Manage agents, choose **+ Custom command**:
 
 1. Paste a command and review its resolved command, account, model and permissions.
 2. Adjust its suggested name, then choose **Add**.
-3. Use **Edit**, the Show checkbox or **Delete** to change the saved entry.
+3. Choose its row again to edit it. An empty command cannot be saved.
 
-Editing a built-in creates a custom entry and hides its default row.
 Up to six commands can be saved, each up to 2,048 bytes. Names and visibility
 are shared across viewers and survive reload and recovery.
 
@@ -85,6 +117,59 @@ Custom commands keep their own options and account/profile settings.
 Built-in YOLO toggles do not rewrite them. A custom profile is not hidden merely
 because the default provider account is signed out.
 
+## Several accounts
+
+Each provider's row is your default account. Named in Manage agents, it reads
+like the others, such as **Claude Code · acme**; the name stays with the
+default, whoever signs in to it. Every other account Corgi knows
+gets a row under it, such as **Claude Code · work**, with its own model,
+account, plan and usage and its own YOLO and launcher membership, and starts its agents in
+that account. A row whose account is signed out says **Sign in**, and choosing
+it signs in again over the panes. Resume lists conversations from every
+account and names the account of those that aren't the default's; resuming one
+starts it there again. A named default is named there too, once its agent has
+another account.
+
+An account is the provider's settings folder, the one `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` picks. Corgi knows:
+
+- accounts it adds: an agent under **Add account** in Manage agents, or
+  `corgi account add`;
+- folders you add with `corgi account add claude work --dir FOLDER`;
+- the accounts Omarchy keeps (`omarchy agent account add`), under Omarchy's
+  labels;
+- folders an agent ran in, such as one typed as `CLAUDE_CONFIG_DIR=… claude`,
+  once someone signed in there.
+
+Adding an account opens a sign-in over the panes. It runs the agent's own
+first run in a new folder, in a frame that says what the agent's screen leaves
+out, such as how to sign in from another computer; selecting in the agent's
+screen copies only its text. The folder waits in a private temporary folder
+until you're signed in, then moves in. Corgi opens the agent in a new tab
+automatically and shows **Account added** with its name. The account is named
+for who signed in: the company of a work address, such as **acme** for
+me@acme.com, or the mailbox of a personal one.
+In the viewer, the sign-in screen pulls into the confirmation's checkmark
+while the new agent starts. Turning Visual flourishes off keeps a static
+confirmation. Typing or clicking finishes the transition immediately.
+Rename it in Manage agents; its folder, numbered, stays where it is. **ctrl c**
+cancels without confirmation: Corgi signs out any login made there and deletes
+the folder, then returns to Manage agents with the search and selection intact.
+When the login is one another account has already, the frame says so before
+keeping it. `corgi account add` shows the same in a terminal of its own.
+
+A new account's folder links your default account's setup: instructions,
+settings, skills, agents, commands and plugins. Its login and conversations
+stay its own. Each account gets Corgi's
+hooks; Codex asks you to trust them once per account. `corgi account list`
+shows every account and who signed in, `corgi account login NAME` signs in
+again and `corgi account rename NAME NEW` renames one, `claude/default` the
+default. From the CLI, `corgi account remove NAME` removes an account. Removing one
+Corgi made signs it out and deletes its folder; removing another forgets it
+and leaves its folder. Corgi won't remove an account an agent runs in.
+Folder deletion requires Corgi's creation record to match the directory.
+Replaced folders and older accounts without that record are only forgotten.
+
 ## Accounts and usage
 
 The picker shows available model, account, plan and rate-limit information.
@@ -94,7 +179,7 @@ stays unknown. Opening the picker does not send a model prompt.
 Usage percentages mean **used**, followed by a reset countdown where available.
 Missing limits are omitted; a reported zero remains visible. Recent cached
 readings can remain visible after a failed refresh. Once too old, they show
-**Unavailable** with a reason; an unsupported usage query does not itself
+**—**, as does missing usage; an unsupported usage query does not itself
 make the provider unusable.
 
 Explicit accounts or profiles in saved commands get separate previews.

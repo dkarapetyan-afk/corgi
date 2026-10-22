@@ -489,6 +489,71 @@ test("wide terminals put each account's limits beside its agents", () => {
   expect(narrow).toContain("Claude task");
 });
 
+const unstyled = (frame: string) => frame.replace(/\x1b\[[0-9;]*m/g, "");
+const side = "/home/me/.claude-side";
+function sideAccount(now: number) {
+  return {
+    provider: "claude" as const,
+    account: side,
+    name: "side",
+    managed: false,
+    option: option({
+      account: "tal@side.dev",
+      plan: "team",
+      usage_fetched_at: now,
+      limits: { windows: [{ minutes: 300, used: 47, reset_at: now + 2 * 3600 }, null] },
+    }),
+  };
+}
+
+test("agents in another account sit under its own rule with its limits", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const named = (id: number, provider: "claude" | "codex", name: string, fields: Partial<Conversation> = {}) => {
+    const item = convo({ id, attachments: 1, agent: agent({ provider, session: "c", activity: "" }), ...fields });
+    item.agent.name = name;
+    return item;
+  };
+  const all = [
+    named(1, "claude", "Claude task", { usage: usage({ input: 900 }) }),
+    named(2, "codex", "Codex task", { usage: usage({ input: 500 }) }),
+    named(3, "claude", "Side task", { usage: usage({ input: 400 }) }),
+    named(4, "claude", "Side child", { parent: 3, attachments: 0, observed_at: microTimestamp() }),
+    named(5, "claude", "Stray task"),
+  ];
+  const accounts = testAccounts(now);
+  accounts.accounts = [sideAccount(now)];
+  accounts.panes = [
+    { id: 1, agent: agent({ conversation: 1 }), account: "" },
+    { id: 3, agent: agent({ conversation: 3 }), account: side },
+    { id: 5, agent: agent({ conversation: 5 }), account: "/home/me/.claude-stray" },
+  ];
+  const frame = unstyled(
+    render(w => drawOverview(w, all, new UsageView(), false, "gpt-6-luna", "GPT-6 Luna", {}, accounts, 130, 40)),
+  );
+  // Fullest first: the default Claude account at 100%, Codex at 84%, then the side account at 47%.
+  const at = (text: string) => frame.indexOf(text);
+  for (const text of ["Claude work@acme.dev · max", "Codex me@home.dev", "Claude side · tal@side.dev · team", "47%"])
+    expect(at(text)).toBeGreaterThanOrEqual(0);
+  expect(at("Claude work@acme.dev")).toBeLessThan(at("Claude task"));
+  expect(at("Claude task")).toBeLessThan(at("Codex me@home.dev"));
+  expect(at("Codex task")).toBeLessThan(at("Claude side"));
+  expect(at("Claude side")).toBeLessThan(at("Side task"));
+  // A subagent runs in its parent's account.
+  expect(at("Claude side")).toBeLessThan(at("Side child"));
+  // An account the preview doesn't list yet waits for its reading.
+  expect(at("Claude .claude-stray")).toBeLessThan(at("Stray task"));
+  expect(frame).toContain("Reading…");
+
+  // Its limits alone open the pane.
+  const alone = new Accounts({ now, accounts: [sideAccount(now)] });
+  expect(alone.any()).toBe(true);
+  const only = unstyled(
+    render(w => drawOverview(w, [], new UsageView(), false, "gpt-6-luna", "GPT-6 Luna", {}, alone, 130, 40)),
+  );
+  expect(only).toContain("Limits");
+  expect(only).toContain("Claude side · tal@side.dev");
+});
+
 test("accounts without agents keep their limits and short terminals fall back", () => {
   const now = Math.floor(Date.now() / 1000);
   const accounts = testAccounts(now);
@@ -764,8 +829,8 @@ test("overview footer names a development build's commit", () => {
   expect(output).toContain("Corgi 0123abc-dirty");
 });
 
-function screenLines(all: Conversation[], e: sidebar.Entry, cols: number): string[] {
-  const output = render(w => draw(w, all, e, cols, 30, 0, 2));
+function screenLines(all: Conversation[], e: sidebar.Entry, cols: number, accounts = new Accounts()): string[] {
+  const output = render(w => draw(w, all, e, cols, 30, 0, 2, accounts));
   const host = Terminal.create(cols, 30);
   try {
     host.feed(output);
@@ -867,4 +932,37 @@ test("the subtitle pairs provider and model with the context meter, and activity
   const output = render(w => draw(w, all, e, 100, 30, 0, 2));
   expect(output).toContain("\x1b[1m" + palette.fgRgb(palette.mix(palette.colors.hot, palette.colors.bg, 60)) + "38%");
   expect(output).toContain("┼");
+});
+
+test("an agent in another account names it beside its model, its email fainter", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const all = [
+    convo({
+      id: 1,
+      agent: agent({ provider: "claude", name: "api refactor", session: "s", activity: "Reading" }),
+      model: "claude-opus-5-5",
+      model_name: "Opus 5.5",
+      context: new ContextView({ used: 85_386n, window: 258_400n, at: 1 }),
+    }),
+  ];
+  const e = entry({ conversation: 1, name: "api refactor", provider: "claude", state: "working", attention: "none" });
+  const accounts = new Accounts({
+    now,
+    accounts: [sideAccount(now)],
+    panes: [{ id: 1, agent: agent({ conversation: 1 }), account: side }],
+  });
+  const lines = screenLines(all, e, 100, accounts);
+  const subtitle = lineWith(lines, "claude · Opus 5.5 · side · tal@side.dev")!;
+  expect(lines[subtitle]).toContain("context ━━━━━");
+  expect(render(w => draw(w, all, e, 100, 30, 0, 2, accounts))).toContain(Tone.ansi("faint") + " · tal@side.dev");
+  // A narrow card keeps the account's name and drops the email.
+  const narrow = screenLines(all, e, 64, accounts);
+  expect(lineWith(narrow, "claude · Opus 5.5 · side")).not.toBeNull();
+  expect(lineWith(narrow, "tal@side.dev")).toBeNull();
+  // The default account changes nothing else.
+  accounts.panes = [{ id: 1, agent: agent({ conversation: 1 }), account: "" }];
+  const default_lines = screenLines(all, e, 100, accounts);
+  expect(default_lines[subtitle]).toContain("claude · Opus 5.5");
+  expect(default_lines[subtitle]).not.toContain("side");
+  expect(default_lines.filter((_, i) => i !== subtitle)).toEqual(lines.filter((_, i) => i !== subtitle));
 });

@@ -1,5 +1,6 @@
-import type { Caps, Info } from "../adapter";
+import type { Caps, Info, Login } from "../adapter";
 import type { Keeping, Vocabulary } from "../command_line";
+import { dirname } from "node:path";
 import { cached } from "../command_line";
 export const info: Info = {
   id: "claude",
@@ -37,10 +38,24 @@ export const vocabulary: Vocabulary = {
     "CLAUDE_CODE_USE_GATEWAY",
   ],
   account(root) {
-    const email = cached(root, ".claude.json")?.oauthAccount?.emailAddress;
+    const email = identity(root, false)?.email;
     return email ? `${email} (cached)` : null;
   },
 };
+const state = (dir: string) => cached(dir, ".claude.json", 8 * 1024 * 1024);
+/** Who signed in to the settings at `root`. The default account's file
+ * sits in HOME instead, `home` when `root` is that account's. */
+export function identity(root: string, home: boolean): Login | null {
+  const read = (dir: string): Login | null => {
+    const account = state(dir)?.oauthAccount,
+      email = account?.emailAddress;
+    if (typeof email !== "string" || !email) return null;
+    return { email, id: `${account.accountUuid || email}/${account.organizationUuid || ""}` };
+  };
+  return read(root) ?? (home ? read(dirname(root)) : null);
+}
+/** Its first run at `root` is over: until then it asks for a theme and a login. */
+export const onboarded = (root: string) => state(root)?.hasCompletedOnboarding === true;
 /** What a resume or fork keeps of a typed `claude` command. */
 export const keeping: Keeping = {
   drop: [

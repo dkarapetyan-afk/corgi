@@ -12,13 +12,16 @@ export { ItemType, commandDirectory, writes } from "./headless";
 import { screen, Watcher } from "./screen";
 import * as renaming from "./rename";
 export { screen };
-import { caps, info, keeping, vocabulary } from "./info";
+import { caps, identity, info, keeping, vocabulary } from "./info";
+import { signin } from "./signin";
 import * as commandLine from "../command_line";
 import { existsSync, realpathSync } from "node:fs";
 import path, { join } from "node:path";
 export function configDir(env = process.env) {
   return configHome(env, vocabulary.config_env, ".codex");
 }
+/** Where `account` keeps its settings, "" for the default's. */
+const dir = (account: string) => account || configDir();
 /** The thread a terminal title names, as Codex's titles spell its ID. */
 export function titleSession(title: string) {
   let found: Text | null = null;
@@ -58,7 +61,8 @@ export const events = [
   "Interrupt",
   "PostCompact",
 ];
-const settings = () => new hooksFile.File("codex", configDir(), "hooks.json", events);
+const settings = (account: string) =>
+  new hooksFile.File("codex", dir(account), "hooks.json", events, account ? configDir() : null);
 async function title(directory: string) {
   try {
     return await integration.installTitle(directory);
@@ -85,6 +89,18 @@ export const adapter: Adapter = {
   version(stdout) {
     const line = stdout.trim();
     return line.startsWith("codex-cli ") && /^\d/.test(line.slice("codex-cli ".length));
+  },
+  accounts: {
+    env: vocabulary.config_env,
+    home: configDir,
+    prefix: ".codex-",
+    identity,
+    // Its setup; the login and the conversations stay the account's own.
+    shared: {
+      dirs: ["prompts", "skills", "rules", "plugins"],
+      files: ["config.toml", "AGENTS.md", "history.jsonl", "hooks.json"],
+    },
+    signin,
   },
   watch: () => new Watcher(),
   hook(v) {
@@ -119,9 +135,9 @@ export const adapter: Adapter = {
     fork: ({ session }) => (session.length === 36 ? { args: ["fork", session], session: null, named: false } : null),
   },
   rename: {
-    channel: async (session, connected) =>
+    channel: async (session, connected, account) =>
       session.length === 36 && connected
-        ? name => renaming.rename(join(configDir(), "app-server-control/app-server-control.sock"), session, name)
+        ? name => renaming.rename(join(dir(account), "app-server-control/app-server-control.sock"), session, name)
         : null,
     typed: { command: renaming.command, empty: renaming.empty, holds: renaming.holds },
   },
@@ -135,21 +151,24 @@ export const adapter: Adapter = {
     restore: Codex.restore,
     renew: (c, r) => c instanceof Codex && c.renew(r),
   },
-  launcher: () => import("./launcher").then(m => m.open()),
-  history: () => import("./history").then(m => m.open()),
-  transcript: { ...transcript, reader: () => usage.open(() => join(configDir(), "session_index.jsonl")) },
-  observer: () => observer.Worker.start(),
+  launcher: account => import("./launcher").then(m => m.open(account)),
+  history: account => import("./history").then(m => m.open(account)),
+  transcript: {
+    ...transcript,
+    reader: accounts => usage.open(() => [configDir(), ...accounts()].map(root => join(root, "session_index.jsonl"))),
+  },
+  observer: account => observer.Worker.start(account),
   integration: {
-    directory: () => configDir(),
-    async install() {
-      const file = settings(),
+    directory: dir,
+    async install(account) {
+      const file = settings(account),
         hooks = file.install();
       if (hooks.outcome === "no_config" || hooks.outcome === "failed") return [hooks];
       if (hooks.outcome === "added") hooks.note = "; trust them in /hooks";
       return [hooks, await title(file.directory)];
     },
-    async uninstall() {
-      const file = settings(),
+    async uninstall(account) {
+      const file = settings(account),
         { result, removal } = file.uninstall();
       if (result.outcome === "no_config" || result.outcome === "failed") return [result];
       const config = await integration.uninstallConfig(file.directory, removal),
@@ -158,18 +177,18 @@ export const adapter: Adapter = {
       if (!config.some(r => r.outcome === "failed")) backups.push(join(file.directory, "config.toml.corgi-backup"));
       return [result, ...config, ...file.cleanup(backups)];
     },
-    async status() {
-      const file = settings(),
+    async status(account) {
+      const file = settings(account),
         hooks = file.status();
       if (hooks.outcome === "no_config") return [hooks];
       if (hooks.events?.[0]) {
         const files = [file.path, ...(existsSync(file.path) ? [realpathSync(file.path)] : [])];
-        Object.assign(hooks, await integration.trust(file.command, files));
+        Object.assign(hooks, await integration.trust(file.command, files, file.directory));
       }
       return [hooks, integration.titleStatus(file.directory)];
     },
-    async startup(handoff) {
-      const file = settings(),
+    async startup(account, handoff) {
+      const file = settings(account),
         hooks = file.install();
       if (hooks.outcome === "failed") console.error("hook setup:", hooks.error);
       if (!handoff)

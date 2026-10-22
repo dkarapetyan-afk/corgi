@@ -6,7 +6,7 @@ import { Provider, adapter } from "./providers";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
-import { Writer, writeEllipsis, truncatedText, sat } from "./text";
+import { Writer, displayWidth, writeEllipsis, truncatedText, sat } from "./text";
 import * as scrollThumb from "./scroll_thumb";
 
 export type Scope = "folder" | "workspace" | "everywhere";
@@ -17,6 +17,8 @@ export function scopeLabel(s: Scope): string {
 /** A launcher history entry, as launch/history.zig's `Entry`. */
 export interface Entry {
   provider: Provider;
+  /** The account it ran in, "" for the default. */
+  account: string;
   session: string;
   title: string;
   first: string;
@@ -29,6 +31,7 @@ export interface Entry {
 export function historyEntry(value: any): Entry {
   return {
     provider: value.provider,
+    account: typeof value.account === "string" ? value.account : "",
     session: value.session ?? "",
     title: value.title ?? "",
     first: value.first ?? "",
@@ -52,6 +55,8 @@ export interface Open {
 }
 export const max_open = 64;
 const session_capacity = 160;
+/** An account besides a provider's default, by the name Corgi knows it. */
+export type Account = { provider: Provider; account: string; name: string };
 
 /** Where the launcher is, and what is already open. */
 export class Context {
@@ -62,7 +67,19 @@ export class Context {
     public open: Open[],
     /** Seconds. */
     public now: number,
+    /** The accounts Corgi knows besides each default. */
+    public accounts: readonly Account[] = [],
+    /** What each provider's default account is called, if anything. */
+    public names: Readonly<Record<string, string>> = {},
   ) {}
+  /** The name of the account `e` ran in, while there are accounts to tell
+   * apart; "" for a default without a name. */
+  accountName(e: Entry): string {
+    if (e.account.length === 0)
+      return this.accounts.some(a => a.provider === e.provider) ? (this.names[e.provider] ?? "") : "";
+    if (this.accounts.length === 0) return "";
+    return this.accounts.find(a => a.provider === e.provider && a.account === e.account)?.name ?? basename(e.account);
+  }
   opened(e: Entry): Open | null {
     for (const o of this.open) if (o.provider === e.provider && o.session === e.session) return o;
     return null;
@@ -538,16 +555,23 @@ export class View {
     if (named) w.write(`\x1b[${row};${x + 3}H${adapter(e.provider).name}`);
     else w.write(`\x1b[${row};${x + 3}H${rail(selected)}│${style}`);
     let col = x + 3 + 9;
-    w.write(`\x1b[${row};${col}H`);
-    const branch = "entry" in line ? otherBranch(c, e) : "";
-    const title = e.title.length > 0 ? e.title : e.first;
-    if (branch.length > 0 && cols.title > 16) {
-      const room = sat(cols.title, Math.min(Buffer.byteLength(branch), Math.floor(cols.title / 2)) + 1);
-      writeEllipsis(w, title, room);
-      w.write(`\x1b[${row};${col + room + 1}H` + palette.fg("muted"));
-      writeEllipsis(w, branch, cols.title - room - 1);
-      w.write(style);
-    } else writeEllipsis(w, title, cols.title);
+    // The branch, then the account, end the title's column.
+    let room = cols.title;
+    const tag = (text: string, width: number, color: string) => {
+      room = sat(room, width + 1);
+      w.write(`\x1b[${row};${col + room + 1}H` + color);
+      writeEllipsis(w, text, width);
+    };
+    if (cols.title > 16) {
+      const account = c.accountName(e);
+      if (account.length > 0)
+        tag(account, Math.min(displayWidth(account), Math.floor(cols.title / 3)), selected ? palette.fg("muted") : dim);
+      const branch = "entry" in line ? otherBranch(c, e) : "";
+      if (branch.length > 0)
+        tag(branch, Math.min(Buffer.byteLength(branch), Math.floor(room / 2)), palette.fg("muted"));
+    }
+    w.write(`\x1b[${row};${col}H` + style);
+    writeEllipsis(w, e.title.length > 0 ? e.title : e.first, room);
     col += cols.title + 2;
     if (cols.folder > 0) {
       w.write(`\x1b[${row};${col}H` + palette.fg("muted"));

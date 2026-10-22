@@ -1,14 +1,31 @@
 import type { Target as AgentTarget } from "./sidebar";
 import type { Cell } from "./fork_motion";
+import type { Link as TerminalLink } from "./pane/hyperlinks";
 import { Rect } from "./layout";
 import * as palette from "./palette";
 import { Writer, displayWidth } from "./text";
+export interface Source {
+  updateRender(): void;
+  hyperlinks(): TerminalLink[];
+}
 export interface Link {
-  pane: number;
+  source: Source;
   id: bigint;
   uri: string;
   x: number;
   y: number;
+}
+/** A link in a terminal drawn inside `rect`, at screen coordinates (`x`, `y`). */
+export function at(source: Source, rect: Rect, x: number, y: number): Link | null {
+  if (!rect.contains(x, y)) return null;
+  source.updateRender();
+  const link = source
+    .hyperlinks()
+    .find(link => link.row === y - rect.y && link.start <= x - rect.x && x - rect.x < link.end);
+  return link ? { source, id: link.id, uri: link.uri, x, y } : null;
+}
+export function sameLink(a: Link | null | undefined, b: Link | null | undefined): boolean {
+  return a?.source === b?.source && a?.id === b?.id && a?.uri === b?.uri;
 }
 /** A picture of a linked image, `width` by `height` pixels on a host whose
  * cells measure `cell`. */
@@ -46,9 +63,7 @@ export interface Target {
 }
 function same(a: Target, b: Target) {
   return (
-    a.link?.pane === b.link?.pane &&
-    a.link?.id === b.link?.id &&
-    a.link?.uri === b.link?.uri &&
+    sameLink(a.link, b.link) &&
     (a.resource ?? null) === (b.resource ?? null) &&
     (a.git ?? null) === (b.git ?? null) &&
     (a.worktree ?? null) === (b.worktree ?? null) &&

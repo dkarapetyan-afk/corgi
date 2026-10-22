@@ -16,6 +16,7 @@ function text(v: any): string | null {
 export function entry(session: string, head: string, tail: string, mid = false, mtime = 0): Entry | null {
   const e: Entry = {
     provider: "claude",
+    account: "",
     session,
     title: "",
     first: "",
@@ -98,14 +99,19 @@ async function read(path: string, s: any): Promise<Entry | null> {
     return e.first ? copied(e) : null;
   }
 }
-export function open(): SessionHistory {
+/** The sessions of `account`, "" for the default. */
+export function open(account = ""): SessionHistory {
   const cache = new Cache(),
-    projects = () => join(configDir(), "projects"),
+    projects = () => join(account || configDir(), "projects"),
+    readIn = async (path: string, s: any) => {
+      const e = await read(path, s);
+      return e && { ...e, account };
+    },
     transcripts = async (folder: string) => {
       const found: Entry[] = [];
       for (const f of await readdir(folder, { withFileTypes: true })) {
         if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
-        const e = await cached(cache, join(folder, f.name), read);
+        const e = await cached(cache, join(folder, f.name), readIn);
         if (e) found.push(e);
       }
       return found;
@@ -127,7 +133,7 @@ export function open(): SessionHistory {
     async changed(paths, store) {
       for (const path of paths) {
         if (path.endsWith(".jsonl")) {
-          const e = await cached(cache, path, read);
+          const e = await cached(cache, path, readIn);
           if (!e) store.remove("claude", basename(path, ".jsonl"));
           else if (await directory(e.cwd)) store.put(e);
         } else

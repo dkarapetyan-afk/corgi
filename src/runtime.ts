@@ -5,7 +5,8 @@ import type { Axis } from "./layout";
 import { Store, Workspace } from "./workspace";
 import { Provider, byProvider, Text, validRef, adapter } from "./providers";
 import { Agent } from "./agents";
-import { Entry, capacity as command_capacity } from "./launch/command";
+import { Entry, capacity as command_capacity, commandLine, identify } from "./launch/command";
+import * as accounts from "./accounts";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type ActorId } from "./conversations";
 import { Tracker, locate, process_buffer } from "./detection";
@@ -115,8 +116,25 @@ export class Launch {
   static from(value: any) {
     return value instanceof Launch ? value : new Launch(value.agent, value.command);
   }
+  /** Starts `provider` in `account`. */
+  static in(provider: Provider, account: string, yolo = false) {
+    return new Launch({ provider, yolo, ...(account ? { env: accounts.env(provider, account) } : {}) });
+  }
   toJSON() {
     return this.agent ? { agent: this.agent } : { command: this.command };
+  }
+  private accounts?: Map<Provider, string>;
+  /** The account its `provider` agent runs in, as the variables it sets in
+   * `cwd` pick it; "" for the default. */
+  account(provider: Provider | null = this.agent?.provider ?? null, cwd = "/"): string {
+    if (!provider) return "";
+    const known = (this.accounts ??= new Map());
+    let found = known.get(provider);
+    if (found === undefined) {
+      const env = this.agent ? (this.agent.env ?? []) : this.command ? commandLine(this.command, cwd).env : [];
+      known.set(provider, (found = accounts.of(provider, env, cwd)));
+    }
+    return found;
   }
   /** The command that starts it, followed by `then`, with the permission
    * checks and model `live` last saw. */
@@ -175,6 +193,9 @@ export class Pane {
   ghost: Ghost | null = null;
   /** Recovered with nothing running: its old screen, faded, until `Runtime.wake`. */
   dormant = false;
+  /** The account the agent a saved command started reads from its own
+   * environment, which can say what the command's text can't. */
+  running_account: string | null = null;
   static quiet_detection_ms = 2000;
   constructor(
     public id: number,
@@ -183,6 +204,14 @@ export class Pane {
   ) {}
   agent(): Agent {
     return this.attachment.agent();
+  }
+  /** The provider account its agent runs in, "" for the default. */
+  account(): string {
+    const launch = this.resumeLaunch(),
+      provider =
+        this.agent().provider ?? launch?.agent?.provider ?? (launch?.command ? identify(launch.command) : null);
+    if (launch?.command && this.running_account !== null && this.detection.pid > 0) return this.running_account;
+    return launch?.account(provider, this.cwd) ?? "";
   }
   detectionDue(now: number) {
     if (this.terminal.surface_revision !== this.detected.output || now - this.detected.at >= Pane.quiet_detection_ms)
@@ -263,7 +292,8 @@ export class Pane {
     this.terminal.destroy();
     this.terminal = t;
     this.dormant = true;
-    this.attached = this.resumeLaunch()?.agent ? this.resume_hint.attach() : null;
+    const launch = this.resumeLaunch();
+    this.attached = launch?.agent ? this.resume_hint.attach(launch.account()) : null;
   }
   failed() {
     return (
@@ -341,6 +371,9 @@ export class Runtime {
   last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
+  /** The accounts whose rows have their own YOLO on, and those the picker hides. */
+  account_yolo: string[] = [];
+  account_hidden: string[] = [];
   agent_commands = Array.from({ length: command_capacity }, () => new Entry());
   conversations = new Registry();
   system_model = new AgentModel();
@@ -461,6 +494,11 @@ export class Runtime {
   }
   lastAgent(ws: Workspace) {
     return (ws.last_agent ?? this.last_agent) as Provider;
+  }
+  /** Whether `provider`'s agent in `account` starts with YOLO: the provider's
+   * own for the default, else the account's. */
+  yolo(provider: Provider, account: string) {
+    return account ? this.account_yolo.includes(account) : this.agent_yolo[provider];
   }
   rememberAgent(id: number, p: Provider) {
     this.last_agent = p;
@@ -614,7 +652,7 @@ export class Runtime {
   }
   async resumeAgent(opts: Create, launch: Launch, hint: ResumeHint, old: string | Uint8Array | null) {
     if (!hint.provider || !hint.args()) throw Error("InvalidSession");
-    const attached = launch.agent ? hint.attach() : null;
+    const attached = launch.agent ? hint.attach(launch.account()) : null;
     if (opts.asleep) {
       const id = await this.create(opts),
         p = this.pane(id)!;
@@ -661,7 +699,7 @@ export class Runtime {
       launch = p.resumeLaunch(),
       args = hint.args();
     if (!launch || !args) throw Error("InvalidSession");
-    const attached = launch.agent ? hint.attach() : null,
+    const attached = launch.agent ? hint.attach(launch.account()) : null,
       typed = attached ?? launch.typed(args, hint),
       old = p.terminal.fadedSnapshot(),
       { cols, rows } = p.terminal,

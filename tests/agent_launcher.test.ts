@@ -87,7 +87,8 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const rows = screen_text((await view.poll()).data, cols, 30);
     const y = rows.findIndex(row => row.includes(label));
     this.assertGreaterEqual(y, 0, `missing ${label}`);
-    return this.clickViewer(view, rows[y].indexOf(label) + 1, y + 1);
+    await this.clickViewer(view, rows[y].indexOf(label) + 1, y + 1);
+    if (label === "Manage agents" || label === "← New tab") await view.advance(0.3);
   }
   async assertSelected(view: Viewer, label: string, cols = 120) {
     const rows = screen_text((await view.poll()).data, cols, 30);
@@ -96,11 +97,44 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       rows.join("\n"),
     );
   }
-  async managerAction(view: Viewer, name: string, action: string) {
-    const rows = screen_text((await view.poll()).data, 120, 30);
-    const y = rows.findLastIndex(row => row.includes(name) && row.includes("[Edit]"));
-    this.assertGreaterEqual(y, 0);
-    return this.clickViewer(view, rows[y].indexOf(action) + 1, y + 1);
+  /** The last account or command named `name`, excluding new-account actions. */
+  async managerLine(view: Viewer, name: string) {
+    const rows = screen_text((await view.poll()).data, 120, 30),
+      y = rows.findLastIndex(row => row.includes(name) && /│[› ] [ +] /.test(row) && !row.includes("New "));
+    this.assertGreaterEqual(y, 0, `missing ${name}`);
+    return { rows, y };
+  }
+  /** Deletes a row (defaults stay available), or restores an available row. */
+  async managerRemoveOrRestore(view: Viewer, name: string) {
+    const { rows, y } = await this.managerLine(view, name);
+    await this.managerSelect(view, name);
+    if (/│[› ] \+ /.test(rows[y])) return view.input("\r");
+    await view.input("\x7f");
+    await view.advance(0.4);
+    for (let i = 0; i < 30; i++) {
+      await view.input("\x7f");
+      await view.advance(0.05);
+    }
+    await view.advance(2);
+  }
+  /** Selects `name`'s row: a click on the row that has it already opens it. */
+  async managerSelect(view: Viewer, name: string) {
+    const { rows, y } = await this.managerLine(view, name);
+    if (!rows[y].startsWith("│›", rows[y].indexOf("│"))) await this.clickViewer(view, rows[y].indexOf(name) + 1, y + 1);
+  }
+  /** Opens `name`'s row: a saved command's form. */
+  async managerOpen(view: Viewer, name: string) {
+    const { rows, y } = await this.managerLine(view, name);
+    if (/│[› ] \+ /.test(rows[y])) await this.managerRemoveOrRestore(view, name);
+    await this.managerSelect(view, name);
+    await view.input("\r");
+    await this.until(async () => !(await view.poll()).data.includes("Manage agents"));
+  }
+  /** Opens the form for a new saved command, from Available to add's last row. */
+  async newCommand(view: Viewer) {
+    await this.clickText(view, "Custom command");
+    await this.clickText(view, "Custom command");
+    await this.until(async () => (await view.poll()).data.includes("New command"));
   }
   async waitSaved(index: number, source: string) {
     await this.until(async () => {
@@ -109,32 +143,56 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     });
   }
 
-  async test_manage_hide_add_edit_and_reload() {
+  async test_manage_returns_to_the_picker_at_the_same_width() {
+    const view = await Viewer.create(this, 120, 30);
+    await view.input("\x02A");
+    const box = async () => {
+      const rows = screen_text((await view.poll()).data, 120, 30);
+      const top = rows.find(row => row.includes("╭") && row.includes("╮"))!;
+      return [top.indexOf("╭"), top.indexOf("╮")];
+    };
+    const before = await box();
+    await this.clickText(view, "Manage agents");
+    this.assertEqual(await box(), before);
+    this.assertIn("Usage", (await view.poll()).data);
+    await this.clickText(view, "← New tab");
+    this.assertEqual(await box(), before);
+    this.assertIn("New terminal", (await view.poll()).data);
+    await view.input("m");
+    await view.advance(0.3);
+    await view.input("\x1b[D");
+    await view.advance(0.3);
+    this.assertIn("New terminal", (await view.poll()).data);
+  }
+
+  async test_manage_remove_restore_edit_and_reload() {
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
-    await this.clickText(view, "Codex");
+    await this.managerRemoveOrRestore(view, "Codex");
     this.assertEqual((await this.session()).agent_hidden, {
       codex: true,
       claude: false,
     });
-    await this.clickText(view, "Paste a command");
+    await this.newCommand(view);
     const source = "FOO=123 claude code --whatever 'two words' --prompt '" + "x".repeat(100) + "'\n";
     await view.input("\x1b[200~" + source + "\x1b[201~");
-    this.assertIn("Claude Code", (await view.poll()).data);
+    await this.until(async () => (await view.poll()).data.includes("Claude Code"));
     await view.input("\r");
     await this.waitSaved(0, source.trim());
     this.assertFalse(existsSync(this.launches));
     this.assertEqual((await this.session()).agent_commands[0].command, source.trim());
-    await this.managerAction(view, "Claude Code", "[✓]");
-    this.assertTrue((await this.session()).agent_commands[0].hidden);
-    await this.clickText(view, "[Done]");
+    await this.managerRemoveOrRestore(view, "Claude Code");
+    this.assertEqual((await this.session()).agent_commands[0].command, "");
+    // Esc closes it all; the launcher shows what Manage left.
+    await view.input("\x1b");
+    await this.until(async () => !(await view.poll()).data.includes("Manage agents"));
+    await view.input("\x02A");
     const rows = screen_text((await view.poll()).data, 120, 30);
     this.assertFalse(rows.some(row => row.includes("Codex")));
     this.assertEqual(rows.filter(row => row.includes("Claude Code")).length, 1);
     await this.clickText(view, "Manage agents");
-    await this.managerAction(view, "Claude Code", "[ ]");
-    await this.managerAction(view, "Claude Code", "[Edit]");
+    await this.newCommand(view);
     const changed = "FOO=456 claude --model sonnet";
     await view.input("\x1b[200~" + changed + "\x1b[201~");
     await view.input("\r");
@@ -147,46 +205,86 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const entry = (await this.session()).agent_commands[0];
     this.assertEqual(entry.command, changed);
     this.assertFalse(entry.hidden);
-    await this.managerAction(view, "Claude Code", "[✓]");
-    await this.managerAction(view, "Claude Code", "[Edit]");
+    await this.managerRemoveOrRestore(view, "Codex");
+    this.assertFalse((await this.session()).agent_hidden.codex);
+    await this.managerOpen(view, "Claude Code");
+    // Empty edits do not erase the saved command.
     await view.input("\x03\r");
-    this.assertEqual((await this.session()).agent_commands[0].command, "");
-    this.assertFalse((await this.session()).agent_commands[0].hidden);
-    await this.clickText(view, "Paste a command");
+    await this.until(async () => (await view.poll()).data.includes("Enter a command."));
+    this.assertEqual((await this.session()).agent_commands[0].command, changed);
     await view.input("replacement-agent\r");
     await this.waitSaved(0, "replacement-agent");
     this.assertFalse((await this.session()).agent_commands[0].hidden);
-    await this.clickText(view, "[Done]");
-    this.assertIn("Custom agent", (await view.poll()).data);
+    await view.input("\x1b");
+    await view.input("\x02A");
+    this.assertEqual((await this.session()).agent_commands[0].name, entry.name);
+    this.assertIn("New terminal", (await view.poll()).data);
   }
-  async test_manager_focus_inline_add_and_builtin_edit() {
+  async test_manager_command_form_adds_and_edits_in_place() {
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
+    await this.newCommand(view);
     await view.input("FOO=123 claude --model sonnet");
     this.assertIn("FOO=123 claude --model sonnet", (await view.poll()).data);
     await this.clickText(view, "[Add]");
     await this.waitSaved(0, "FOO=123 claude --model sonnet");
     this.assertEqual((await this.session()).agent_commands[0].command.length, "FOO=123 claude --model sonnet".length);
     this.assertFalse(existsSync(this.launches));
-    await this.managerAction(view, "Codex", "[Edit]");
-    await view.input("codex --model example");
-    await this.clickText(view, "[Save]");
-    await this.waitSaved(1, "codex --model example");
-    this.assertTrue((await this.session()).agent_hidden.codex);
-    this.assertEqual((await this.session()).agent_commands[1].command, "codex --model example");
+    // Saved, it's back on the list.
+    await this.until(async () => (await view.poll()).data.includes("Manage agents"));
+    await this.newCommand(view);
     this.assertIn("Paste a command", (await view.poll()).data);
     await view.input("abc");
     await view.input("\x1b[D");
     await view.input("X");
     this.assertIn("abXc", (await view.poll()).data);
+    // Esc closes it all, not back to the launcher.
     await view.input("\x1b");
-    await this.until(async () => (await view.poll()).data.includes("New agent"));
+    await this.until(async () => !(await view.poll()).data.includes("New command"));
+    this.assertNotIn("New agent", (await view.poll()).data);
   }
+  async test_manager_search_focus_and_hold_removal() {
+    await this.command("agent.command", { index: 0, command: "codex", name: "hold-test", resolve: false });
+    const view = await Viewer.create(this, 120, 30);
+    await view.input("\x02A");
+    await this.clickText(view, "Manage agents");
+    await view.input("hold-test");
+    await view.input("\x7f".repeat(20));
+    this.assertEqual((await this.session()).agent_commands[0].command, "codex");
+    this.assertNotIn("Hold ⌫ to remove", (await view.poll()).data);
+    await view.input("hold-test\x1b[B");
+    this.assertTrue(screen_text((await view.poll()).data, 120, 30).some(row => /│› +hold-test/.test(row)));
+    await view.input("\x7f");
+    await view.advance(0.4);
+    await view.input("\x7f");
+    this.assertIn("Hold ⌫ to remove hold-test", (await view.poll()).data);
+    await view.advance(1);
+    this.assertEqual((await this.session()).agent_commands[0].command, "codex");
+    this.assertNotIn("Hold ⌫ to remove", (await view.poll()).data);
+    await view.input("\x7f");
+    await view.advance(0.4);
+    for (let i = 0; i < 30; i++) {
+      await view.input("\x7f");
+      await view.advance(0.05);
+    }
+    await this.until(async () => (await this.session()).agent_commands[0].command === "");
+    await view.advance(2);
+    const rows = screen_text((await view.poll()).data, 120, 30);
+    this.assertFalse(rows.some(row => /│[› ] [ +] hold-test/.test(row)));
+    const removed = (await this.session()).agent_commands[0];
+    this.assertEqual(removed.name, "");
+    this.assertEqual(removed.original, "");
+    this.assertFalse(removed.hidden);
+    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    this.assertEqual((await this.session()).agent_commands[0].command, "");
+  }
+
   async test_command_name_and_semantic_account_preview() {
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
+    await this.newCommand(view);
     const source = "ANTHROPIC_API_KEY=fixture-secret claude --model sonnet --dangerously-skip-permissions";
     await view.input(source);
     await this.until(async () => (await view.poll()).data.includes("API key - identity unavailable"));
@@ -198,9 +296,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const entry = (await this.session()).agent_commands[0];
     this.assertEqual(entry.name, "Team assistant");
     this.assertIn("Team assistant", (await view.poll()).data);
-    await this.managerAction(view, "Team assistant", "[✓]");
-    this.assertEqual((await this.session()).agent_commands[0].name, entry.name);
-    await this.managerAction(view, "Team assistant", "[Edit]");
+    await this.managerOpen(view, "Team assistant");
     await view.input("\tRenamed assistant\r");
     await this.until(async () => {
       await view.poll();
@@ -348,6 +444,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
+    await this.newCommand(view);
     await view.input("cc\r");
     const expanded = "command claude --allow-dangerously-skip-permissions --dangerously-skip-permissions";
     await this.waitSaved(0, expanded);
@@ -355,8 +452,21 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual(entry.command, expanded);
     this.assertIn("Claude Code", (await view.poll()).data);
     writeFileSync(config, "function cc\n false\nend\n");
-    await this.managerAction(view, "Claude Code", "[✓]");
-    await this.managerAction(view, "Claude Code", "[ ]");
+    // Previously hidden commands still restore their frozen expansion.
+    await this.command("agent.command", {
+      index: 0,
+      command: entry.command,
+      original: entry.original,
+      name: entry.name,
+      semantics: entry.semantics,
+      hidden: true,
+      resolve: false,
+    });
+    await this.until(async () => {
+      const { rows, y } = await this.managerLine(view, "Claude Code");
+      return /│[› ] \+ /.test(rows[y]);
+    });
+    await this.managerRemoveOrRestore(view, "Claude Code");
     this.assertEqual((await this.session()).agent_commands[0].command, entry.command);
     this.assertFalse(existsSync(this.launches));
   }
@@ -375,6 +485,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
+    await this.newCommand(view);
     const baseline = existsSync(log) ? content(log) : "";
     // Continuous typing stays inside the debounce window.
     await view.input("cc");
@@ -391,23 +502,35 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.clickText(view, "[Add]");
     await this.waitSaved(0, "command claude --model original");
     this.assertEqual(content(log), before);
-    await this.managerAction(view, "Claude Code", "[Edit]");
+    await this.managerOpen(view, "Claude Code");
     const rows = screen_text((await view.poll()).data, 120, 30);
     this.assertTrue(rows.some(row => row.includes("│ cc ")));
     this.assertNotIn("Runs:", (await view.poll()).data);
     await this.clickText(view, "[Show command]");
     this.assertIn("command claude --model original", (await view.poll()).data);
     await this.clickText(view, "[Cancel]");
-    this.assertIn("Paste a command", (await view.poll()).data);
-    await this.managerAction(view, "Claude Code", "[Edit]");
+    this.assertIn("Manage agents", (await view.poll()).data);
+    await this.managerOpen(view, "Claude Code");
     await view.input("\tFrozen assistant");
     await this.clickText(view, "[Save]");
     await this.waitSaved(0, "command claude --model original");
     this.assertEqual(content(log), before);
-    await this.managerAction(view, "Frozen assistant", "[Delete]");
-    this.assertEqual((await this.session()).agent_commands[0].command, "");
-    this.assertNotIn("[Delete]", (await view.poll()).data);
+    await this.until(async () => (await view.poll()).data.includes("Manage agents"));
+    await this.managerSelect(view, "Frozen assistant");
+    await view.input("\x7f");
+    this.assertIn("Hold ⌫ to remove Frozen assistant", (await view.poll()).data);
+    await view.advance(0.4);
+    for (let i = 0; i < 30; i++) {
+      await view.input("\x7f");
+      await view.advance(0.05);
+    }
+    await this.until(async () => (await this.session()).agent_commands[0].command === "");
+    await view.advance(2);
+    this.assertNotIn("Frozen assistant", (await view.poll()).data);
+    this.assertEqual(content(log), before);
+    this.assertEqual((await this.session()).agent_commands[0].original, "");
     this.assertFalse(existsSync(this.launches));
+    await this.newCommand(view);
     writeFileSync(config, prefix + "sleep .3\nalias cc 'claude --model stale'\n");
     const previous = content(log);
     await view.input("cc");
@@ -423,7 +546,10 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const view = await Viewer.create(this, 140, 30);
     this.assertIn("New", screen_text((await view.poll()).data, 140, 30)[14]);
     await this.clickViewer(view, 26, 15);
-    await this.until(async () => (await view.poll()).data.includes("fixture-codex"), 12);
+    await this.until(async () => {
+      const data = (await view.poll()).data;
+      return data.includes("fixture-codex") && data.includes("claude@example.com");
+    }, 12);
     const text = screen_text((await view.poll()).data, 140, 30).join("\n");
     for (const value of ["Claude Code", "Opus", "codex@example.com", "claude@example.com"]) this.assertIn(value, text);
     this.assertNotIn("User settings", text);
@@ -536,7 +662,10 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
       let update = await client.read(12000);
       while (update.preview.pending) {
-        this.assertEqual(update.preview.options.claude.model, "opus");
+        this.assertEqual(
+          update.preview.options.claude.model,
+          update.preview.options.claude.pending ? "opus" : "sonnet",
+        );
         update = await client.read(12000);
       }
       this.assertEqual(update.preview.options.claude.model, "sonnet");
@@ -556,10 +685,72 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       client.close();
     }
   }
+  async test_pending_accounts_show_in_both_screens_and_publish_independently() {
+    const slowEmail = "person.with.a.long.name@work.example.com";
+    const saved = ["slow", "fast"].map(name => {
+      const dir = join(this.temp.name, name);
+      mkdirSync(dir);
+      writeFileSync(
+        join(dir, "metadata.json"),
+        JSON.stringify({
+          email: name === "slow" ? slowEmail : `${name}@example.com`,
+          mode: name === "slow" ? "hang" : "ok",
+        }),
+      );
+      return { provider: "claude", dir, name, managed: false };
+    });
+    writeFileSync(join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json"), JSON.stringify({ accounts: saved }));
+    const client = await JsonSocket.connect(this.path);
+    try {
+      client.send({ op: "agent.subscribe", protocol: 2, workspace: this.ws, cwd: this.launchDir });
+      let message = await client.read(12000);
+      this.assertEqual(
+        message.preview.accounts.map((a: any) => a.name),
+        ["slow", "fast"],
+      );
+      this.assertTrue(message.preview.accounts.every((a: any) => a.option.pending));
+      while (message.preview.accounts.find((a: any) => a.name === "fast").option.pending)
+        message = await client.read(12000);
+      this.assertTrue(message.preview.pending);
+      this.assertTrue(message.preview.accounts.find((a: any) => a.name === "slow").option.pending);
+      this.assertEqual(message.preview.accounts.find((a: any) => a.name === "fast").option.account, "fast@example.com");
+      const view = await Viewer.create(this, 160, 30);
+      await view.input("\x02A");
+      const shown = screen_text((await view.poll()).data, 160, 30).join("\n");
+      const frame = (text: string) => {
+        const rows = text.split("\n"),
+          y = rows.findIndex(row => row.includes("╭") && row.includes("╮")),
+          bottom = rows.findIndex(row => row.includes("╰") && row.includes("╯"));
+        this.assertGreaterEqual(y, 0, text);
+        return [rows[y].indexOf("╭"), y, rows[y].indexOf("╮"), bottom];
+      };
+      const pickerBounds = frame(shown);
+      this.assertIn("Claude Code · slow", shown);
+      this.assertIn("Claude Code · fast", shown);
+      await this.clickText(view, "Manage agents", 160);
+      const managed = screen_text((await view.poll()).data, 160, 30).join("\n");
+      this.assertIn("Claude Code · slow", managed);
+      this.assertIn("Claude Code · fast", managed);
+      this.assertIn("fast@example.com", managed);
+      const managerBounds = frame(managed);
+      await this.until(async () => {
+        const lines = screen_text((await view.poll()).data, 160, 30);
+        return lines.some(line => line.includes("Claude Code · slow") && !line.includes("Reading"));
+      }, 12);
+      this.assertEqual(frame(screen_text((await view.poll()).data, 160, 30).join("\n")), managerBounds);
+      await this.clickText(view, "← New tab", 160);
+      this.assertEqual(frame(screen_text((await view.poll()).data, 160, 30).join("\n")), pickerBounds);
+    } finally {
+      client.close();
+    }
+  }
   async test_reopening_uses_pushed_preview_on_first_frame() {
     const view = await Viewer.create(this, 160, 30);
     await view.input("\x02A");
-    await this.until(async () => (await view.poll()).data.includes("claude@example.com"), 12);
+    await this.until(async () => {
+      const data = (await view.poll()).data;
+      return data.includes("fixture-codex") && data.includes("claude@example.com");
+    }, 12);
     await this.clickViewer(view, 158, 2);
     for (let i = 0; i < 3; i++) {
       await view.input("\x1b[<35;21;15M");
@@ -704,8 +895,11 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await view.input("\x02A");
     await this.assertSelected(view, "Claude Code");
     await this.clickText(view, "Manage agents");
+    // Esc closes Manage and the launcher; it opens on the same row again.
     await view.input("\x1b");
-    await this.until(async () => (await view.poll()).data.includes("New agent"));
+    await this.until(async () => !(await view.poll()).data.includes("Manage agents"));
+    this.assertNotIn("New agent", (await view.poll()).data);
+    await view.input("\x02A");
     await this.assertSelected(view, "Claude Code");
     await view.input("\x1b");
     const before = (await this.session()).panes.length;
@@ -1016,7 +1210,8 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       const rows = screen_text((await view.poll()).data, 100, 30);
       const y = rows.findIndex(row => row.indexOf(label) >= 0 && row.indexOf(label) < 30);
       this.assertGreaterEqual(y, 0, `missing ${label}`);
-      return this.clickViewer(view, rows[y].indexOf(label) + 1, y + 1);
+      await this.clickViewer(view, rows[y].indexOf(label) + 1, y + 1);
+      if (label === "Manage agents" || label === "← New tab") await view.advance(0.3);
     };
     await view.input("\x02i");
     await this.until(async () => (await text()).includes("Corgi setup"));

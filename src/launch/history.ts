@@ -1,11 +1,14 @@
 import { stat, open } from "node:fs/promises";
-import { watch, FSWatcher } from "node:fs";
+import { realpathSync, watch, FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Provider, adapter } from "../providers";
 import type { SessionHistory } from "../providers/adapter";
+import * as accounts from "../accounts";
 export type Entry = {
   provider: Provider;
+  /** The account it ran in, "" for the default. */
+  account: string;
   session: string;
   title: string;
   first: string;
@@ -157,12 +160,38 @@ export class Store {
     if (this.gone.length === 256) this.forgot = this.gone.shift()!.revision;
     this.gone.push({ provider: p, session: s, revision: this.revision });
   }
-  replace(found: Entry[], read: Provider[]) {
+  /** Keeps `found`, and drops what the sources in `read` no longer list. */
+  replace(found: Entry[], read: string[]) {
     const seen = new Set(found.map(e => e.provider + ":" + e.session));
     for (const e of found) this.put(e);
     for (const [key, item] of this.items)
-      if (read.includes(item.entry.provider) && !seen.has(key)) this.remove(item.entry.provider, item.entry.session);
+      if (read.includes(source(item.entry.provider, item.entry.account ?? "")) && !seen.has(key))
+        this.remove(item.entry.provider, item.entry.session);
   }
+}
+/** A provider's account, as the history worker keys its readers. */
+export const source = (provider: Provider, account: string) => provider + "\0" + account;
+/** Whether an account listed before read every root `history` reads, as
+ * a folder that links to the default's history: its sessions are listed
+ * once, as the earlier account's. Notes the roots otherwise. */
+function shared(history: SessionHistory, covered: Set<string>) {
+  const roots = history.roots().map(root => {
+    try {
+      return realpathSync(root);
+    } catch {
+      return root;
+    }
+  });
+  if (roots.length && roots.every(root => covered.has(root))) return true;
+  for (const root of roots) covered.add(root);
+  return false;
+}
+/** The provider accounts whose sessions the launcher offers: each default, then the rest. */
+function sources(): { provider: Provider; account: string }[] {
+  return [
+    ...Provider.all.map(provider => ({ provider, account: "" })),
+    ...accounts.known().map(a => ({ provider: a.provider, account: a.dir })),
+  ];
 }
 export type Update = {
   epoch: bigint;
@@ -174,32 +203,44 @@ export type Update = {
 export class Worker {
   store = new Store();
   ready = false;
-  /** Where each provider's roots changed since it last looked. */
-  changed = new Map<Provider, Set<string>>();
+  /** Where each account's roots changed since it last looked. */
+  changed = new Map<string, Set<string>>();
   epoch = randomBytes(8).readBigUInt64LE() | 1n;
   stopping = false;
-  histories = new Map<Provider, Promise<SessionHistory | null>>();
-  watchers: FSWatcher[] = [];
+  histories = new Map<string, Promise<SessionHistory | null>>();
+  /** Each account's watchers, by the root each watches. */
+  watching = new Map<string, Map<string, FSWatcher>>();
+  /** Looks for accounts that came or went, and roots that showed up. */
+  syncing: ReturnType<typeof setInterval> | null = null;
   timer: ReturnType<typeof setTimeout> | null = null;
   refreshing: Promise<void> | null = null;
   static start() {
     const w = new Worker();
     void w.refresh();
     void w.startWatching();
+    w.syncing = setInterval(() => void w.sync(), 10000);
+    w.syncing.unref();
     return w;
   }
   async stop() {
     this.stopping = true;
     if (this.timer) clearTimeout(this.timer);
-    for (const watcher of this.watchers) watcher.close();
+    if (this.syncing) clearInterval(this.syncing);
+    for (const roots of this.watching.values()) for (const watcher of roots.values()) watcher.close();
     for (const history of this.histories.values()) void history.then(h => h?.close());
     await this.refreshing;
   }
-  /** A provider's history, opened on first use. */
-  history(p: Provider) {
-    let history = this.histories.get(p);
-    if (!history) this.histories.set(p, (history = adapter(p).history?.() ?? Promise.resolve(null)));
+  /** An account's history, opened on first use. */
+  history(p: Provider, account: string) {
+    const key = source(p, account);
+    let history = this.histories.get(key);
+    if (!history) this.histories.set(key, (history = adapter(p).history?.(account) ?? Promise.resolve(null)));
     return history;
+  }
+  /** Reads again once an account came or went, or a root it couldn't watch,
+   * such as a new account's `projects`, showed up. */
+  async sync() {
+    if (!this.stopping && (await this.startWatching())) await this.refresh();
   }
   snapshot(): History {
     return {
@@ -224,39 +265,73 @@ export class Worker {
         : this.store.gone.filter(g => g.revision > revision).map(({ provider, session }) => ({ provider, session })),
     };
   }
-  async startWatching() {
-    for (const p of Provider.all) {
-      const history = await this.history(p);
-      if (this.stopping) return;
-      for (const root of history?.roots() ?? [])
+  /** Watches every account's roots it doesn't yet, and lets go of accounts
+   * Corgi no longer knows; true when either happened. */
+  async startWatching(): Promise<boolean> {
+    let moved = false;
+    const listed = sources(),
+      wanted = new Set(listed.map(s => source(s.provider, s.account)));
+    for (const [key, roots] of this.watching) {
+      if (wanted.has(key)) continue;
+      for (const watcher of roots.values()) watcher.close();
+      this.watching.delete(key);
+      void this.histories.get(key)?.then(h => h?.close());
+      this.histories.delete(key);
+      moved = true;
+    }
+    const covered = new Set<string>();
+    for (const { provider: p, account } of listed) {
+      const key = source(p, account),
+        roots = this.watching.get(key) ?? new Map<string, FSWatcher>();
+      if (!this.watching.has(key)) {
+        this.watching.set(key, roots);
+        moved = true;
+      }
+      const history = await this.history(p, account);
+      if (this.stopping) return moved;
+      if (history && shared(history, covered)) {
+        for (const watcher of roots.values()) watcher.close();
+        roots.clear();
+        continue;
+      }
+      for (const root of history?.roots() ?? []) {
+        if (roots.has(root)) continue;
         try {
-          this.watchers.push(
+          roots.set(
+            root,
             watch(root, { recursive: true }, (_event, file) => {
               if (file) {
-                const paths = this.changed.get(p) ?? new Set();
-                this.changed.set(p, paths.add(join(root, file.toString())));
+                const paths = this.changed.get(key) ?? new Set();
+                this.changed.set(key, paths.add(join(root, file.toString())));
               }
               if (this.timer) clearTimeout(this.timer);
               this.timer = setTimeout(() => void this.readChanged(), 1000);
             }),
           );
+          moved = true;
         } catch {}
+      }
     }
-    if (!this.watchers.length) {
+    // With nothing to watch, it reads everything again now and then.
+    if (![...this.watching.values()].some(roots => roots.size) && !this.timer) {
       this.timer = setTimeout(() => {
+        this.timer = null;
         void this.refresh();
-        void this.startWatching();
       }, 300000);
       this.timer.unref();
     }
+    return moved;
   }
   async readChanged() {
     if (this.stopping) return;
     if (this.refreshing) await this.refreshing;
     const changes = [...this.changed];
     this.changed.clear();
-    for (const [p, paths] of changes)
-      await (await this.history(p))?.changed([...paths], this.store, () => this.stopping);
+    for (const [key, paths] of changes) {
+      if (!this.watching.has(key)) continue;
+      const [p, account] = key.split("\0") as [Provider, string];
+      await (await this.history(p, account))?.changed([...paths], this.store, () => this.stopping);
+    }
   }
   async refresh() {
     if (this.refreshing) return this.refreshing;
@@ -267,17 +342,27 @@ export class Worker {
   }
   async read() {
     const found: Entry[] = [],
-      read: Provider[] = [];
-    for (const p of Provider.all) {
-      const history = await this.history(p);
+      read: string[] = [],
+      listed = sources(),
+      covered = new Set<string>();
+    for (const { provider: p, account } of listed) {
+      const history = await this.history(p, account);
       if (!history || this.stopping) continue;
+      if (shared(history, covered)) {
+        read.push(source(p, account));
+        continue;
+      }
       const { sessions, complete } = await history.list(() => this.stopping);
       found.push(...sessions);
-      if (complete) read.push(p);
+      if (complete) read.push(source(p, account));
     }
     const kept: Entry[] = [];
     for (const e of found) if (await directory(e.cwd)) kept.push(e);
     this.store.replace(kept.sort((a, b) => b.updated_at - a.updated_at).slice(0, capacity), read);
+    // An account Corgi forgot takes its sessions with it.
+    const known = new Set(listed.map(s => source(s.provider, s.account)));
+    for (const { entry } of [...this.store.items.values()])
+      if (!known.has(source(entry.provider, entry.account ?? ""))) this.store.remove(entry.provider, entry.session);
     this.ready = true;
   }
 }

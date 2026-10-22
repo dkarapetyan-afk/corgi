@@ -9,13 +9,17 @@ import {
   dayLabel,
   ageLabel,
   collapsed_rows,
+  type Account,
   type Entry,
 } from "./launcher_resume";
 import * as sim from "./providers/sim";
+import * as palette from "./palette";
+import { Terminal } from "./pane/terminal";
 import { Writer } from "./text";
 
 const testEntry = (session: string, cwd: string, title: string, updated_at: number): Entry => ({
   provider: "claude",
+  account: "",
   session,
   title,
   first: title,
@@ -165,4 +169,30 @@ test("a conversation closed here comes first, under the name the sidebar showed"
   const rows = v.lines(c);
   expect(v.entry(c, rows)!.title).toBe("Review of 5b5101b6");
   expect(v.entry(c, rows)!.updated_at).toBe(1000);
+});
+
+test("a conversation from another account ends its title with the account's name, dimmed", () => {
+  const entries = [testEntry("a", "/w/corgi", "Fix login", 900), testEntry("b", "/w/corgi", "Review", 800)];
+  entries[0].account = "/accounts/claude-work";
+  const work: Account = { provider: "claude", account: "/accounts/claude-work", name: "work" };
+  const context = (accounts: Account[]) =>
+    new Context({ pending: false, entries }, "/w/corgi", "/w", [], 1000, accounts);
+  // Only once Corgi knows an account besides the defaults.
+  expect(context([]).accountName(entries[0])).toBe("");
+  expect(context([work]).accountName(entries[0])).toBe("work");
+  expect(context([work]).accountName(entries[1])).toBe("");
+  // One it no longer knows goes by its folder.
+  expect(context([{ ...work, account: "/accounts/other" }]).accountName(entries[0])).toBe("claude-work");
+  const v = new View();
+  const w = new Writer();
+  v.drawCollapsed(w, context([work]), 0, 1, 100);
+  expect(w.buffered()).toContain(palette.fg("faint") + "work");
+  const host = new Terminal(100, 10);
+  host.feed(w.s);
+  const lines = host.text().split("\n");
+  host.destroy();
+  // At the end of the title's column, where a branch goes.
+  expect(lines[1]).toContain("Fix login");
+  expect(lines[1].indexOf("work") + 4).toBe(11 + v.columns(96).title);
+  expect(lines[2]).not.toContain("work");
 });

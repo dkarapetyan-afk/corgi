@@ -1,4 +1,5 @@
-import type { Caps, Info } from "../adapter";
+import { createHash } from "node:crypto";
+import type { Caps, Info, Login } from "../adapter";
 import type { Keeping, Vocabulary } from "../command_line";
 import { cached } from "../command_line";
 export const info: Info = {
@@ -27,17 +28,29 @@ export const vocabulary: Vocabulary = {
   endpoint_env: ["OPENAI_BASE_URL"],
   provider_env: [],
   account(root) {
-    const auth = cached(root, "auth.json");
-    if (!auth) return null;
-    if (auth.OPENAI_API_KEY) return "Profile API key - identity unavailable";
-    try {
-      const email = JSON.parse(Buffer.from(auth.tokens?.id_token?.split(".")[1] ?? "", "base64url").toString()).email;
-      return email ? `${email} (cached)` : null;
-    } catch {
-      return null;
-    }
+    const signed = identity(root)?.email;
+    return signed === "API key" ? "Profile API key - identity unavailable" : signed ? `${signed} (cached)` : null;
   },
 };
+/** Who signed in at `root`, "API key" for a key; null when no one has. A
+ * ChatGPT login is a user in a workspace, personal or a team's. */
+export function identity(root: string): Login | null {
+  const auth = cached(root, "auth.json");
+  if (!auth) return null;
+  if (typeof auth.OPENAI_API_KEY === "string" && auth.OPENAI_API_KEY)
+    return {
+      email: "API key",
+      id: "key:" + createHash("sha256").update(auth.OPENAI_API_KEY).digest("hex").slice(0, 16),
+    };
+  try {
+    const claims = JSON.parse(Buffer.from(auth.tokens?.id_token?.split(".")[1] ?? "", "base64url").toString()),
+      email = claims.email,
+      workspace = auth.tokens?.account_id || claims["https://api.openai.com/auth"]?.chatgpt_account_id || "";
+    return typeof email === "string" && email ? { email, id: `${claims.sub || email}/${workspace}` } : null;
+  } catch {
+    return null;
+  }
+}
 /** What a resume or fork keeps of a typed `codex` command. Approval and
  * sandbox options stay, since its hooks can't tell them apart. */
 export const keeping: Keeping = {

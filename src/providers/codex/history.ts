@@ -33,6 +33,7 @@ async function read(path: string, s: any): Promise<Entry | null> {
     }
     return copied({
       provider: "codex",
+      account: "",
       session: "",
       title: "",
       first: "",
@@ -43,10 +44,11 @@ async function read(path: string, s: any): Promise<Entry | null> {
     });
   }
 }
-/** A thread as `thread/list` reports it. */
-function thread(item: any): Entry {
+/** A thread as `thread/list` reports it, in `account`. */
+function thread(item: any, account: string): Entry {
   return {
     provider: "codex",
+    account,
     session: item.id,
     title: item.name ?? "",
     first: item.preview,
@@ -57,12 +59,13 @@ function thread(item: any): Entry {
     interrupted: false,
   };
 }
-export function open(): SessionHistory {
-  const server = new appServer.AppServer(5000),
+/** The threads of `account`, "" for the default. */
+export function open(account = ""): SessionHistory {
+  const server = new appServer.AppServer(5000, null, account),
     cache = new Cache(),
     rollouts = new Map<string, string>();
   return {
-    roots: () => [configDir()],
+    roots: () => [account || configDir()],
     async list(stopping) {
       const sessions: Entry[] = [];
       try {
@@ -72,7 +75,7 @@ export function open(): SessionHistory {
             result = reply.result;
           for (const item of result.data ?? []) {
             if (!item.id || !item.preview || !item.cwd) continue;
-            const e = thread(item);
+            const e = thread(item, account);
             if (item.path && isAbsolute(item.path)) {
               rollouts.set(item.path, item.id);
               const summary = await cached(cache, item.path, read);
@@ -124,7 +127,7 @@ export function open(): SessionHistory {
           if (!item.id || !item.preview || !item.cwd) continue;
           const summary = item.path ? await cached(cache, item.path, read) : null;
           if (item.path) rollouts.set(item.path, item.id);
-          const e = thread(item);
+          const e = thread(item, account);
           e.last = summary?.last || item.preview;
           e.interrupted = summary?.interrupted ?? false;
           if (await directory(e.cwd)) store.put(e);

@@ -7,7 +7,7 @@ import type { Reading } from "../../usage/context_window";
 import { Call, clip, type Tracker as Tools } from "../../activity/tools";
 import { Text } from "../../activity/summary";
 import type { TranscriptReader } from "../adapter";
-import { Index } from "./files";
+import { Index, Name } from "./files";
 import { Rollout } from "./transcript";
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
 /** A token total as the app server (camelCase) or a rollout (snake_case) spells it. */
@@ -182,10 +182,16 @@ function counts(tracker: Tracker, value: any) {
   return new Counts();
 }
 /** A reader that names threads from `index`, the session index Codex keeps. */
-export function open(index: () => string): TranscriptReader {
-  const names = new Index();
+/** A reader that names sessions from the session indexes at `indexes`. */
+export function open(indexes: () => string[]): TranscriptReader {
+  const found = new Map<string, Index>(),
+    index = (file: string) => {
+      let names = found.get(file);
+      if (!names) found.set(file, (names = new Index()));
+      return names;
+    };
   return {
-    refresh: () => names.refreshAsync(index()),
+    refresh: async () => void (await Promise.all(indexes().map(file => index(file).refreshAsync(file)))),
     open(t, req, head, catch_up) {
       if (head !== null) header(t.live, head, req.child, req.tracked_since, catch_up);
       else if (req.child) t.live.meter.lose();
@@ -200,7 +206,13 @@ export function open(index: () => string): TranscriptReader {
       context(t.context, value);
       return delta;
     },
-    name: session => names.name(session),
-    close: () => names.close(),
+    name(session) {
+      for (const names of found.values()) {
+        const name = names.name(session);
+        if (name.len) return name;
+      }
+      return new Name();
+    },
+    close: () => found.forEach(names => names.close()),
   };
 }

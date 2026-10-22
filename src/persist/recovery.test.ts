@@ -106,7 +106,7 @@ test("hook settings preserve ordinary config directory and file permissions", as
     process.env.CLAUDE_CONFIG_DIR = parent;
     const file = join(parent, "settings.json");
     writeFileSync(file, "{}", { mode: 0o644 });
-    await claude.adapter.integration.install();
+    await claude.adapter.integration.install("");
     expect(JSON.parse(readFileSync(file, "utf8")).hooks).toBeDefined();
     expect(readFileSync(file + ".corgi-backup", "utf8")).toBe("{}");
     expect(statSync(file).mode & 0o777).toBe(0o644);

@@ -60,6 +60,30 @@ compaction, a turn interrupted without a hook, a prompt answered, a
 permission prompt shown. Core keeps what the watcher remembers about each
 pane and applies what it decides.
 
+An account is a provider's settings folder, which a variable picks
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); `""` is the one the daemon's environment
+picks. [accounts.ts](../src/accounts.ts) knows the default, folders added with
+`corgi account add` (made by Corgi, or the user's own with `--dir`), folders an
+agent ran in, and the accounts Omarchy lists. An agent's account comes from the
+variables its launch keeps, so restores, forks and attaches land in it. Every
+adapter member that touches the settings folder takes the account (hooks,
+launcher previews, history, the observer, rename and attach), and core keeps
+one of each per account it needs.
+
+A folder Corgi makes links the default's setup, as the adapter's
+`accounts.shared` lists, and keeps its own login and conversations. Corgi
+edits a linked settings file in place, and reads a history folder two
+accounts share, as Omarchy's do, once. [signin.ts](../src/signin.ts) frames
+the provider's own first run there, reading its screens and asking its own
+status check through `accounts.signin`; a provider whose screens don't offer
+to sign in again in a folder it ran in names a command that does
+(`signin.again`). The viewer draws it over its panes, and `corgi account`
+in a terminal of its own. Until that run signs in, the folder sits in a
+private temporary folder and its path only links there, because the provider
+must only ever see the final path: Claude names its macOS Keychain login
+after the path as given. Links the run made into that temporary folder, as
+Codex makes to its server, are pointed into the moved folder.
+
 Headless sessions and summaries run through a `Client` the adapter starts,
 which runs the provider however it does (Claude and Codex as a child process,
 on [stdio.ts](../src/providers/stdio.ts)) and speaks its protocol. Core sends
@@ -163,7 +187,9 @@ affected conversation. Callers must tolerate lost model history and validate
 returned text before applying it to the current actor/turn.
 
 Hook installation edits provider configuration atomically, keeps backups and
-preserves unrelated settings. It respects `CODEX_HOME` and `CLAUDE_CONFIG_DIR`.
+preserves unrelated settings. Corgi adds its hooks to every account it knows
+when it starts and before it launches an agent in one; an agent typed under a
+new folder reports from its next start.
 Account previews use provider interfaces; Claude owns its credentials and login
 UI. See [agent-launcher.md](agent-launcher.md) for account behavior and
 [reference.md](reference.md) for inspecting or uninstalling integrations.

@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Stream } from "./launch_preview_stream";
+import { preview } from "./agent_launcher";
 test("preview stream handles partial and consecutive messages and ignores old directories", () => {
   const stream = new Stream();
   stream.cwd = "/a";
@@ -101,4 +102,53 @@ test("the stream follows conversations: the whole list, then what changed", () =
     ),
   ).toBe(true);
   expect(stream.history.entries[0].title).toBe("From an older daemon");
+});
+test("accounts survive a change of folder until the new folder's read lists its own", () => {
+  const stream = new Stream();
+  stream.cwd = "/a";
+  const account = {
+    provider: "claude",
+    account: "/accounts/work",
+    name: "work",
+    option: { model: "opus", signed_in: true },
+  };
+  const message = (cwd: string, pending: boolean, accounts: object[]) =>
+    JSON.stringify({ type: "agent.preview", cwd, preview: { pending, accounts } }) + "\n";
+  stream.feed(message("/a", false, [account]));
+  // As poll moves the stream to another folder.
+  Object.assign(stream, { preview: stream.current("/b"), cwd: "/b", received: false });
+  expect(stream.preview.accounts.map(a => [a.name, a.option.model, a.option.signed_in])).toEqual([["work", "", true]]);
+  // The daemon's first answer there lists none yet.
+  stream.feed(message("/b", true, []));
+  expect(stream.preview.accounts.map(a => a.name)).toEqual(["work"]);
+  stream.feed(message("/b", false, []));
+  expect(stream.preview.accounts).toEqual([]);
+});
+
+test("the first frame has snapshot accounts and partial previews update while another row loads", () => {
+  const stream = new Stream();
+  stream.cwd = "/a";
+  const known = [{ provider: "claude" as const, account: "/accounts/work", name: "work", managed: true }];
+  const initial = stream.current("/a", known);
+  expect(initial.accounts.map(a => a.name)).toEqual(["work"]);
+  expect(initial.accounts[0].managed).toBe(true);
+  const sent = preview({
+    pending: true,
+    options: { codex: { pending: true }, claude: { pending: false, account: "home@example.com" } },
+    accounts: known.map(a => ({ ...a, option: { pending: true } })),
+  });
+  const receive = () => stream.feed(JSON.stringify({ type: "agent.preview", cwd: "/a", preview: sent }) + "\n");
+  expect(receive()).toBe(true);
+  expect(stream.preview.options.claude.account).toBe("home@example.com");
+  sent.accounts[0].option.pending = false;
+  sent.accounts[0].option.account = "work@example.com";
+  expect(receive()).toBe(true);
+  expect(stream.preview.pending).toBe(true);
+  expect(stream.preview.accounts[0].option.account).toBe("work@example.com");
+  const other = stream.current("/b");
+  expect(other.accounts[0].option.account).toBe("work@example.com");
+  expect(other.accounts[0].option.pending).toBe(true);
+  sent.accounts = [];
+  expect(receive()).toBe(true);
+  expect(stream.preview.accounts).toEqual([]);
 });

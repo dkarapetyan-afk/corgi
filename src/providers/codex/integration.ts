@@ -12,7 +12,7 @@ import { AppServer } from "./app_server";
 export async function installTitle(directory: string): Promise<IntegrationStepResult> {
   const path = join(directory, "config.toml");
   if (!existsSync(directory)) return { item: "title", subject: "thread ID", outcome: "no_config", path: directory };
-  const server = new AppServer(3000);
+  const server = new AppServer(3000, null, directory);
   try {
     const reply = await server.request("config/read", { includeLayers: true });
     const edit = config.edit(reply.result, path);
@@ -51,13 +51,18 @@ async function* jsonLines(stream: ReadableStream<Uint8Array>) {
 /** Asks a short-lived Codex app server whether it trusts `command` in
  * `files`, as a note for the hooks line. The inference one can't say: it runs
  * with hooks turned off. */
-export async function trust(command: string, files: string[]): Promise<{ note: string; todo: boolean }> {
+export async function trust(
+  command: string,
+  files: string[],
+  directory: string,
+): Promise<{ note: string; todo: boolean }> {
   let child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "ignore">> | null = null,
     timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const discovery = await import("../../discovery"),
       spawned = (child = Bun.spawn([await discovery.resolve("codex"), "app-server", "--listen", "stdio://"], {
         cwd: homedir(),
+        env: { ...process.env, CODEX_HOME: directory },
         stdin: "pipe",
         stdout: "pipe",
         stderr: "ignore",
@@ -107,7 +112,7 @@ export async function uninstallConfig(directory: string, removal: Removal | null
   try {
     original = Bun.TOML.parse(readFileSync(path + ".corgi-backup", "utf8"));
   } catch {}
-  const server = new AppServer(3000);
+  const server = new AppServer(3000, null, directory);
   try {
     const reply = await server.request("config/read", { includeLayers: true });
     const layer = config.userLayer(reply.result, path),

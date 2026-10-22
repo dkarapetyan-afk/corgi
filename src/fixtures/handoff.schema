@@ -165,6 +165,8 @@ $.clients[].watch_viewer: u32
 $.clients[].launch_preview: optional
 $.clients[].launch_preview?.cwd: custom bounded_text.BoundedText(10240)
 $.clients[].launch_preview?.preview.pending: bool
+$.clients[].launch_preview?.preview.options.codex.pending: optional
+$.clients[].launch_preview?.preview.options.codex.pending?: bool
 $.clients[].launch_preview?.preview.options.codex.signed_in: optional
 $.clients[].launch_preview?.preview.options.codex.signed_in?: bool
 $.clients[].launch_preview?.preview.options.codex.model: custom bounded_text.BoundedText(160)
@@ -187,6 +189,8 @@ $.clients[].launch_preview?.preview.options.codex.usage_error: custom bounded_te
 $.clients[].launch_preview?.preview.options.codex.usage_needs_consent: bool
 $.clients[].launch_preview?.preview.options.codex.history[2][11]: optional
 $.clients[].launch_preview?.preview.options.codex.history[2][11]?: u8
+$.clients[].launch_preview?.preview.options.claude.pending: optional
+$.clients[].launch_preview?.preview.options.claude.pending?: bool
 $.clients[].launch_preview?.preview.options.claude.signed_in: optional
 $.clients[].launch_preview?.preview.options.claude.signed_in?: bool
 $.clients[].launch_preview?.preview.options.claude.model: custom bounded_text.BoundedText(160)

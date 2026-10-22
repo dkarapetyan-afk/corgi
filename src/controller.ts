@@ -53,6 +53,8 @@ import * as newWorkspace from "./new_workspace";
 import { State as SidebarRows } from "./sidebar_rows";
 import * as agentLauncher from "./agent_launcher";
 import { Menu as LauncherMenu, Row, keyAgent, type Row as LauncherRow } from "./agent_launcher";
+import * as agentManager from "./agent_manager";
+import * as accounts from "./accounts";
 import { Stream as LaunchPreviewStream } from "./launch_preview_stream";
 import * as launcherResume from "./launcher_resume";
 import { Menu as SetupMenu, Summarizer, type Apply as SetupApply } from "./corgi_setup";
@@ -83,8 +85,11 @@ import * as panel from "./review/panel";
 import * as summaries from "./review/summaries";
 import * as subagentTooltip from "./subagent_tooltip";
 import * as viewerNative from "./viewer_native";
+import * as signin from "./signin";
+import * as signinExit from "./signin_exit";
+import { Terminal as NativeTerminal } from "./pane/terminal";
 import { Provider, adapter } from "./providers";
-import { sat, byteLength, type Writer } from "./text";
+import { sat, byteLength, clamp, displayWidth, ellipsis, type Writer } from "./text";
 import * as errors from "./errors";
 import * as moonlanderTerminal from "./moonlander/terminal";
 
@@ -111,7 +116,7 @@ interface TabDrag {
 }
 /** A paste goes to the text field that owned the keyboard when it began, or
  * to the focused pane when none did. */
-type Paste = { pane: number } | "launcher" | "setup" | "picker" | "name" | "review" | "discard";
+type Paste = { pane: number } | "launcher" | "setup" | "picker" | "name" | "review" | "signin" | "discard";
 /** Where keys go when no menu or dialog takes them: the focused pane, the
  * sidebar's cursor, or the review panel. */
 type Keyboard = "pane" | "review" | { sidebar: sidebarFocus.State };
@@ -213,6 +218,16 @@ class InputState {
 }
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+/** `list` with `item` in it, or without it. */
+const toggled = (list: string[], item: string, on: boolean) => [...list.filter(x => x !== item), ...(on ? [item] : [])];
+
+type AccountRemoval = {
+  agent: agentManager.Agent;
+  launch: LauncherMenu;
+  removal: agentManager.View["removal"];
+  task: Promise<void>;
+  result: { deleted: boolean; error: string | null } | null;
+};
 
 export class Controller {
   connection: Transport;
@@ -274,6 +289,7 @@ export class Controller {
   scope_menu: sidebar.ScopeMenu | null = null;
   agent_picker: AgentPicker | null = null;
   agent_launcher: LauncherMenu | null = null;
+  private account_removals = new Map<string, AccountRemoval>();
   /** The launcher row last left selected in any workspace. */
   launcher_selection: LauncherRow | null = null;
   launch_previews = new LaunchPreviewStream();
@@ -309,9 +325,16 @@ export class Controller {
   resize_mode = false;
   copy_mode = false;
   name_dialog: Dialog | null = null;
+  /** An account signing in over the panes, and a selection being dragged in
+   * its agent's screen. */
+  signin: signin.Signin | null = null;
+  private signin_drag: { x: number; y: number; moved: boolean } | null = null;
+  private signin_frame: { ansi: string; width: number; height: number } | null = null;
+  signin_exit: signinExit.State | null = null;
   message = "";
   headless_notice: number | null = null;
   copy_feedback_until = 0;
+  added_feedback: { label: string; until: number } | null = null;
   muted = false;
   selection: { pane: number; x: number; y: number; moved: boolean } | null = null;
   /** Panes marked unread from the agent menu, each with whether it had
@@ -1054,6 +1077,17 @@ export class Controller {
     this.headless_notice = null;
     this.dirty = true;
   }
+  private endSigninExit(): void {
+    if (!this.signin_exit) return;
+    this.signin_exit = null;
+    this.dirty = true;
+  }
+  private addedAgent(label: string): void {
+    this.signin_exit = null;
+    this.added_feedback = { label: label.replace(/[\x00-\x1f\x7f-\x9f]/g, " "), until: milliTimestamp() + 3000 };
+    this.dirty = true;
+    this.wake();
+  }
   private noticeHeadlessSession(session: Headless): void {
     this.notice(
       session.session
@@ -1081,7 +1115,8 @@ export class Controller {
       this.sidebar_focus !== null ||
       this.agent_launcher !== null ||
       this.corgi_setup !== null ||
-      this.scope_menu !== null
+      this.scope_menu !== null ||
+      this.signin !== null
     );
   }
   /** Open UI that can change with no input, such as the launcher's preview
@@ -1987,80 +2022,344 @@ export class Controller {
   private lastAgent(): Provider {
     return this.current().last_agent ?? this.runtime.last_agent;
   }
-  private async launchAgent(provider: Provider | null): Promise<void> {
+  /** Starts `provider`'s agent in `account`, "" its default. */
+  private async launchAgent(provider: Provider | null, account = "", message = ""): Promise<void> {
     const dir = await this.launcherDir();
     if (dir === null) return;
     if (byteLength(dir) > 4096) throw Error("NameTooLong");
     this.closeMenu();
-    this.rememberLauncherRow(this.current().id, Row.of(provider ?? this.lastAgent()));
+    this.rememberLauncherRow(this.current().id, Row.of(provider ?? this.lastAgent(), account));
     let created: { pane: number };
     try {
-      created = await this.execute({ "agent.create": { workspace: this.current().id, cwd: dir, provider } });
+      // An older daemon refuses fields it doesn't know, so the default sends none.
+      created = await this.execute({
+        "agent.create": { workspace: this.current().id, cwd: dir, provider, ...(account ? { account } : {}) },
+      });
     } catch (error) {
-      this.notice((error as Error).message);
+      this.notice(
+        message ? `${message} Couldn't start the agent: ${(error as Error).message}` : (error as Error).message,
+      );
       return;
     }
     this.focusPane(created.pane);
     this.launched = created.pane;
+    if (message) this.notice(message);
     this.dirty = true;
   }
   private async launchRow(row: LauncherRow): Promise<void> {
     const launch = this.agent_launcher;
     if (launch) {
-      if (!launch.managing && row !== "manage") launch.selected = row;
-      if (launch.managing && row === "add") return this.saveInlineCommand();
-      if (launch.managing && Row.custom(row) !== null) {
-        launch.edit(row);
+      if (launch.managing) return;
+      launch.selected = row;
+      const signing = launch.signsIn(row);
+      if (signing) return this.signIn(signing);
+      const index = Row.custom(row);
+      if (index !== null) {
+        const dir = await this.launcherDir();
+        if (dir === null) return;
+        const created = await this.execute({
+          "agent.command.create": { workspace: launch.workspace, cwd: dir, index },
+        });
+        this.closeMenu();
+        this.focusPane(created.pane);
+        this.launched = created.pane;
         this.dirty = true;
-        return;
-      }
-      if (!launch.managing) {
-        const index = Row.custom(row);
-        if (index !== null) {
-          const dir = await this.launcherDir();
-          if (dir === null) return;
-          const created = await this.execute({
-            "agent.command.create": { workspace: launch.workspace, cwd: dir, index },
-          });
-          this.closeMenu();
-          this.focusPane(created.pane);
-          this.launched = created.pane;
-          this.dirty = true;
-          return;
-        }
-      }
-      if (row === "manage") {
-        this.rememberLauncherSelection();
-        launch.managing = !launch.managing;
-        launch.selected = launch.managing ? "add" : this.launcherSelection(launch.workspace);
-        launch.normalize();
-        launch.pinned = true;
-        this.dirty = true;
-        return;
-      }
-      if (launch.managing) {
-        const provider = Row.agent(row);
-        if (provider) {
-          const hidden = { ...this.runtime.agent_hidden };
-          hidden[provider] = !hidden[provider];
-          await this.execute({ "agent.visibility": { hidden } });
-          if (this.agent_launcher) {
-            this.agent_launcher.hidden = hidden;
-            this.agent_launcher.pinned = true;
-          }
-          this.dirty = true;
-        }
         return;
       }
     }
-    const provider = Row.agent(row);
-    if (provider) return this.launchAgent(provider);
+    const agent = Row.launch(row);
+    if (agent) return this.launchAgent(agent.provider, agent.account);
     const dir = await this.launcherDir();
     if (dir === null) return;
     if (byteLength(dir) > 4096) throw Error("NameTooLong");
     this.closeMenu();
     await this.create(null, dir, null, "");
     this.copy_mode = false;
+  }
+  /** The launcher's model, also used by settings' Manage agents section. */
+  private launcherModel(): LauncherMenu | null {
+    return this.agent_launcher ?? this.corgi_setup?.agents ?? null;
+  }
+  /** Does what Manage agents asked for. */
+  private async manageAction(action: agentManager.Action | null): Promise<void> {
+    const launch = this.launcherModel();
+    this.dirty = true;
+    if (!launch || !action) return;
+    launch.pinned = true;
+    switch (action.kind) {
+      case "close":
+        return this.closeMenu();
+      case "back":
+        if (this.corgi_setup) {
+          this.corgi_setup.back();
+          return;
+        }
+        launch.back();
+        return;
+      case "show":
+        await this.setLauncherShown(action.agent, true);
+        this.addedAgent(action.agent.label);
+        return;
+      case "show_command":
+        await this.setCommandShown(action.index, true);
+        this.addedAgent(launch.commands[action.index].label());
+        return;
+      case "rename":
+        return this.renameAccount(action.agent, action.name);
+      case "remove":
+        if (action.agent.account) return this.removeAccount(action.agent, launch);
+        try {
+          await this.setLauncherShown(action.agent, false);
+          launch.manager.removed(launch.manager.error || null);
+        } catch (error) {
+          launch.manager.removed(signin.problem(error));
+        }
+        return;
+      case "remove_command":
+        try {
+          await this.deleteLauncherCommand(action.index);
+          launch.manager.removed();
+        } catch (error) {
+          launch.manager.removed((error as Error).message);
+        }
+        return;
+      case "add":
+        return this.openSignin(host => signin.adding(action.provider, null, host));
+      case "save":
+        return this.saveInlineCommand();
+    }
+  }
+  private renameAccount(a: agentManager.Agent, name: string): void {
+    const launch = this.launcherModel()!;
+    if (!a.account) {
+      try {
+        accounts.renameDefault(a.provider, name);
+      } catch (error) {
+        return launch.manager.fail(signin.problem(error));
+      }
+      launch.manager.renamed();
+      launch.preview.names[a.provider] = name;
+      return;
+    }
+    const known = accounts.find(a.provider, a.account);
+    if (!known) return launch.manager.fail("Corgi doesn't list this account any more.");
+    try {
+      accounts.rename(known, name);
+    } catch (error) {
+      return launch.manager.fail(signin.problem(error));
+    }
+    launch.manager.renamed();
+    // The launcher says so at once; the daemon's next read agrees.
+    for (const option of launch.preview.accounts)
+      if (option.provider === a.provider && option.account === a.account) option.name = name;
+  }
+  /** The slow logout and folder deletion must not hold up input or drawing. */
+  private removeAccount(a: agentManager.Agent, launch: LauncherMenu): void {
+    const key = agentManager.agentKey(a.provider, a.account),
+      known = accounts.find(a.provider, a.account);
+    if (this.account_removals.has(key)) return launch.manager.removed("This account is already being removed.");
+    if (!known) return launch.manager.removed("Corgi doesn't list this account any more.");
+    const running = this.runtime.panes.filter(p => p.agent.provider === a.provider && p.account === a.account).length;
+    if (running > 0)
+      return launch.manager.removed(
+        `Close the ${running === 1 ? "agent that runs" : `${running} agents that run`} in it first.`,
+      );
+    const job: AccountRemoval = {
+      agent: a,
+      launch,
+      removal: launch.manager.removal,
+      task: Promise.resolve(),
+      result: null,
+    };
+    this.account_removals.set(key, job);
+    job.task = (async () => {
+      try {
+        if (accounts.owns(known)) await signin.signOut(known);
+        job.result = { deleted: await accounts.remove(known), error: null };
+      } catch (error) {
+        job.result = { deleted: false, error: signin.problem(error) };
+      }
+      this.dirty = true;
+      this.wake();
+    })();
+  }
+  /** Apply completed jobs on the viewer loop, without changing a newer hold. */
+  private async finishAccountRemovals(): Promise<void> {
+    for (const [key, job] of this.account_removals) {
+      if (!job.result) continue;
+      this.account_removals.delete(key);
+      const { agent: a, result, launch } = job,
+        current = this.launcherModel();
+      let warning = "";
+      if (result.error === null) {
+        const previews = new Set([launch.preview, current?.preview, this.launch_previews.preview]);
+        for (const preview of previews)
+          if (preview)
+            preview.accounts = preview.accounts.filter(o => !(o.provider === a.provider && o.account === a.account));
+        if (this.runtime.account_hidden.includes(a.account)) {
+          try {
+            await this.setLauncherShown(a, true);
+          } catch (error) {
+            warning = ` Removed ${a.label}, but couldn't update launcher settings: ${signin.problem(error)}`;
+          }
+        }
+      }
+      if (current === launch && launch.manager.removal === job.removal) launch.manager.removed(result.error);
+      if (result.error !== null) this.notice(` Couldn't remove ${a.label}: ${result.error}`);
+      else
+        this.notice(
+          warning || (result.deleted ? ` Deleted ${a.label} and its folder` : ` Removed ${a.label}; kept its folder`),
+        );
+      this.dirty = true;
+    }
+  }
+  /** Signs in to a signed-out account's row instead of starting its agent. */
+  private signIn(a: agentLauncher.AccountOption): void {
+    this.openSignin(host =>
+      signin.signingIn({ provider: a.provider, dir: a.account, name: a.name, managed: a.managed }, host),
+    );
+  }
+  /** Where the sign-in shows: the whole screen, as nothing else takes input
+   * while it's open. */
+  private signinRect(): Rect {
+    return new Rect(0, 0, this.width, this.height);
+  }
+  /** Draws the sign-in over everything else. */
+  private drawSignin(w: Writer, pointer: render.Pointer | null): linkTooltip.Link | null {
+    const s = this.signin!,
+      r = this.signinRect();
+    if (r.w !== s.cols || r.h !== s.rows) s.resize(r.w, r.h);
+    const held = this.signin_frame;
+    if (s.adding && s.working && held?.width === r.w && held.height === r.h) {
+      w.write(held.ansi);
+      if (r.h >= 10 && r.w >= 30) {
+        const message = ellipsis(s.working, r.w - 4);
+        w.write(
+          `\x1b[${r.h - 2};3H` +
+            new palette.Style({ fg: "muted", bg: "bg" }).sgr() +
+            message +
+            " ".repeat(r.w - 4 - displayWidth(message)) +
+            "\x1b[0m",
+        );
+      }
+      return null;
+    }
+    const link = pointer && this.linkHoverIdle() ? this.linkAt(pointer.x, pointer.y) : null;
+    const drawn = s.draw(r.x, r.y, link?.id ?? null);
+    this.signin_frame = { ansi: drawn.frame, width: r.w, height: r.h };
+    w.write(drawn.frame);
+    if (drawn.cursor) w.write(`\x1b[${drawn.cursor.y + 1};${drawn.cursor.x + 1}H\x1b[?25h`);
+    return link;
+  }
+  /** The pointer over the sign-in: its agent's when the agent asks for the
+   * mouse, a selection in the agent's screen, or the frame's buttons. */
+  private async signinMouse(button: number, x: number, y: number, release: boolean): Promise<void> {
+    const s = this.signin!,
+      r = this.signinRect(),
+      body = s.body(),
+      bx = x - r.x - body.x,
+      by = y - r.y - body.y,
+      child = s.typing ? s.child : null,
+      inside = child !== null && bx >= 0 && by >= 0 && bx < body.cols && by < body.rows;
+    this.dirty = true;
+    if (release) this.ui_mouse_down = false;
+    else if ((button & 0xe0) === 0) this.ui_mouse_down = true;
+    if (inside && viewerNative.mouseEvents(child.handle))
+      return s.send(viewerNative.encodeMouse(child.handle, button, bx, by, release));
+    const drag = this.signin_drag;
+    if (release) {
+      // A dragged selection is copied, as a pane's is.
+      if (drag?.moved && child) this.copyText(child.selectedText());
+      this.signin_drag = null;
+      return;
+    }
+    if ((button & 64) !== 0 || (button & 3) !== 0) return;
+    if ((button & 32) !== 0) {
+      if (drag && child) {
+        drag.moved = true;
+        child.select(drag.x, drag.y, clamp(bx, 0, body.cols - 1), clamp(by, 0, body.rows - 1));
+      }
+      return;
+    }
+    if (inside) {
+      child.clearSelection();
+      this.signin_drag = { x: bx, y: by, moved: false };
+      return;
+    }
+    await s.click(x - r.x, y - r.y);
+  }
+  /** Shows an account's sign-in over the whole viewer, which takes no other
+   * input meanwhile, its agent in the launcher's folder; once signed in, it
+   * can start that agent as any launch does. */
+  private openSignin(make: (host: signin.Host) => signin.Signin): void {
+    const launcher = this.agent_launcher,
+      setup = this.corgi_setup,
+      launch = this.launcherModel(),
+      cwd = launch?.cwd ?? this.launcherCwd(),
+      // A viewer that quits mid-way takes a new account's folder with it.
+      abandon = () => this.signin?.abandon(),
+      s = make({
+        changed: () => {
+          this.dirty = true;
+          this.wake();
+        },
+        done: (status, start, message) => {
+          const frame = this.signin_frame;
+          this.signin_frame = null;
+          process.off("exit", abandon);
+          this.signin = null;
+          this.signin_drag = null;
+          this.link_tooltip.cancel();
+          this.link_copy_press = null;
+          this.agent_launcher = launcher;
+          this.corgi_setup = setup;
+          if (launch) launch.preview = this.launch_previews.current(launch.cwd, this.runtime.accounts);
+          this.dirty = true;
+          this.wake();
+          if (message) this.notice(message);
+          if (status === 0 && s.adding && s.account) {
+            this.addedAgent(`${adapter(s.provider!).label} · ${s.name}`);
+            if (
+              this.prefs.corgi_intensity > 0 &&
+              frame &&
+              frame.width === this.width &&
+              frame.height === this.height &&
+              this.width >= 30 &&
+              this.height >= 10
+            ) {
+              let terminal: NativeTerminal | null = null;
+              try {
+                terminal = new NativeTerminal(frame.width, frame.height);
+                terminal.feed(
+                  `\x1b]10;#${palette.colors.text.map(v => v.toString(16).padStart(2, "0")).join("")}\x1b\\` +
+                    `\x1b]11;#${palette.colors.bg.map(v => v.toString(16).padStart(2, "0")).join("")}\x1b\\` +
+                    frame.ansi,
+                );
+                this.signin_exit = new signinExit.State(
+                  signinExit.capture(terminal.surface(0).surface),
+                  milliTimestamp(),
+                );
+                this.added_feedback!.until += signinExit.duration_ms;
+              } catch {
+                // A missing snapshot still confirms the account and starts its agent.
+              } finally {
+                terminal?.destroy();
+              }
+            }
+          }
+          if (start) void this.launchAgent(s.provider, s.account, message);
+        },
+      });
+    this.closeMenu();
+    this.signin_frame = null;
+    this.signin_exit = null;
+    this.ui_mouse_down = false;
+    s.cwd = cwd;
+    this.signin = s;
+    process.on("exit", abandon);
+    const r = this.signinRect();
+    void s.open(r.w, r.h);
+    this.dirty = true;
   }
   /** Where the launcher starts what it launches. A new worktree named there
    * is added first, over a connection of its own since a big checkout takes
@@ -2135,7 +2434,7 @@ export class Controller {
     c.planned = null;
     if (launcherWorktree.containing(launch.worktrees, launch.cwd) === all[index]) return;
     launch.cwd = all[index].path;
-    launch.preview = this.launch_previews.current(launch.cwd);
+    launch.preview = this.launch_previews.current(launch.cwd, this.runtime.accounts);
     launch.resume_view.focused = false;
   }
   /** Keys while the launcher's box of checkouts and new-worktree form is
@@ -2207,135 +2506,164 @@ export class Controller {
         break;
     }
   }
+  /** Resolves the command Manage agents' form has, once typing pauses. */
   private async previewInlineCommand(immediate: boolean): Promise<void> {
-    const launch = this.agent_launcher;
-    if (!launch || !launch.managing) return;
-    const now = milliTimestamp();
-    if (launch.draft.text() !== launch.editor.name()) {
+    const launch = this.launcherModel();
+    if (!launch || !launch.managing || launch.manager.page !== "command") return;
+    const f = launch.manager.form,
+      now = milliTimestamp();
+    if (f.draft.text() !== f.editor.name()) {
       try {
-        launch.draft.set(launch.editor.name());
+        f.draft.set(f.editor.name());
       } catch {
         return;
       }
-      launch.draft_changed = now;
-      launch.request_id = (Math.floor(Math.random() * 0xffffffff) | 1) >>> 0;
-      launch.resolution_checked = 0;
-      launch.resolution = agentLauncher.resolution();
-      launch.save_requested = false;
+      f.draft_changed = now;
+      f.request_id = (Math.floor(Math.random() * 0xffffffff) | 1) >>> 0;
+      f.resolution_checked = 0;
+      f.resolution = agentLauncher.resolution();
+      f.save_requested = false;
       this.dirty = true;
     }
-    if (launch.draft.command.length === 0 || launch.editor.overflow || !launch.resolution.pending) return;
-    if (!immediate && now - launch.draft_changed < 350) return;
-    if (now - launch.resolution_checked < 100) return;
-    launch.resolution_checked = now;
+    if (f.draft.command.length === 0 || f.editor.overflow || !f.resolution.pending) return;
+    if (!immediate && now - f.draft_changed < 350) return;
+    if (now - f.resolution_checked < 100) return;
+    f.resolution_checked = now;
     let response: any;
     try {
       response = await call(this.connection, "agent.command.preview", {
         workspace: launch.workspace,
         cwd: launch.cwd,
-        request: launch.request_id,
-        command: launch.draft.text(),
+        request: f.request_id,
+        command: f.draft.text(),
       });
     } catch {
       return;
     }
-    launch.resolution = agentLauncher.resolution(response.resolution);
-    if (!launch.resolution.pending && !launch.name_customized && launch.resolution.error_message.length === 0)
-      launch.name_editor = Dialog.init({ rename: 0 }, launch.resolution.semantics.suggested_name);
+    f.resolution = agentLauncher.resolution(response.resolution);
+    if (!f.resolution.pending && !f.name_customized && f.resolution.error_message.length === 0)
+      f.name_editor = Dialog.init({ rename: 0 }, f.resolution.semantics.suggested_name);
     this.dirty = true;
   }
   private async deleteLauncherCommand(index: number): Promise<void> {
     await this.execute({ "agent.command": { index, command: "", resolve: false } });
-    const launch = this.agent_launcher;
-    if (launch) {
-      launch.commands = this.runtime.agent_commands;
-      if (launch.edit_index === index) launch.edit("add");
-      launch.normalize();
-    }
+    const launch = this.launcherModel();
+    if (launch) launch.commands = this.runtime.agent_commands;
     this.dirty = true;
   }
   private async saveInlineCommand(): Promise<void> {
-    const launch = this.agent_launcher;
+    const launch = this.launcherModel();
     if (!launch) return;
-    const index = launch.edit_index ?? launch.emptyCommand();
-    if (index === null) {
-      launch.editor.failed = true;
-      this.dirty = true;
-      return;
-    }
-    if (launch.editor.overflow || (launch.editor.name().length === 0 && launch.edit_index === null)) {
-      launch.editor.failed = true;
+    const f = launch.manager.form,
+      index = f.edit_index ?? launch.emptyCommand(),
+      empty = f.editor.name().length === 0;
+    if (index === null || f.editor.overflow || empty) {
+      f.save_error = empty
+        ? "Enter a command."
+        : index === null
+          ? "All saved command slots are in use."
+          : "Command too long";
+      f.save_requested = false;
+      f.editor.failed = true;
       this.dirty = true;
       return;
     }
     await this.previewInlineCommand(true);
-    if (launch.editor.name().length > 0 && launch.resolution.pending) {
-      launch.save_requested = true;
+    if (f.resolution.pending) {
+      f.save_requested = true;
       return;
     }
-    launch.save_requested = false;
-    if (launch.editor.name().length > 0 && launch.resolution.error_message.length > 0) {
-      launch.save_error = launch.resolution.error_message;
-      launch.editor.failed = true;
+    f.save_requested = false;
+    if (f.resolution.error_message.length > 0) {
+      f.save_error = f.resolution.error_message;
+      f.editor.failed = true;
       this.dirty = true;
       return;
     }
-    launch.save_error = "";
-    const hidden = launch.edit_index !== null ? launch.commands[launch.edit_index].hidden : false;
+    f.save_error = "";
+    const hidden = f.edit_index !== null ? launch.commands[f.edit_index].hidden : false;
     try {
       await this.execute({
         "agent.command": {
           index,
-          command: launch.editor.name().length === 0 ? "" : launch.resolution.command.text(),
+          command: f.resolution.command.text(),
           hidden,
           resolve: false,
-          original: launch.editor.name(),
-          name:
-            launch.name_editor.name().length > 0
-              ? launch.name_editor.name()
-              : launch.resolution.semantics.suggested_name,
-          semantics: launch.resolution.semantics,
+          original: f.editor.name(),
+          name: f.name_editor.name().length > 0 ? f.name_editor.name() : f.resolution.semantics.suggested_name,
+          semantics: f.resolution.semantics,
         },
       });
     } catch {
-      launch.save_error = "Could not resolve shorthand. Paste its underlying command.";
-      launch.editor.failed = true;
+      f.save_error = "Could not resolve shorthand. Paste its underlying command.";
+      f.editor.failed = true;
       this.dirty = true;
       return;
     }
-    if (launch.edit_provider) {
-      const visibility = { ...this.runtime.agent_hidden };
-      visibility[launch.edit_provider] = true;
-      await this.execute({ "agent.visibility": { hidden: visibility } });
-      launch.hidden = visibility;
-    }
     launch.commands = this.runtime.agent_commands;
-    launch.edit("add");
+    if (f.edit_index === null) this.addedAgent(launch.commands[index].label());
+    launch.manager.saved(index);
     this.dirty = true;
   }
-  private async toggleCommandVisibility(index: number): Promise<void> {
+  private async setCommandShown(index: number, shown: boolean): Promise<void> {
     const entry = this.runtime.agent_commands[index];
-    await this.execute({ "agent.command": { index, command: entry.text(), hidden: !entry.hidden, resolve: false } });
-    if (this.agent_launcher) {
-      this.agent_launcher.commands[index].hidden = !entry.hidden;
-      this.agent_launcher.pinned = true;
+    await this.execute({
+      "agent.command": {
+        index,
+        command: entry.text(),
+        hidden: !shown,
+        resolve: false,
+        original: entry.original,
+        name: entry.name,
+        semantics: entry.semantics,
+      },
+    });
+    const launch = this.launcherModel();
+    if (launch) {
+      launch.commands[index].hidden = !shown;
+      launch.pinned = true;
     }
     this.dirty = true;
   }
-  private async toggleLauncherYolo(provider: Provider): Promise<void> {
-    const enabled = !this.runtime.agent_yolo[provider];
-    await this.execute({ "agent.yolo": { provider, enabled } });
-    if (this.agent_launcher) {
-      this.agent_launcher.yolo[provider] = enabled;
-      this.agent_launcher.selected = Row.of(provider);
-      this.agent_launcher.pinned = true;
+  /** Toggles YOLO for a provider's or an account's row. */
+  private async toggleLauncherYolo(row: LauncherRow): Promise<void> {
+    const target = Row.launch(row);
+    if (!target) return;
+    const { provider, account } = target,
+      list = this.runtime.account_yolo,
+      enabled = account ? !list.includes(account) : !this.runtime.agent_yolo[provider];
+    // An older daemon refuses fields it doesn't know, so the default sends none.
+    await this.execute({ "agent.yolo": { provider, enabled, ...(account ? { account } : {}) } });
+    const launch = this.agent_launcher;
+    if (launch) {
+      if (account) launch.account_yolo = toggled(list, account, enabled);
+      else launch.yolo[provider] = enabled;
+      launch.selected = row;
+      launch.pinned = true;
+    }
+    this.dirty = true;
+  }
+  /** Shows or hides a provider's or an account's row in the picker. */
+  private async setLauncherShown(target: agentLauncher.Launch, shown: boolean): Promise<void> {
+    const { provider, account } = target,
+      hidden = { ...this.runtime.agent_hidden },
+      list = this.runtime.account_hidden,
+      accounts = account ? toggled(list, account, !shown) : list;
+    if (!account) hidden[provider] = !shown;
+    // An older daemon lists no accounts and refuses the field, so the default sends none.
+    await this.execute({ "agent.visibility": { hidden, ...(account ? { hidden_accounts: accounts } : {}) } });
+    const launch = this.launcherModel();
+    if (launch) {
+      launch.hidden = hidden;
+      launch.account_hidden = accounts;
+      launch.pinned = true;
     }
     this.dirty = true;
   }
   private rememberLauncherSelection(): void {
     const launch = this.agent_launcher;
     if (!launch) return;
-    if (launch.managing || launch.selected === "manage" || launch.selected === "add") return;
+    if (launch.managing) return;
     this.rememberLauncherRow(launch.workspace, launch.selected);
   }
   /** A terminal is a detour, so the launcher keeps the row from before it. */
@@ -2371,6 +2699,15 @@ export class Controller {
   private openLauncher(pinned: boolean, cwd = this.launcherCwd()): void {
     this.closeMenu();
     if (byteLength(cwd) > 10 * 1024) return;
+    const launch = this.makeLauncher(pinned, cwd);
+    this.showHistory(launch);
+    launch.normalize();
+    this.agent_launcher = launch;
+    this.cancelDividers();
+    this.selection = null;
+    this.dirty = true;
+  }
+  private makeLauncher(pinned: boolean, cwd = this.launcherCwd()): LauncherMenu {
     const launch = new LauncherMenu({
       workspace: this.current().id,
       cwd,
@@ -2378,19 +2715,17 @@ export class Controller {
       last: this.lastAgent(),
       yolo: { ...this.runtime.agent_yolo },
       hidden: { ...this.runtime.agent_hidden },
+      account_yolo: this.runtime.account_yolo,
+      account_hidden: this.runtime.account_hidden,
       commands: this.runtime.agent_commands,
+      accounts: this.runtime.accounts,
       pinned,
     });
-    launch.preview = this.launch_previews.current(cwd);
+    launch.preview = this.launch_previews.current(cwd, this.runtime.accounts);
     launch.workspace_cwd = byteLength(this.current().cwd) <= 10 * 1024 ? this.current().cwd : "";
     launch.worktrees = this.current().worktrees ?? null;
     launch.worktree_folder = this.prefs.worktree_folder;
-    this.showHistory(launch);
-    launch.normalize();
-    this.agent_launcher = launch;
-    this.cancelDividers();
-    this.selection = null;
-    this.dirty = true;
+    return launch;
   }
   private moveLauncher(next: boolean, wrap: boolean): void {
     const launch = this.agent_launcher;
@@ -2413,9 +2748,9 @@ export class Controller {
     }
     this.dirty = true;
   }
-  private async trackLauncherUsage(provider: Provider): Promise<void> {
+  private async trackLauncherUsage(row: LauncherRow): Promise<void> {
     const launch = this.agent_launcher;
-    if (!launch || !launch.trackable(Row.of(provider))) return;
+    if (!launch || !launch.trackable(row)) return;
     launch.pinned = true;
     try {
       await call(this.connection, "agent.track_usage", { workspace: launch.workspace, cwd: launch.cwd });
@@ -2429,22 +2764,22 @@ export class Controller {
   private async pollLauncher(hover: boolean): Promise<void> {
     this.updateLaunchPreview();
     await this.previewInlineCommand(false);
-    if (
-      this.agent_launcher &&
-      this.agent_launcher.managing &&
-      this.agent_launcher.save_requested &&
-      !this.agent_launcher.resolution.pending
-    )
-      await this.saveInlineCommand();
+    const model = this.launcherModel(),
+      form = model?.managing ? model.manager.form : null;
+    if (form && form.save_requested && !form.resolution.pending) await this.saveInlineCommand();
     const side = this.sidebarView([]);
     const hit = this.pointer ? side.hit(this.pointer.x, this.pointer.y).tag : "none";
     const on_button = hit === "agent_new" || hit === "agent_options";
-    const launch = this.agent_launcher;
+    const launch = this.launcherModel();
     if (launch) {
       launch.yolo = { ...this.runtime.agent_yolo };
       launch.hidden = { ...this.runtime.agent_hidden };
+      launch.account_yolo = this.runtime.account_yolo;
+      launch.account_hidden = this.runtime.account_hidden;
       launch.commands = this.runtime.agent_commands;
+      launch.accounts = this.runtime.accounts;
       launch.normalize();
+      if (this.corgi_setup) return;
       if (launch.workspace !== this.current().id || (side.width === 0 && !launch.pinned)) {
         this.closeLauncher();
         return;
@@ -2461,11 +2796,11 @@ export class Controller {
     }
   }
   updateLaunchPreview(): void {
-    const cwd = this.agent_launcher ? this.agent_launcher.cwd : this.launcherCwd();
+    const cwd = this.launcherModel()?.cwd ?? this.launcherCwd();
     if (!this.launch_previews.poll(this.current().id, cwd)) return;
-    const launch = this.agent_launcher;
+    const launch = this.launcherModel();
     if (launch) {
-      launch.preview = this.launch_previews.current(launch.cwd);
+      launch.preview = this.launch_previews.current(launch.cwd, this.runtime.accounts);
       // An open launcher keeps its list, unless it had none yet.
       if (launch.history.entries.length === 0 && this.launch_previews.history.entries.length > 0)
         this.showHistory(launch);
@@ -2527,11 +2862,13 @@ export class Controller {
     launch.resume_view.reveal(launch.resumeContext(), launch.resumeArea(this.width, this.height, this.sidebarView([])));
   }
   private async openManager(): Promise<void> {
-    if (this.agent_launcher) {
-      this.agent_launcher.resume_view.focused = false;
-      this.agent_launcher.resume_view.collapse();
-    }
-    await this.launchRow("manage");
+    const launch = this.agent_launcher;
+    if (!launch) return;
+    launch.resume_view.focused = false;
+    launch.resume_view.collapse();
+    this.rememberLauncherSelection();
+    launch.manage();
+    this.dirty = true;
   }
   /** Move within the conversations; up from the first returns to the agents. */
   private moveResume(rows: launcherResume.Line[], delta: number): void {
@@ -2677,7 +3014,13 @@ export class Controller {
       }
     if (byteLength(e.cwd) > 4096 || byteLength(e.session) > 256) throw Error("NameTooLong");
     const command = {
-      "agent.resume": { workspace, cwd: e.cwd, provider: e.provider, session: e.session },
+      "agent.resume": {
+        workspace,
+        cwd: e.cwd,
+        provider: e.provider,
+        session: e.session,
+        ...(e.account ? { account: e.account } : {}),
+      },
     };
     this.closeMenu();
     let created: { pane: number };
@@ -2704,6 +3047,9 @@ export class Controller {
   private openSetup(): void {
     this.closeMenu();
     const setup = SetupMenu.open();
+    setup.agents = this.makeLauncher(true);
+    setup.agents.managing = true;
+    setup.agents.manager.back_label = "Settings";
     setup.integration = this.remote_links ? "unavailable" : ghosttyIntegration.state();
     setup.image_paste = this.host_clipboard;
     setup.pacing = this.host_pacer;
@@ -3004,8 +3350,15 @@ export class Controller {
     this.focusPane(list[next ? (index + 1) % list.length : (index + list.length - 1) % list.length].id);
   }
   private async key(byte: number): Promise<void> {
+    this.endSigninExit();
     const cl = this.input_state;
     this.repeat_until = 0;
+    // A sign-in has the keyboard; what its agent is sent passes through it.
+    if (this.signin) {
+      await this.signin.input(Uint8Array.of(byte));
+      this.dirty = true;
+      return;
+    }
     if (this.moonlander) {
       if (this.moonlander.key(byte)) this.closeMoonlander();
       this.dirty = true;
@@ -3060,6 +3413,10 @@ export class Controller {
         this.dirty = true;
         return;
       }
+      if (setup.managing()) {
+        const launch = setup.agents!;
+        return this.manageAction(launch.manager.key(byte, launch.manageModel()));
+      }
       if (setup.key(byte)) {
         this.dirty = true;
         return;
@@ -3106,30 +3463,6 @@ export class Controller {
     }
     if (this.agent_launcher) {
       const launch = this.agent_launcher;
-      if (launch.managing && launch.selected === "add") {
-        switch (byte) {
-          case 9:
-            launch.name_focused = !launch.name_focused;
-            break;
-          case 14:
-            this.moveLauncher(true, false);
-            break;
-          case 16:
-            this.moveLauncher(false, false);
-            break;
-          case 27:
-            await this.launchRow("manage");
-            break;
-          case 13:
-            await this.saveInlineCommand();
-            break;
-          default:
-            if (launch.name_focused) launch.name_customized = true;
-            launch.input().key(byte);
-        }
-        this.dirty = true;
-        return;
-      }
       if (launch.pinned && byte === keymap.prefixByte(this.prefs.prefix)) {
         launch.prefix = true;
         return;
@@ -3138,6 +3471,7 @@ export class Controller {
       launch.prefix = false;
       if (after_prefix && (byte === 99 || byte === 97 || byte === 65)) return;
       if (launch.pinned && byte === 20 && this.prefs.preset === "corgi") return;
+      if (launch.managing) return this.manageAction(launch.manager.key(byte, launch.manageModel()));
       if (launch.worktree.mode !== "closed" && !launch.managing) {
         launch.pinned = true;
         return this.worktreeKey(byte);
@@ -3189,13 +3523,10 @@ export class Controller {
             this.expandResume(true);
             break;
           case 121:
-            if (!launch.managing) {
-              const provider = Row.agent(launch.selected);
-              if (provider) await this.toggleLauncherYolo(provider);
-            }
+            if (!launch.managing) await this.toggleLauncherYolo(launch.selected);
             break;
           case 117:
-            if (launch.trackable(launch.selected)) await this.trackLauncherUsage(Row.agent(launch.selected)!);
+            await this.trackLauncherUsage(launch.selected);
             break;
           default:
             if (byte >= 48 && byte <= 57) {
@@ -3466,13 +3797,15 @@ export class Controller {
   }
   /** The keyboard's owner when a paste begins, in `key`'s order. */
   private pasteTarget(): Paste {
+    if (this.signin) return "signin";
     if (this.worktreeDetail() !== null) return "discard";
     if (this.agent_launcher)
-      return (this.agent_launcher.managing && this.agent_launcher.selected === "add") ||
+      return (this.agent_launcher.managing && this.agent_launcher.manager.typing()) ||
         (this.agent_launcher.worktree.mode === "open" && this.agent_launcher.worktree.focus !== "list") ||
         this.resumeSearching()
         ? "launcher"
         : "discard";
+    if (this.corgi_setup?.managing()) return this.corgi_setup.agents!.manager.typing() ? "setup" : "discard";
     if (this.corgi_setup?.editing) return "setup";
     if (this.agent_picker) return "picker";
     if (this.name_dialog) return "name";
@@ -3493,9 +3826,12 @@ export class Controller {
       if (this.resumeSearching()) return launch.resume_view.query.area;
       const c = launch.worktree;
       if (c.mode === "open" && c.focus !== "list") return c.input().area;
-      return launch.managing && launch.selected === "add" ? launch.input().area : null;
+      return launch.managing && launch.manager.typing() ? launch.input().area : null;
     }
-    if (this.corgi_setup) return this.corgi_setup.editing?.area ?? null;
+    if (this.corgi_setup) {
+      const manager = this.corgi_setup.managing() ? this.corgi_setup.agents!.manager : null;
+      return manager ? (manager.typing() ? manager.input().area : null) : (this.corgi_setup.editing?.area ?? null);
+    }
     if (this.agent_picker) return this.agent_picker.query.area;
     if (this.name_dialog) {
       const d = this.name_dialog;
@@ -3654,10 +3990,11 @@ export class Controller {
           this.agent_launcher!.resume_view.query.pasteByte(byte);
           this.agent_launcher!.resume_view.home();
         } else if (this.agent_launcher) {
-          const c = this.agent_launcher.worktree;
-          if (this.agent_launcher.name_focused) this.agent_launcher.name_customized = true;
-          if (c.mode === "open" && c.focus === "from") c.search(from => from.pasteByte(byte));
-          else this.agent_launcher.input().pasteByte(byte);
+          const launch = this.agent_launcher,
+            c = launch.worktree;
+          if (launch.managing) launch.manager.paste(byte, launch.manageModel());
+          else if (c.mode === "open" && c.focus === "from") c.search(from => from.pasteByte(byte));
+          else launch.input().pasteByte(byte);
         }
         break;
       case "setup":
@@ -3671,6 +4008,9 @@ export class Controller {
           this.fitNameDialog();
           this.name_dialog.pasteByte(byte);
         }
+        break;
+      case "signin":
+        await this.signin?.input(Uint8Array.of(byte));
         break;
       case "review":
         this.review.pasteByte(byte);
@@ -3735,12 +4075,24 @@ export class Controller {
         }
       }
       if (!latin1(seq).startsWith("\x1b[<")) {
+        this.endSigninExit();
         this.pinWorktreeInput(latin1(seq));
         this.link_tooltip.cancel();
         this.dirty = true;
       }
       if (cl.paste === null) {
         const key_event = keyboard.decode(latin1(seq));
+        if (key_event && this.signin) {
+          // Its agent gets keys as its terminal asked for them; the frame reads them plain.
+          const s = this.signin,
+            plain = viewerNative.encodeKey(null, key_event.codepoint, key_event.mods);
+          if (s.typing && plain !== "\x03" && plain !== "\x11")
+            s.send(viewerNative.encodeKey(s.child!.handle, key_event.codepoint, key_event.mods));
+          else await s.input(plain);
+          this.dirty = true;
+          used += len;
+          continue;
+        }
         if (key_event) {
           // Ghostty passes its paste key on only when it had no text
           // to paste. Over SSH it can't be pasted here: say why.
@@ -3814,11 +4166,13 @@ export class Controller {
         if (parsed_key === "paste_start") cl.paste = this.pasteTarget();
         // The markers reach only an application that asked for them.
         const p = this.pastePane();
-        if (p && p.terminal.bracketedPaste()) this.sendInput(p.terminal, seq);
+        if (cl.paste === "signin") await this.signin?.input(text);
+        else if (p && p.terminal.bracketedPaste()) this.sendInput(p.terminal, seq);
         if (parsed_key === "paste_end") cl.paste = null;
       } else if (cl.paste !== null) {
         const p = this.pastePane();
-        if (p) this.sendInput(p.terminal, seq);
+        if (cl.paste === "signin") await this.signin?.input(text);
+        else if (p) this.sendInput(p.terminal, seq);
       } else if (parsed_key === "focus_in") {
         cl.watched = true;
       } else if (parsed_key === "focus_out") {
@@ -3861,7 +4215,10 @@ export class Controller {
         const setup = this.corgi_setup,
           s = this.runtime.inference,
           intensity = setup.intensityKey(parsed_key, this.prefs);
-        if (intensity) await this.applySetup(intensity);
+        if (setup.managing()) {
+          const launch = setup.agents!;
+          await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
+        } else if (intensity) await this.applySetup(intensity);
         else if (setup.sequence(text)) {
           // The worktree folder field took it.
         } else if (parsed_key === "up" || parsed_key === "shift_tab") setup.move(false, s, this.prefs);
@@ -3890,15 +4247,8 @@ export class Controller {
         } else if (launch.resume_view.focused && !launch.managing) {
           launch.pinned = true;
           this.resumeSequence(text, parsed_key);
-        } else if (
-          launch.managing &&
-          launch.selected === "add" &&
-          text !== "\x1b[A" &&
-          text !== "\x1b[B" &&
-          text !== "\x1b[Z"
-        ) {
-          launch.input().sequence(text);
-          this.dirty = true;
+        } else if (launch.managing) {
+          await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
         } else if (parsed_key === "up") {
           this.moveLauncher(false, false);
         } else if (parsed_key === "down") {
@@ -3906,7 +4256,7 @@ export class Controller {
         } else if (text === "\x1b[H" || text === "\x1b[1~") {
           this.selectLauncher(launch.first());
         } else if (text === "\x1b[F" || text === "\x1b[4~") {
-          this.selectLauncher(launch.managing ? "manage" : "terminal");
+          this.selectLauncher("terminal");
         } else if (parsed_key === "shift_tab") {
           this.moveLauncher(false, true);
         } else if (!launch.pinned) {
@@ -4005,6 +4355,12 @@ export class Controller {
     const x = sat(xs, 1);
     const y = sat(ys, 1);
     const release = seq[seq.length - 1] === "m";
+    if (!release && (button & 32) === 0) this.endSigninExit();
+    if (this.signin) {
+      if (await this.linkMouse(button, x, y, release)) return;
+      this.moveHover(button, x, y, release);
+      return this.signinMouse(button, x, y, release);
+    }
     if (this.moonlander) {
       if (!release && button === 0 && this.moonlander.click(x, y)) this.closeMoonlander();
       this.dirty = true;
@@ -4064,28 +4420,7 @@ export class Controller {
       }
       return this.openSidebarRow(false);
     }
-    const link_card = this.linkCard();
-    const link_rect = link_card
-      ? linkTooltip.geometry(this.width, this.height, link_card.link, link_card.thumbnail)
-      : null;
-    const on_link_card = link_rect?.contains(x, y) ?? false;
-    if (this.link_copy_press !== null) {
-      this.pointer = { x, y };
-      this.dirty = true;
-      if (release) {
-        const pressed = this.link_copy_press;
-        this.link_copy_press = null;
-        if (button === 0 && link_card?.link === pressed && link_rect && linkTooltip.copyAt(link_rect, x, y))
-          await this.perform({ name: "copy-link" });
-      }
-      return;
-    }
-    if (on_link_card && !release && (button === 35 || button === 0)) {
-      this.pointer = { x, y };
-      if (button === 0) this.link_copy_press = link_card!.link;
-      this.dirty = true;
-      return;
-    }
+    if (await this.linkMouse(button, x, y, release)) return;
     // A press gives the keyboard back to the panes, or to the review panel below when it lands there.
     if (!release && (button & 0xe0) === 0) this.giveKeyboard("pane");
     // The prefix bar has no mouse targets. A click resumes normal UI input.
@@ -4159,26 +4494,7 @@ export class Controller {
         return;
       }
     }
-    if (!release && (button & 32) !== 0 && (button & 3) === 3 && (button & 64) === 0) {
-      if (
-        moved &&
-        !this.linkHoverContains(x, y) &&
-        !this.resourceHoverContains(x, y) &&
-        !this.worktreeHoverContains(x, y)
-      ) {
-        const resource_hit = sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), x, y);
-        if (resource_hit === null || this.resourceDetail() !== resource_hit.id) this.link_tooltip.move();
-        this.launcher_hover_blocked = false;
-      }
-    } else {
-      this.menu_hover = null;
-      this.link_tooltip.cancel();
-      this.dirty = true;
-    }
-    if (moved) {
-      this.pointer = { x, y };
-      this.dirty = true;
-    }
+    this.moveHover(button, x, y, release);
     if (!release && button === 35) this.pollMenuHover();
     if (cl.port_click) {
       const click = cl.port_click;
@@ -4449,11 +4765,24 @@ export class Controller {
         hit = setup.hit(this.width, this.height, x, y, s, this.prefs);
       if (!release && button === 0) {
         this.ui_mouse_down = hit === null || !("intensity" in hit);
-        if (hit !== null) await this.applySetup(setup.click(hit, s, this.prefs));
+        if (hit && "manager" in hit) {
+          setup.openOptions(s, this.prefs);
+          const launch = setup.agents!;
+          await this.manageAction(launch.manager.click(hit.manager, x, y, launch.manageModel()));
+        } else if (hit !== null) await this.applySetup(setup.click(hit, s, this.prefs));
         else if (!setup.contains(this.width, this.height, x, y)) this.closeMenu();
       } else if (!release && (button === 35 || button === 32)) {
         setup.hover(this.width, this.height, x, y, s, this.prefs);
-      } else if (!release && (button === 64 || button === 65)) setup.move(button === 65, s, this.prefs, false);
+      } else if (!release && (button === 64 || button === 65)) {
+        if (hit && "manager" in hit) {
+          setup.openOptions(s, this.prefs);
+          const launch = setup.agents!;
+          await this.manageAction(launch.manager.sequence(button === 65 ? "\x1b[B" : "\x1b[A", launch.manageModel()));
+        } else if (hit && "item" in hit) {
+          setup.back();
+          setup.move(button === 65, s, this.prefs, false);
+        } else if (!setup.managing()) setup.move(button === 65, s, this.prefs, false);
+      }
       this.dirty = true;
       return;
     }
@@ -4473,42 +4802,15 @@ export class Controller {
       return;
     }
     if (this.agent_launcher) {
+      if (this.agent_launcher.transition.active) return;
       const side = this.sidebarView([]);
       if (!release && button === 0) {
         this.ui_mouse_down = true;
         if (this.agent_launcher.managing) {
-          const launch = this.agent_launcher;
-          const b = launch.bounds(this.width, this.height, side);
-          const row = launch.hit(this.width, this.height, side, x, y);
-          if (row !== null) {
-            if (row === "add") {
-              launch.selected = "add";
-              const top = b.y + launch.countRows() + 5;
-              const actions = top + 12 + (launch.show_command ? 2 : 0);
-              if (y === actions && x >= sat(b.x + b.w, 10)) {
-                await this.saveInlineCommand();
-              } else if (y === actions && x >= sat(b.x + b.w, 20)) {
-                launch.edit("add");
-              } else if (y === top + 10 && x >= sat(b.x + b.w, 18)) {
-                launch.show_command = !launch.show_command;
-              } else if (y === top + 2 || y === top + 6) {
-                launch.name_focused = y === top + 6;
-                const width = sat(b.w, 10);
-                const editor = launch.input();
-                let offset = sat(editor.cursor, sat(width, 1));
-                while (offset < editor.cursor && (editor.text[offset] & 0xc0) === 0x80) offset += 1;
-                editor.position(editor.byteAtColumn(offset, sat(x, b.x + 5)));
-              }
-            } else if (row === "manage") {
-              await this.launchRow(row);
-            } else if (Row.custom(row) !== null && x >= sat(b.x + b.w, 11)) {
-              await this.deleteLauncherCommand(Row.custom(row)!);
-            } else if (x >= sat(b.x + b.w, 18)) {
-              launch.edit(row);
-            } else if (Row.custom(row) !== null) {
-              await this.toggleCommandVisibility(Row.custom(row)!);
-            } else await this.launchRow(row);
-          } else if (!b.contains(x, y)) this.closeMenu();
+          const launch = this.agent_launcher,
+            b = launch.bounds(this.width, this.height, side);
+          if (!b.contains(x, y)) this.closeMenu();
+          else await this.manageAction(launch.manager.click(b, x, y, launch.manageModel()));
           this.dirty = true;
           return;
         }
@@ -5066,17 +5368,37 @@ export class Controller {
       this.copy_feedback_until = 0;
       this.dirty = true;
     }
+    if (this.added_feedback && milliTimestamp() >= this.added_feedback.until) {
+      this.added_feedback = null;
+      this.dirty = true;
+    }
+    if (this.signin_exit) {
+      if (this.signin_exit.tick(milliTimestamp())) this.dirty = true;
+      if (
+        this.signin_exit.done ||
+        !this.signin_exit.fits(this.width, this.height) ||
+        this.prefs.corgi_intensity === 0
+      ) {
+        this.signin_exit = null;
+        this.dirty = true;
+      }
+    }
     const dialog = this.name_dialog;
     if (dialog && dialog.frame() !== null) {
       if (dialog.tick(milliTimestamp()) === "save") await this.finishName(true);
       this.dirty = true;
     }
+    await this.finishAccountRemovals();
     const removal = this.worktree_card.removal;
     if (removal.phase !== "idle") {
       this.followRemoval();
       removal.advance(milliTimestamp());
       this.dirty = true;
     }
+    const launch = this.agent_launcher;
+    if (launch?.transition.tick(milliTimestamp())) this.dirty = true;
+    const model = this.launcherModel();
+    if (model?.managing && model.manager.tick(model.manageModel())) this.dirty = true;
     // A brief being written glimmers.
     if (
       this.worktreeDetail() !== null &&
@@ -5354,6 +5676,7 @@ export class Controller {
   /** No modal, drag, or selection is claiming the pointer right now. */
   private hoverIdle(): boolean {
     return (
+      this.signin_exit === null &&
       !this.hasMenu() &&
       this.menu() === null &&
       this.name_dialog === null &&
@@ -5363,24 +5686,32 @@ export class Controller {
     );
   }
   private linkAt(x: number, y: number): linkTooltip.Link | null {
+    if (this.signin) {
+      const s = this.signin;
+      if (!s.typing || s.working || this.width < 30 || this.height < 10) return null;
+      if (s.cols !== this.width || s.rows !== this.height) s.resize(this.width, this.height);
+      const body = s.body(),
+        r = this.signinRect();
+      return linkTooltip.at(s.child!, new Rect(r.x + body.x, r.y + body.y, body.cols, body.rows), x, y);
+    }
     if (this.sidebarView([]).hit(x, y).tag !== "none") return null;
     for (const place of this.layoutView().placements(this.area())) {
       if (!place.rect.contains(x, y)) continue;
       const pane = this.pane(place.id);
       if (!pane || pane.restoring) return null;
-      pane.terminal.updateRender();
-      const link = pane.terminal
-        .hyperlinks()
-        .find(link => link.row === y - place.rect.y && link.start <= x - place.rect.x && x - place.rect.x < link.end);
-      return link ? { pane: place.id, id: link.id, uri: link.uri, x, y } : null;
+      return linkTooltip.at(pane.terminal, place.rect, x, y);
     }
     return null;
   }
+  private linkHoverIdle(): boolean {
+    return this.signin ? this.signin.typing && !this.signin.working && this.signin_drag === null : this.hoverIdle();
+  }
   private linkCard(): linkTooltip.Card | null {
     const link = this.link_tooltip.target?.link;
-    if (!link || !this.link_tooltip.shown || !this.hoverIdle() || this.paste_card || this.ui_mouse_down) return null;
+    if (!link || !this.link_tooltip.shown || !this.linkHoverIdle() || this.paste_card || this.ui_mouse_down)
+      return null;
     const source = this.linkAt(link.x, link.y);
-    if (!source || source.pane !== link.pane || source.id !== link.id || source.uri !== link.uri) return null;
+    if (!linkTooltip.sameLink(source, link)) return null;
     let thumbnail = this.linkThumbnail(link.uri);
     if (thumbnail && !linkTooltip.geometry(this.width, this.height, link, thumbnail)) thumbnail = null;
     return { link, copied: this.link_tooltip.copied_until > milliTimestamp(), thumbnail };
@@ -5397,60 +5728,103 @@ export class Controller {
     const rect = linkTooltip.geometry(this.width, this.height, card.link, card.thumbnail);
     if (rect?.contains(x, y)) return true;
     const link = this.linkAt(x, y);
-    return link !== null && link.pane === card.link.pane && link.id === card.link.id && link.uri === card.link.uri;
+    return linkTooltip.sameLink(link, card.link);
+  }
+  /** The same copy-button capture for every terminal showing a link card. */
+  private async linkMouse(button: number, x: number, y: number, release: boolean): Promise<boolean> {
+    const card = this.linkCard(),
+      rect = card ? linkTooltip.geometry(this.width, this.height, card.link, card.thumbnail) : null;
+    if (this.link_copy_press !== null) {
+      this.pointer = { x, y };
+      this.dirty = true;
+      if (release) {
+        const pressed = this.link_copy_press;
+        this.link_copy_press = null;
+        if (button === 0 && card?.link === pressed && rect && linkTooltip.copyAt(rect, x, y))
+          await this.perform({ name: "copy-link" });
+      }
+      return true;
+    }
+    if (rect?.contains(x, y) && !release && (button === 35 || button === 0)) {
+      this.pointer = { x, y };
+      if (button === 0) this.link_copy_press = card!.link;
+      this.dirty = true;
+      return true;
+    }
+    return false;
+  }
+  /** Movement arms hover; clicks, drags and scrolling dismiss it. */
+  private moveHover(button: number, x: number, y: number, release: boolean): void {
+    const moved = this.pointer === null || this.pointer.x !== x || this.pointer.y !== y;
+    if (!release && (button & 32) !== 0 && (button & 3) === 3 && (button & 64) === 0) {
+      if (
+        moved &&
+        !this.linkHoverContains(x, y) &&
+        (this.signin || (!this.resourceHoverContains(x, y) && !this.worktreeHoverContains(x, y)))
+      ) {
+        const resource_hit = this.signin
+          ? null
+          : sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), x, y);
+        if (resource_hit === null || this.resourceDetail() !== resource_hit.id) this.link_tooltip.move();
+        this.launcher_hover_blocked = false;
+      }
+    } else {
+      this.menu_hover = null;
+      this.link_tooltip.cancel();
+      this.dirty = true;
+    }
+    if (moved) {
+      this.pointer = { x, y };
+      this.dirty = true;
+    }
   }
   private linkTooltipReady(): boolean {
     let target: linkTooltip.Target | null = null;
     const pointer = this.pointer;
-    if (
-      pointer &&
-      !this.hasMenu() &&
-      this.menu() === null &&
-      this.name_dialog === null &&
-      !this.copy_mode &&
-      this.selection === null &&
-      !this.ui_mouse_down
-    ) {
+    if (pointer && this.linkHoverIdle() && !this.ui_mouse_down) {
       if (this.linkHoverContains(pointer.x, pointer.y)) return true;
-      if (this.worktreeHoverContains(pointer.x, pointer.y)) return true;
-      if (this.resourceHoverContains(pointer.x, pointer.y)) return true;
-      const ws = sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), pointer.x, pointer.y);
-      if (ws && resourceTooltip.geometry(this.width, this.height, this.sidebarView([]).width, pointer.y) !== null) {
-        target = { resource: ws.id };
-        this.resource_card.anchor = pointer.y;
-      }
-      if (corgiBadge.hit(this.corgi_badge, this.sidebarView([]).width, pointer.x, pointer.y)) target = { usage: true };
-      const git = sidebar.gitActionWorkspace(
-        this.sidebarView([]),
-        this.workspaceEntries(),
-        this.git_hover,
-        pointer.x,
-        pointer.y,
-      );
-      if (git) {
-        target = { git: git.id };
-        if (git.git_push.phase === "failed") return true;
-      }
-      const worktree = sidebar.worktreeAt(this.sidebarView([]), this.workspaceEntries(), pointer.x, pointer.y);
-      if (
-        worktree &&
-        worktreeTooltip.geometry(
-          this.width,
-          this.height,
-          this.sidebarView([]).width,
+      if (!this.signin) {
+        if (this.worktreeHoverContains(pointer.x, pointer.y)) return true;
+        if (this.resourceHoverContains(pointer.x, pointer.y)) return true;
+        const ws = sidebar.resourceAt(this.sidebarView([]), this.workspaceEntries(), pointer.x, pointer.y);
+        if (ws && resourceTooltip.geometry(this.width, this.height, this.sidebarView([]).width, pointer.y) !== null) {
+          target = { resource: ws.id };
+          this.resource_card.anchor = pointer.y;
+        }
+        if (corgiBadge.hit(this.corgi_badge, this.sidebarView([]).width, pointer.x, pointer.y))
+          target = { usage: true };
+        const git = sidebar.gitActionWorkspace(
+          this.sidebarView([]),
+          this.workspaceEntries(),
+          this.git_hover,
+          pointer.x,
           pointer.y,
-          worktrees.linked(worktree.worktrees).length,
-        )
-      ) {
-        target = { worktree: worktree.id };
-        this.worktree_card.workspace = worktree.id;
-        this.worktree_card.anchor = pointer.y;
-      }
-      const entries = this.sidebarEntries();
-      // The host may leave its last mouse report at the window edge.
-      if (pointer.x > 0) {
-        const entry = sidebar.agentAt(this.sidebarView(entries), entries, pointer.x, pointer.y);
-        if (entry) target = { conversation: entry.conversation, agent: entry.target };
+        );
+        if (git) {
+          target = { git: git.id };
+          if (git.git_push.phase === "failed") return true;
+        }
+        const worktree = sidebar.worktreeAt(this.sidebarView([]), this.workspaceEntries(), pointer.x, pointer.y);
+        if (
+          worktree &&
+          worktreeTooltip.geometry(
+            this.width,
+            this.height,
+            this.sidebarView([]).width,
+            pointer.y,
+            worktrees.linked(worktree.worktrees).length,
+          )
+        ) {
+          target = { worktree: worktree.id };
+          this.worktree_card.workspace = worktree.id;
+          this.worktree_card.anchor = pointer.y;
+        }
+        const entries = this.sidebarEntries();
+        // The host may leave its last mouse report at the window edge.
+        if (pointer.x > 0) {
+          const entry = sidebar.agentAt(this.sidebarView(entries), entries, pointer.x, pointer.y);
+          if (entry) target = { conversation: entry.conversation, agent: entry.target };
+        }
       }
       const link = !this.paste_card ? this.linkAt(pointer.x, pointer.y) : null;
       if (link && linkTooltip.geometry(this.width, this.height, link)) {
@@ -5553,6 +5927,9 @@ export class Controller {
             ? " Agent search: enlarge terminal or Esc"
             : this.message,
         copy_feedback: this.copy_feedback_until > milliTimestamp(),
+        added_feedback:
+          this.added_feedback && this.added_feedback.until > milliTimestamp() ? this.added_feedback.label : "",
+        signin_exit: this.signin_exit,
         copy_mode: this.copy_mode,
         prefix: this.prefix,
         sidebar_focus: this.sidebar_focus?.section() ?? null,
@@ -5607,6 +5984,9 @@ export class Controller {
         system_working: this.runtime.system_working,
         accounts: new subagentTooltip.Accounts({
           options: this.launch_previews.preview.options,
+          names: this.launch_previews.preview.names,
+          accounts: this.launch_previews.preview.accounts,
+          panes: this.runtime.panes,
           system: this.runtime.inference.provider,
         }),
         workspaces: this.sidebar_focus
@@ -5622,6 +6002,7 @@ export class Controller {
             ? (w: Writer) =>
                 this.review.draw(w, this.width - review_width, 0, review_width, this.height, review_focused)
             : null,
+        signin_draw: this.signin ? (w: Writer, pointer: render.Pointer | null) => this.drawSignin(w, pointer) : null,
       }),
     );
   }

@@ -195,9 +195,13 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     return;
   }
-  // `agent` hands the rest of its line to the agent; `integration` prints its own help.
+  // `agent` hands the rest of its line to the agent; `integration` and `account` print their own help.
   const own =
-    command === "agent" ? args.slice(0, 2) : command === "integration" || command.startsWith("__") ? [] : args;
+    command === "agent"
+      ? args.slice(0, 2)
+      : command === "integration" || command === "account" || command.startsWith("__")
+        ? []
+        : args;
   if (cli.asksHelp(own) || command === "help") {
     process.stdout.write(agent ? cli.help.trimEnd() + agent_mode.helpNote : help + cli.help);
     return;
@@ -340,19 +344,29 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "integration": {
       const integration = await import("./integration"),
-        [op, name, ...rest] = args.slice(1);
+        words = args.slice(1),
+        at = words.indexOf("--account"),
+        account = at >= 0 ? (words[at + 1] ?? "") : null;
+      if (at >= 0) words.splice(at, 2);
+      const [op, name, ...rest] = words;
       if (op === undefined || ["help", "--help", "-h"].includes(op) || args.includes("--help") || args.includes("-h"))
         return void process.stdout.write(integration.help);
       if (
         (op !== "status" && op !== "install" && op !== "uninstall") ||
         rest.length ||
+        account === "" ||
         (name !== undefined && !Provider.parse(name))
       ) {
         process.stderr.write(integration.help);
         process.exitCode = 2;
         return;
       }
-      if (!(await integration.command(op, name === undefined ? null : provider(name)))) process.exitCode = 1;
+      if (!(await integration.command(op, name === undefined ? null : provider(name), account))) process.exitCode = 1;
+      return;
+    }
+    case "account": {
+      const account = await import("./account_command");
+      process.exitCode = await account.command(args.slice(1));
       return;
     }
     case "hooks": {

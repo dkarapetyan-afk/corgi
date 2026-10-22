@@ -15,10 +15,13 @@ import type { Known, Observer, Watcher } from "./providers/adapter";
 import type { Snapshot, Request as ObserverRequest } from "./providers/snapshot";
 import type { Request } from "./protocol";
 import { Model } from "./providers/model";
+import * as accounts from "./accounts";
+import * as integration from "./integration";
 
 type Workers = {
   transcripts: TranscriptWorker;
-  observers: Map<Provider, Observer>;
+  /** Each account's observer, by provider and account. */
+  observers: Map<string, { provider: Provider; account: string; observer: Observer }>;
   /** Each provider's watcher, by provider and account. */
   watchers: Map<string, Watcher>;
   usage: UsageWorker;
@@ -33,8 +36,8 @@ export function start(server: Server) {
     transcripts: TranscriptWorker.start(),
     observers: new Map(
       Provider.all.flatMap(p => {
-        const observer = adapter(p).observer?.();
-        return observer ? [[p, observer] as const] : [];
+        const observer = adapter(p).observer?.("");
+        return observer ? [[`${p}\0`, { provider: p, account: "", observer }] as const] : [];
       }),
     ),
     watchers: new Map<string, Watcher>(),
@@ -59,6 +62,26 @@ function watcher(workers: Workers, provider: Provider, account = "") {
   let found = workers.watchers.get(key);
   if (!found) workers.watchers.set(key, (found = adapter(provider).watch(account)));
   return found;
+}
+/** Starts an observer for each other account a live pane runs its agent in,
+ * and stops those no pane needs. */
+function observeAccounts(workers: Workers, runtime: Runtime) {
+  const wanted = new Set<string>();
+  for (const pane of runtime.panes) {
+    const provider = pane.agent().provider;
+    if (pane.terminal.exited || !provider) continue;
+    const account = pane.account(),
+      key = `${provider}\0${account}`;
+    wanted.add(key);
+    if (!account || workers.observers.has(key)) continue;
+    const observer = adapter(provider).observer?.(account);
+    if (observer) workers.observers.set(key, { provider, account, observer });
+  }
+  for (const [key, { account, observer }] of workers.observers)
+    if (account && !wanted.has(key)) {
+      observer.stop();
+      workers.observers.delete(key);
+    }
 }
 function publishInference(server: Server, workers: Workers) {
   const status = workers.summaries.status();
@@ -193,6 +216,15 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     // An agent someone typed into the pane's shell comes back as they typed it.
     if (job.pid !== previous && (!pane.launch || pane.launch.agent?.observed))
       pane.launch = Launch.observed(job.provider, job.pid);
+    // A saved command's own variables may be spelled past reading; its agent's say.
+    if (job.pid !== previous && pane.launch?.command)
+      pane.running_account = Launch.observed(job.provider, job.pid).account() || null;
+    // An agent in an account Corgi hadn't seen gets its hooks from the next start on.
+    const account = job.pid !== previous ? pane.account() : "";
+    if (account && !accounts.forgotten(account)) {
+      accounts.remember(job.provider, account);
+      void integration.prepare(job.provider, account);
+    }
     const shown = adapter(job.provider);
     if (shown.titleSession) {
       retitled(runtime, pane, job.provider, shown.titleSession(pane.terminal.title));
@@ -224,7 +256,7 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
         permission_review: !!actor.state.permission_review,
         prompt: actor.prompt_watch,
       },
-      seen = watcher(workers, judge).read(view, pane.detection, known, now);
+      seen = watcher(workers, judge, pane.account()).read(view, pane.detection, known, now);
     if (seen.shown && speaks && job) ding = pane.detection.show(pane.attachment.provisional, seen.shown, watched);
     if (actor) {
       actor.screen(pane.attachment.provisional, ding, now);
@@ -257,7 +289,8 @@ export function hook(server: Server, query: Request<"hook">) {
   let actor;
   if (query.background) actor = known;
   else {
-    const route = watcher(workers, query.provider).route(event, query.pane, session =>
+    const from = runtime.pane(query.pane),
+      route = watcher(workers, query.provider, from?.account() ?? "").route(event, query.pane, session =>
         showing(runtime, query.provider, session),
       ),
       pane = route && runtime.pane(route.pane);
@@ -294,7 +327,8 @@ export async function tick(server: Server) {
       pane.detected = { output: pane.terminal.surface_revision, at: now };
     }
     for (const actor of runtime.conversations.items) actor.checkPause();
-    for (const [provider, observer] of workers.observers) {
+    observeAccounts(workers, runtime);
+    for (const { provider, observer } of workers.observers.values()) {
       observer.reconcile(runtime);
       for (const request of observer.takeMissed()) missed(server, provider, request);
       for (const snapshot of observer.take()) {
@@ -403,10 +437,12 @@ export async function settle(server: Server) {
   try {
     await tick(server);
     await Promise.all(
-      [workers.transcripts, workers.usage, ...workers.observers.values()].map(async worker => {
-        while (worker.running && !worker.stopping) await Bun.sleep(1);
-        await worker.run();
-      }),
+      [workers.transcripts, workers.usage, ...[...workers.observers.values()].map(o => o.observer)].map(
+        async worker => {
+          while (worker.running && !worker.stopping) await Bun.sleep(1);
+          await worker.run();
+        },
+      ),
     );
     await tick(server);
     void workers.summaries.run();
@@ -419,7 +455,7 @@ export function stop(server: Server) {
   const workers = services.get(server);
   if (!workers) return;
   workers.transcripts.stop();
-  for (const observer of workers.observers.values()) observer.stop();
+  for (const { observer } of workers.observers.values()) observer.stop();
   workers.usage.stop();
   workers.summaries.stop();
   services.delete(server);

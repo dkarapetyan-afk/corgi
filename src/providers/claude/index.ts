@@ -13,11 +13,14 @@ import * as usage from "./usage";
 import * as conversation from "./conversation";
 import { hookOrigin, unnest } from "./process";
 export { BlockType, Line, MessageType, TaskNotice, TaskStatus, TranscriptLine } from "./transcript";
-import { caps, info, keeping, vocabulary } from "./info";
+import { caps, identity, info, keeping, vocabulary } from "./info";
+import { signin } from "./signin";
 import * as commandLine from "../command_line";
 export function configDir(env = process.env) {
   return configHome(env, vocabulary.config_env, ".claude");
 }
+/** Where `account` keeps its settings, "" for the default's. */
+const dir = (account: string) => account || configDir();
 export function subagentTranscript(transcript: string, session: string, agent: string) {
   return path.join(path.dirname(transcript), session, "subagents", `agent-${agent}.jsonl`);
 }
@@ -42,7 +45,8 @@ export const events = [
   "SubagentStart",
   "SubagentStop",
 ];
-const settings = () => new hooksFile.File("claude", configDir(), "settings.json", events);
+const settings = (account: string) =>
+  new hooksFile.File("claude", dir(account), "settings.json", events, account ? configDir() : null);
 const hooks = new Hooks();
 export const adapter: Adapter = {
   ...info,
@@ -60,6 +64,18 @@ export const adapter: Adapter = {
       : []),
     ...["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(dir => root + dir + "/claude"),
   ],
+  accounts: {
+    env: vocabulary.config_env,
+    home: configDir,
+    prefix: ".claude-",
+    identity: root => identity(root, root === configDir() && !process.env[vocabulary.config_env]),
+    // Its setup; the login and the conversations stay the account's own.
+    shared: {
+      dirs: ["skills", "agents", "commands", "plugins", "hooks", "themes", "output-styles"],
+      files: ["settings.json", "CLAUDE.md", "history.jsonl", "keybindings.json"],
+    },
+    signin,
+  },
   watch: () => new Watcher(),
   hook: v => hooks.decode(v),
   origin: hookOrigin,
@@ -73,9 +89,9 @@ export const adapter: Adapter = {
     keep: c => commandLine.keep(c, keeping),
     resume: session => ["--resume", session],
     // Its background daemon holds sessions that `--resume` refuses.
-    attach(session) {
+    attach(session, account) {
       try {
-        const job = daemon.jobIn(path.join(configDir(), "sessions"), session);
+        const job = daemon.jobIn(path.join(dir(account), "sessions"), session);
         return job ? ["attach", job.text()] : null;
       } catch {
         return null;
@@ -99,8 +115,8 @@ export const adapter: Adapter = {
     },
   },
   rename: {
-    async channel(session) {
-      const peer = await renaming.peerIn(path.join(configDir(), "sessions"), session);
+    async channel(session, _connected, account) {
+      const peer = await renaming.peerIn(path.join(dir(account), "sessions"), session);
       return peer ? name => renaming.rename(peer, session, name) : null;
     },
   },
@@ -113,26 +129,26 @@ export const adapter: Adapter = {
     start: (r, at) => Claude.start({ ...at, cwd: "/tmp" }, summaryArgs(r), { schema: r.schema !== null }),
     restore: Claude.restore,
   },
-  launcher: () => import("./launcher").then(m => m.open()),
-  history: () => import("./history").then(m => m.open()),
+  launcher: account => import("./launcher").then(m => m.open(account)),
+  history: account => import("./history").then(m => m.open(account)),
   transcript: {
     ...transcript,
     continuation: (transcript, session) => path.join(path.dirname(transcript), session + ".jsonl"),
-    reader: usage.open,
+    reader: () => usage.open(),
   },
   conversation,
   integration: {
-    directory: () => configDir(),
-    install: async () => [settings().install()],
-    async uninstall() {
-      const file = settings(),
+    directory: dir,
+    install: async account => [settings(account).install()],
+    async uninstall(account) {
+      const file = settings(account),
         { result } = file.uninstall();
       if (result.outcome === "no_config" || result.outcome === "failed") return [result];
       return [result, ...file.cleanup([file.path + ".corgi-backup"])];
     },
-    status: async () => [settings().status()],
-    async startup() {
-      const hooks = settings().install();
+    status: async account => [settings(account).status()],
+    async startup(account) {
+      const hooks = settings(account).install();
       if (hooks.outcome === "failed") console.error("hook setup:", hooks.error);
     },
     snippet: executable => hooksFile.snippet("claude", events, executable),

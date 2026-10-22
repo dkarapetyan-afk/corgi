@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { Worker as CommandWorker } from "./launch/command";
-import { Worker as PreviewWorker, Preview } from "./launch/preview";
+import { Worker as PreviewWorker, Preview, Option } from "./launch/preview";
+import { byProvider } from "./providers";
 import { Worker as HistoryWorker } from "./launch/history";
 import { stringify } from "./json";
 import type { Server } from "./server";
@@ -100,10 +101,22 @@ export function publish(server: Server, client: Client) {
     }
   }
   let preview = s.launch_previews.preview(subscription.cwd);
-  if (preview.pending)
-    preview = Object.assign(new Preview(), subscription.preview, {
-      pending: true,
+  if (preview.pending) {
+    // A restored subscription can have readings its new worker has not read yet.
+    const previous = subscription.preview,
+      keep = (next: Option, old: Option | undefined) =>
+        next.pending && old ? Object.assign(new Option(), old, { pending: true }) : next;
+    preview = Object.assign(new Preview(), preview, {
+      options: byProvider(p => keep(preview.options[p], previous.options[p])),
+      accounts: preview.accounts.map(a => ({
+        ...a,
+        option: keep(
+          a.option,
+          previous.accounts?.find(old => old.provider === a.provider && old.account === a.account)?.option,
+        ),
+      })),
     });
+  }
   if (stringify(preview) === stringify(subscription.preview)) return;
   client.queue({ type: "agent.preview", cwd: subscription.cwd, preview });
   subscription.preview = preview;

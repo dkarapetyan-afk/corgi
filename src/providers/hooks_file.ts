@@ -1,7 +1,17 @@
 //! The hooks settings file Claude Code and Codex both read:
 //! `{hooks: {Event: [{matcher?, hooks: [{type: "command", command}]}]}}`.
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { flock } from "../native_bridge";
 import { atomicWrite, quote } from "../os";
 import type { IntegrationStepResult } from "./adapter";
@@ -114,8 +124,27 @@ function read(path: string) {
   if (stat && stat.size > 1024 * 1024) throw Error("FileTooBig");
   return { stat, before: stat ? readFileSync(path, "utf8") : "{}" };
 }
-/** A provider's hooks file: `name` in its settings `directory`, with Corgi's
- * handler for provider `id` on `events`. */
+/** `shared`, the default account's settings file, when `path` links to it,
+ * as an account folder shares the default's: Corgi edits that one in place
+ * of the link. Any other link stays as it is, and Corgi leaves it alone. */
+function linked(path: string, shared: string | null): string {
+  if (shared === null) return path;
+  const real = (file: string) => {
+    try {
+      return join(realpathSync(dirname(file)), basename(file));
+    } catch {
+      return file;
+    }
+  };
+  try {
+    return real(resolve(dirname(path), readlinkSync(path))) === real(shared) ? shared : path;
+  } catch {
+    return path;
+  }
+}
+/** A provider's hooks file: `name` in its settings `directory`, with
+ * Corgi's handler for provider `id` on `events`. For an account besides the
+ * default, `shares` is the default's folder, whose file a link may share. */
 export class File {
   readonly path: string;
   readonly command: string;
@@ -124,8 +153,9 @@ export class File {
     readonly directory: string,
     name: string,
     readonly events: readonly string[],
+    shares: string | null = null,
   ) {
-    this.path = join(directory, name);
+    this.path = linked(join(directory, name), shares === null ? null : join(shares, name));
     this.command = command(id);
   }
   /** Edits the file under Corgi's lock. `change` returns the new text, or
@@ -134,7 +164,7 @@ export class File {
     if (!existsSync(this.directory)) return "no_config";
     // Settings that need no change are left untouched, lock file and all.
     if (change(read(this.path).before) === null) return "unchanged";
-    const lock = openSync(join(this.directory, ".corgi-hooks.lock"), "a", 0o600);
+    const lock = openSync(join(dirname(this.path), ".corgi-hooks.lock"), "a", 0o600);
     try {
       if (!flock(lock)) throw Error("HookSettingsBusy");
       const { stat, before } = read(this.path),
@@ -206,7 +236,7 @@ export class File {
         results.push(failed("backup", backup, error));
       }
     try {
-      remove(join(this.directory, ".corgi-hooks.lock"));
+      remove(join(dirname(this.path), ".corgi-hooks.lock"));
     } catch {}
     return results;
   }

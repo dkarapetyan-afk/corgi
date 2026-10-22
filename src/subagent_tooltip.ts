@@ -10,12 +10,12 @@ import * as limit_history from "./usage/limits";
 import { Group as BackgroundGroup, type Group as BackgroundGroupName } from "./activity/background_tasks";
 import { max_actors as max } from "./conversations";
 import { stamp_bucket } from "./protocol";
-import { type Option, option } from "./agent_launcher";
+import { type AccountOption, type Option, option } from "./agent_launcher";
 import * as palette from "./palette";
 import * as releaseLabel from "./release_label";
-import { type Agent, agent as agentValue, providerName } from "./mirror";
+import { type Agent, type Pane, agent as agentValue, providerName } from "./mirror";
 import { type Entry, type Subagents, contextColor } from "./sidebar";
-import { Writer, byteSlice, directoryLabel, displayWidth, writeEllipsis, sat } from "./text";
+import { Writer, byteSlice, directoryLabel, displayWidth, ellipsis, writeEllipsis, sat } from "./text";
 
 let base: string;
 palette.derived(() => {
@@ -430,9 +430,13 @@ export class Card {
     }
     return offset;
   }
+  /** The cells `line` leaves its left text beside a right text this wide. */
+  leftRoom(right_width: number): number {
+    return sat(this.width - 6, right_width + (right_width > 0 ? 2 : 0));
+  }
   line(row: number, left: string, right: string, left_tone: Tone, right_tone: Tone) {
     const right_width = displayWidth(right);
-    const left_room = sat(this.width - 6, right_width + (right_width > 0 ? 2 : 0));
+    const left_room = this.leftRoom(right_width);
     this.w.write(`\x1b[${row + 1};${this.x + 4}H${base}${this.ink(left_tone)}`);
     writeEllipsis(this.w, left.length === 0 ? "" : directoryLabel(left, null, 512), left_room);
     this.w.write(`\x1b[${row + 1};${this.x + this.width - 2 - right_width}H${base}${this.ink(right_tone)}${right}`);
@@ -654,9 +658,17 @@ export interface Release {
   commit?: string;
   staged?: string;
 }
-/** Account limits for the pane beside Top agents, from the launcher preview. */
+/** Account limits for the pane beside Top agents, from the launcher preview,
+ * and the account each agent runs in. */
 export class Accounts {
+  /** Each provider's default account. */
   options = byProvider(() => option());
+  /** What each default account is called; "" for one that goes by its agent's name. */
+  names = byProvider(() => "");
+  /** The accounts besides the defaults. */
+  accounts: AccountOption[] = [];
+  /** The panes agents run in, which name their accounts. */
+  panes: readonly Pick<Pane, "id" | "agent" | "account">[] = [];
   /** The provider the activity summarizer runs on. */
   system: Provider | null = null;
   /** Unix seconds; zero reads the clock. */
@@ -667,15 +679,39 @@ export class Accounts {
     Object.assign(this, fields);
   }
   any(): boolean {
-    for (const provider of Provider.all) {
-      const limits = this.options[provider].limits;
-      if (limits === "metered" || typeof limits === "object") return true;
+    return Provider.all.some(provider => limited(this.options[provider])) || this.accounts.some(a => limited(a.option));
+  }
+  /** The account `item` runs in: its pane's, or for a subagent its parent's. */
+  of(all: readonly Conversation[], item: Conversation): string {
+    let current: Conversation | null = item;
+    for (let i = 0; current !== null && i <= Math.min(max, all.length); i++) {
+      const id = current.id;
+      const pane = id !== 0 ? this.panes.find(p => p.agent.conversation === id) : undefined;
+      if (pane) return pane.account;
+      current = current.parent !== null ? find(all, current.parent) : null;
     }
-    return false;
+    return "";
+  }
+  /** What `account` is called and who signed in to it; null for the default,
+   * unless it has a name and another account to tell it from. */
+  label(provider: Provider | null, account: string): { name: string; email: string } | null {
+    if (provider === null) return null;
+    if (account.length === 0) {
+      const name = this.names[provider];
+      return name && this.accounts.some(a => a.provider === provider)
+        ? { name, email: this.options[provider].account }
+        : null;
+    }
+    const listed = this.accounts.find(a => a.provider === provider && a.account === account);
+    if (listed) return { name: listed.name, email: listed.option.account };
+    return { name: account.slice(account.lastIndexOf("/") + 1), email: "" };
   }
 }
+const limited = (value: Option) => value.limits === "metered" || typeof value.limits === "object";
 interface Ranked {
   conversation: Conversation | null;
+  /** The account its agent runs in, "" for the default. */
+  account: string;
   value: UsageView;
   /** The id prices are found by, and the name the column shows. */
   model: string;
@@ -766,7 +802,14 @@ export function drawOverview(
   if (cols < 40 || rows < 13) return;
   const total = cloneUsage(system_usage);
   let ranked: Ranked[] = [
-    { conversation: null, value: system_usage, model: system_model, model_name: system_model_name, equivalent: 0n },
+    {
+      conversation: null,
+      account: "",
+      value: system_usage,
+      model: system_model,
+      model_name: system_model_name,
+      equivalent: 0n,
+    },
   ];
   const now = microTimestamp();
   // Rows use exclusive own usage. Parents never include their children here.
@@ -776,6 +819,7 @@ export function drawOverview(
     if (ranked.length < max + 1)
       ranked.push({
         conversation: item,
+        account: accounts.of(all, item),
         value: item.usage,
         model: item.model,
         model_name: item.model_name,
@@ -846,16 +890,20 @@ type WindowPair = [Window | null, Window | null];
  * limits in the pane on the right. */
 class Section {
   rows: number[] = [];
-  constructor(public provider: Provider | null) {}
+  constructor(
+    public provider: Provider | null,
+    /** Its settings folder, "" for the default. */
+    public account = "",
+    /** What an account besides the default is called. */
+    public name = "",
+    public option: Option | null = null,
+  ) {}
   get count(): number {
     return this.rows.length;
   }
-  option(accounts: Accounts): Option | null {
-    return this.provider === null ? null : accounts.options[this.provider];
-  }
   /** Limit windows by length, shortest first. */
-  windowOrder(accounts: Accounts): [number | null, number | null] {
-    const value = this.option(accounts);
+  windowOrder(): [number | null, number | null] {
+    const value = this.option;
     if (value === null || typeof value.limits !== "object") return [null, null];
     const limits: WindowPair = value.limits.windows;
     let order: [number | null, number | null] = [null, null];
@@ -869,17 +917,17 @@ class Section {
     if (n === 2 && (limits[1]!.minutes ?? 0) < (limits[0]!.minutes ?? 0)) order = [1, 0];
     return order;
   }
-  paneRows(accounts: Accounts): number {
+  paneRows(): number {
     if (this.provider === null) return 0;
-    const order = this.windowOrder(accounts);
+    const order = this.windowOrder();
     return Math.max(1, Number(order[0] !== null) + Number(order[1] !== null));
   }
-  height(accounts: Accounts): number {
-    return 1 + Math.max(1, this.count, this.paneRows(accounts));
+  height(): number {
+    return 1 + Math.max(1, this.count, this.paneRows());
   }
   /** Limited and nearly full accounts first; metered and unread ones last. */
-  urgency(accounts: Accounts, now: number): number {
-    const option_value = this.option(accounts);
+  urgency(now: number): number {
+    const option_value = this.option;
     if (option_value === null) return -1;
     if (expired(option_value.usage_fetched_at, now)) return 0;
     if (typeof option_value.limits !== "object") return 0;
@@ -888,21 +936,32 @@ class Section {
     return most;
   }
 }
-/** Groups the visible rows by account. Accounts with limits keep a section
- * even with no agents running, since other clients use them too. */
+/** Groups the visible rows by provider and account. Accounts with limits keep
+ * a section even with no agents running, since other clients use them too. */
 function byAccount(rows_shown: readonly Ranked[], accounts: Accounts, now: number): Section[] {
-  const out = [...Provider.all.map(provider => new Section(provider)), new Section(null)];
+  const out: Section[] = [];
+  for (const provider of Provider.all) {
+    out.push(new Section(provider, "", accounts.names[provider], accounts.options[provider]));
+    for (const a of accounts.accounts)
+      if (a.provider === provider) out.push(new Section(provider, a.account, a.name, a.option));
+  }
+  const sectionOf = (provider: Provider, account: string): Section => {
+    const found = out.find(section => section.provider === provider && section.account === account);
+    if (found) return found;
+    // One the preview doesn't list yet reads as loading.
+    const added = new Section(provider, account, accounts.label(provider, account)?.name ?? "", option());
+    out.push(added);
+    return added;
+  };
+  const other = new Section(null);
   rows_shown.forEach((row, i) => {
     const provider = row.conversation !== null ? row.conversation.agent.provider : accounts.system;
-    out[provider !== null ? Provider.all.indexOf(provider) : Provider.all.length].rows.push(i);
+    (provider !== null ? sectionOf(provider, row.account) : other).rows.push(i);
   });
-  const kept = out.filter(section => {
-    const value = section.option(accounts);
-    const shows = value !== null ? value.limits === "metered" || typeof value.limits === "object" : false;
-    return section.count > 0 || shows;
-  });
+  out.push(other);
+  const kept = out.filter(section => section.count > 0 || (section.option !== null && limited(section.option)));
   // Array.prototype.sort is stable, as std.sort.insertion is.
-  return kept.sort((lhs, rhs) => rhs.urgency(accounts, now) - lhs.urgency(accounts, now));
+  return kept.sort((lhs, rhs) => rhs.urgency(now) - lhs.urgency(now));
 }
 /** The overview with a limits pane: the Top agents table is unchanged on the
  * left, and each account's rule crosses both panes so its limits sit level
@@ -925,7 +984,7 @@ function drawAccounts(
     rows_shown = visible(ranked, shown);
     sections = byAccount(rows_shown, accounts, now);
     height = 6;
-    for (const section of sections) height += section.height(accounts);
+    for (const section of sections) height += section.height();
     if (height + 3 <= rows) break;
     if (shown === 1) return false;
     shown -= 1;
@@ -948,15 +1007,15 @@ function drawAccounts(
   full.cell(heading, pane + 9, 20, "↻ resets in", "faint", true);
   let row = heading + 1;
   sections.forEach((section, i) => {
-    accountRule(full, row, section, accounts, divider, i === 0);
-    const order = section.windowOrder(accounts);
-    const body = section.height(accounts) - 1;
+    accountRule(full, row, section, divider, i === 0);
+    const order = section.windowOrder();
+    const body = section.height() - 1;
     for (let line = 0; line < body; line++) {
       const at = row + 1 + line;
       w.write(`\x1b[${at + 1};${divider + 1}H${base}${Tone.ansi("border")}│`);
       if (line < section.count)
         overviewAgent(table, at, rows_shown[section.rows[line]], overview.reference, overview.system_working);
-      const value = section.option(accounts);
+      const value = section.option;
       if (value === null) continue;
       if (line < 2) {
         const index = order[line];
@@ -989,27 +1048,32 @@ function spark(history: unknown, index: number): limit_history.Spark {
     typeof cells[i] === "number" ? (cells[i] as number) : null,
   );
 }
-/** A rule across the whole card naming the account, crossing the divider. */
-function accountRule(card: Card, row: number, section: Section, accounts: Accounts, divider: number, first: boolean) {
+/** A rule across the whole card naming the account, crossing the divider:
+ * "Claude you@home.dev · Max", or for another account "Claude work · you@acme.dev · Team". */
+function accountRule(card: Card, row: number, section: Section, divider: number, first: boolean) {
   const w = card.w;
   w.write(`\x1b[${row + 1};${card.x + 1}H${base}${Tone.ansi("border")}├`);
   w.write("─".repeat(card.width - 2));
   w.write("┤");
   w.write(`\x1b[${row + 1};${divider + 1}H${first ? "┬" : "┼"}`);
-  const value = section.option(accounts);
+  const value = section.option;
+  const email = value !== null ? value.account : "";
+  const named = section.name.length > 0;
+  const who = named ? section.name : email;
   const name =
     section.provider !== null
-      ? value !== null && value.account.length > 0
-        ? `${adapter(section.provider).name} ${value.account}`
+      ? who.length > 0
+        ? `${adapter(section.provider).name} ${who}`
         : adapter(section.provider).name
       : "Other agents";
+  const title = ellipsis(name, 60);
+  const plan = value !== null && value.plan.length > 0 ? ellipsis(value.plan, 16) : "";
   w.write(`\x1b[${row + 1};${card.x + 3}H${base}${Tone.ansi("border")} `);
-  w.write(`${base}${Tone.ansi("title")}`);
-  writeEllipsis(w, name, 60);
-  if (value !== null && value.plan.length > 0) {
-    w.write(`${base}${Tone.ansi("muted")} · `);
-    writeEllipsis(w, value.plan, 16);
-  }
+  w.write(`${base}${Tone.ansi("title")}${title}`);
+  // A named account's email takes what is left before the divider.
+  const room = sat(divider - card.x - 4, displayWidth(title) + 3 + (plan.length > 0 ? 3 + displayWidth(plan) : 0));
+  if (named && email.length > 0 && room >= 8) w.write(`${base}${Tone.ansi("muted")} · ${ellipsis(email, room)}`);
+  if (plan.length > 0) w.write(`${base}${Tone.ansi("muted")} · ${plan}`);
   w.write(`${base} `);
 }
 function limitsMessage(value: Option): string {
@@ -1098,6 +1162,7 @@ export function draw(
   rows: number,
   px: number,
   py: number,
+  accounts: Accounts = new Accounts(),
 ): void {
   if (cols < 40 || rows < 13) return;
   const parent = entry.conversation;
@@ -1174,14 +1239,26 @@ export function draw(
   // The subtitle names the provider and model, with the context meter beside it.
   const provider = providerName(root_agent);
   const model_label = modelLabel(root);
-  const subtitle =
+  const model_line =
     asciiLower(name) === asciiLower(provider)
       ? model_label
       : model_label.length > 0
         ? `${provider} · ${model_label}`
         : provider;
+  // An agent in another account names it, and who signed in to it fainter still.
+  const pane = "pane" in entry.target ? entry.target.pane : null;
+  const account = accounts.label(root_agent.provider, accounts.panes.find(p => p.id === pane)?.account ?? "");
+  const subtitle =
+    account === null ? model_line : [model_line, account.name].filter(part => part.length > 0).join(" · ");
   const metered = root_agent.state !== "done" && root.context.band() !== null;
-  card.line(top + 1, subtitle, metered ? " ".repeat(card.meterWidth(root.context)) : "", "muted", "muted");
+  const meter_space = metered ? " ".repeat(card.meterWidth(root.context)) : "";
+  card.line(top + 1, subtitle, meter_space, "muted", "muted");
+  // The email gives way before the name it follows.
+  const email_room = sat(card.leftRoom(meter_space.length), displayWidth(subtitle));
+  if (account !== null && account.email.length > 0 && email_room >= 12) {
+    const email = ellipsis(directoryLabel(` · ${account.email}`, null, 512), email_room);
+    w.write(`\x1b[${top + 2};${x + 4 + displayWidth(subtitle)}H${base}${Tone.ansi("faint")}${email}`);
+  }
   if (metered) card.meter(top + 1, root.context, root_agent.state === "working" && root_agent.compacting);
   const header = top + 2 + Number(activity_row);
   if (activity_row) card.line(top + 2, root_activity, "", "muted", "muted");

@@ -12,8 +12,8 @@ export class Rpc {
   /** What the server said that no reply settled, until `take`. */
   private unclaimed: unknown[] = [];
   constructor(readonly io: Stdio) {}
-  static spawn(executable: string, args: string[], cwd: string) {
-    return new Rpc(Stdio.spawn([executable, "app-server", "--listen", "stdio://", ...args], { cwd }));
+  static spawn(executable: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+    return new Rpc(Stdio.spawn([executable, "app-server", "--listen", "stdio://", ...args], { cwd, env }));
   }
   /** Sends a request; it settles once `take` or `request` reads the reply. */
   call(method: string, params: unknown): Promise<any> {

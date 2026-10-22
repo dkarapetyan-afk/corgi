@@ -35,11 +35,12 @@ export class ResumeHint {
     if (!this.provider || !validRef({ id: session })) return null;
     return adapter(this.provider).launch.resume(session);
   }
-  /** The command that attaches to its session where that already runs. */
-  attach(): string | null {
+  /** The command that attaches to its session where that already runs in
+   * `account`; it runs with the variables that pick the account. */
+  attach(account = ""): string | null {
     if (!this.provider || this.args() === null) return null;
     const { command, launch } = adapter(this.provider),
-      args = launch.attach?.(this.session.text());
+      args = launch.attach?.(this.session.text(), account);
     return args ? shellWords([command, ...args]) : null;
   }
   command(): string {

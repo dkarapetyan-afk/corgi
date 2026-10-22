@@ -28,17 +28,20 @@ export const toolless = [
   "-c",
   'web_search="disabled"',
 ];
-/** A tool-less app server, opened on the first request and kept until closed. */
+/** A tool-less app server, opened on the first request and kept until
+ * closed. `account` picks its CODEX_HOME, "" the default. */
 export class AppServer {
   private opening: Promise<Rpc> | null = null;
   constructor(
     readonly timeout_ms: number,
     readonly executable: string | null = null,
+    readonly account = "",
   ) {}
   private async open() {
     // Imported late: discovery reaches back into the provider registry.
     const discovery = await import("../../discovery"),
-      rpc = Rpc.spawn(this.executable ?? discovery.override("codex") ?? "codex", toolless, "/tmp");
+      env = this.account ? { ...process.env, CODEX_HOME: this.account } : undefined,
+      rpc = Rpc.spawn(this.executable ?? discovery.override("codex") ?? "codex", toolless, "/tmp", env);
     try {
       await rpc.request(
         "initialize",

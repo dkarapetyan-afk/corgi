@@ -1,14 +1,18 @@
-import { test, expect, setSystemTime } from "bun:test";
+import { test, expect, setSystemTime, spyOn } from "bun:test";
 import { State, geometry, copyAt, draw, filePath } from "./link_tooltip";
 import { Controller } from "./controller";
 import { transport } from "./fixtures/transport";
 import * as viewer from "./viewer";
+import * as viewerNative from "./viewer_native";
 import * as native from "./native_ffi";
 import { Writer } from "./text";
 import { png_base64 } from "./assets/corgi_badge";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Signin } from "./signin";
+import { Terminal } from "./pane/terminal";
+const source = { updateRender() {}, hyperlinks: () => [] };
 test("the resource card opens and wakes the viewer after 150 ms", () => {
   const s = new State(),
     target = { resource: 1 };
@@ -43,7 +47,7 @@ test("tooltip waits for rest and requires fresh movement after interaction", () 
 
 test("link hover wakes at 150 ms and changing the URL restarts the delay", () => {
   const s = new State();
-  const link = { pane: 1, id: 1n, uri: "https://example.com", x: 5, y: 2 };
+  const link = { source, id: 1n, uri: "https://example.com", x: 5, y: 2 };
   s.move();
   expect(s.ready({ link }, 100)).toBe(false);
   expect(s.due(249)).toBe(false);
@@ -54,6 +58,7 @@ test("link hover wakes at 150 ms and changing the URL restarts the delay", () =>
   expect(s.ready(changed, 251)).toBe(false);
   expect(s.due(400)).toBe(false);
   expect(s.ready(changed, 401)).toBe(true);
+  expect(s.ready({ link: { ...changed.link, source: { ...source } } }, 402)).toBe(false);
 });
 
 test("the link popover fits at screen edges and only its middle row copies", () => {
@@ -81,7 +86,7 @@ test("both link popover labels keep the right border aligned and stay inside the
       ]) {
         const w = new Writer();
         for (let y = 0; y < 10; y++) w.write(`\x1b[${y + 1};1H` + "#".repeat(40));
-        const link = { pane: 1, id: 1n, uri, x, y: 5 };
+        const link = { source, id: 1n, uri, x, y: 5 };
         draw(w, rect, { link, copied: label.includes("Copied"), thumbnail: null }, true);
         terminal.feed(w.buffered());
         const rows = terminal.text().split("\n");
@@ -99,7 +104,7 @@ test("both link popover labels keep the right border aligned and stay inside the
 });
 
 const url = "https://example.com/docs";
-function linkViewer(output = url) {
+function linkViewer(output = url, host: "pane" | "signin" = "pane") {
   const s = new Controller({
     socket: "",
     request: transport(async () => {
@@ -132,54 +137,86 @@ function linkViewer(output = url) {
     conversations: [],
     headless_sessions: [],
   });
-  s.runtime.pane(1)!.terminal.inner.feed(output);
+  if (host === "signin") {
+    const signin = new Signin(true, false, { changed() {}, done() {} });
+    signin.provider = "claude";
+    signin.child = Terminal.create(s.width - 2, s.height - 5);
+    signin.resize(s.width, s.height);
+    signin.child.feed(output);
+    s.signin = signin;
+  } else s.runtime.pane(1)!.terminal.inner.feed(output);
   s.frame();
   return s;
+}
+function close(s: Controller) {
+  s.signin?.child?.destroy();
+  s.signin = null;
+  viewer.close(s);
 }
 const mouse = (button: number, x: number, y: number, release = false) =>
   Buffer.from(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`);
 
-test.each([
-  url,
-  `\x1b]8;;${url}\x1b\\Named docs\x1b]8;;\x1b\\`,
-  `\x1b]8;;${url}\x1b\\\x1b[1;4;38;5;33mfoo\x1b[0m\x1b]8;;\x1b\\`,
-])("link popover waits, stays reachable, copies the URL, and confirms inline: %s", async output => {
-  const s = linkViewer(output);
-  try {
-    setSystemTime(new Date(1000));
-    await s.input(mouse(35, 2, 1));
-    expect(s.frame()).not.toContain("Copy link");
-    setSystemTime(new Date(1149));
-    expect(s.frame()).not.toContain("Copy link");
-    s.dirty = false;
-    setSystemTime(new Date(1150));
-    await s.expireInput();
-    expect(s.dirty).toBe(true);
-    expect(s.frame()).toContain("Copy link");
-    await s.input(mouse(35, 2, 2)); // Cross the top border.
-    expect(s.frame()).toContain("Copy link");
-    await s.input(mouse(35, 4, 3));
-    expect(s.frame()).toContain("\x1b]22;pointer\x1b\\");
-    await s.input(mouse(0, 4, 3));
-    expect(s.clipboard).toBeNull();
-    await s.input(mouse(0, 4, 3, true));
-    expect(s.clipboard).toBe(url);
-    expect(s.effects).toEqual([{ write_terminal: `\x1b]52;c;${Buffer.from(url).toString("base64")}\x07` }]);
-    expect(s.frame()).toContain("✓  Copied");
-    expect(s.frame()).not.toContain("Copied to clipboard");
-    setSystemTime(new Date(2150));
-    await s.expireInput();
-    expect(s.frame()).toContain("Copy link");
-    await s.input(mouse(35, 90, 20));
-    expect(s.frame()).not.toContain("Copy link");
-  } finally {
-    setSystemTime();
-    viewer.close(s);
-  }
-});
+test.each(["pane", "signin"] as const)(
+  "%s link popover waits, stays reachable, copies, and confirms inline",
+  async host => {
+    for (const output of [
+      url,
+      `\x1b]8;;${url}\x1b\\Named docs\x1b]8;;\x1b\\`,
+      `\x1b]8;;${url}\x1b\\\x1b[1;4;38;5;33mfoo\x1b[0m\x1b]8;;\x1b\\`,
+    ]) {
+      const s = linkViewer(output, host);
+      try {
+        setSystemTime(new Date(1000));
+        await s.input(mouse(35, 2, 1));
+        const initial = s.frame();
+        expect(initial).not.toContain("Copy link");
+        expect(initial).toContain("\x1b]22;pointer\x1b\\");
+        expect(initial).toContain("\x1b[4m");
+        setSystemTime(new Date(1149));
+        expect(s.frame()).not.toContain("Copy link");
+        s.dirty = false;
+        setSystemTime(new Date(1150));
+        await s.expireInput();
+        expect(s.dirty).toBe(true);
+        const frame = s.frame();
+        const rendered = native.terminal();
+        rendered.resize(s.width, s.height);
+        try {
+          rendered.feed(frame);
+          expect(rendered.text()).toContain("Copy link");
+          viewerNative.updateRender(rendered.handle);
+          expect(viewerNative.cursor(rendered.handle)).toBeNull();
+        } finally {
+          rendered.close();
+        }
+        await s.input(mouse(35, 2, 2)); // Cross the top border.
+        expect(s.frame()).toContain("Copy link");
+        await s.input(mouse(35, 4, 3));
+        expect(s.frame()).toContain("\x1b]22;pointer\x1b\\");
+        await s.input(mouse(0, 4, 3));
+        expect(s.clipboard).toBeNull();
+        await s.input(mouse(0, 4, 3, true));
+        expect(s.clipboard).toBe(url);
+        expect(s.effects).toEqual([{ write_terminal: `\x1b]52;c;${Buffer.from(url).toString("base64")}\x07` }]);
+        expect(s.frame()).toContain("✓  Copied");
+        expect(s.frame()).not.toContain("Copied to clipboard");
+        setSystemTime(new Date(2150));
+        await s.expireInput();
+        expect(s.frame()).toContain("Copy link");
+        await s.input(mouse(35, 90, 20));
+        expect(s.frame()).not.toContain("Copy link");
+      } finally {
+        setSystemTime();
+        close(s);
+      }
+    }
+  },
+);
 
-test("link popover dismisses on typing, scrolling, selection, or changing terminal content", async () => {
-  const s = linkViewer();
+test.each(["pane", "signin"] as const)("%s link popover dismisses on input or changed content", async host => {
+  const s = linkViewer(url, host);
+  const child = s.signin?.child ?? s.runtime.pane(1)!.terminal.inner;
+  const send = spyOn(child, "send").mockImplementation(() => {});
   let now = 1000;
   const show = async () => {
     now += 1000;
@@ -201,39 +238,111 @@ test("link popover dismisses on typing, scrolling, selection, or changing termin
     }
     await show();
     await s.input(mouse(35, 4, 3));
-    const terminal = s.runtime.pane(1)!.terminal;
-    terminal.inner.feed("\r\x1b[2Kgone");
-    terminal.render_dirty = true;
+    child.feed("\r\x1b[2Kgone");
+    s.runtime.pane(1)!.terminal.render_dirty = true;
     expect(s.frame()).not.toContain("Copy link");
     await s.input(mouse(0, 4, 3));
     await s.input(mouse(0, 4, 3, true));
     expect(s.clipboard).toBeNull();
   } finally {
     setSystemTime();
-    viewer.close(s);
+    send.mockRestore();
+    close(s);
   }
 });
 
-test("popover clicks and cancelled drags do not reach mouse-aware programs", async () => {
-  const s = linkViewer("\x1b[?1003h\x1b[?1006h" + url);
+test.each(["pane", "signin"] as const)(
+  "%s popover clicks and cancelled drags do not reach mouse-aware programs",
+  async host => {
+    const s = linkViewer("\x1b[?1003h\x1b[?1006h" + url, host);
+    const terminal = s.signin?.child ?? s.runtime.pane(1)!.terminal;
+    const send = spyOn(terminal, "send").mockImplementation(() => {});
+    try {
+      setSystemTime(new Date(1000));
+      await s.input(mouse(35, 2, 1));
+      s.frame();
+      setSystemTime(new Date(1150));
+      expect(s.frame()).toContain("Copy link");
+      expect(send).toHaveBeenCalled(); // Motion still reaches a program that asks for it.
+      send.mockClear();
+      await s.input(mouse(35, 4, 3));
+      await s.input(mouse(0, 4, 3));
+      await s.input(mouse(0, 4, 3, true));
+      expect(s.clipboard).toBe(url);
+      expect(send).not.toHaveBeenCalled();
+      await s.input(mouse(35, 4, 3));
+      await s.input(mouse(0, 4, 3));
+      await s.input(mouse(32, 90, 20));
+      s.frame();
+      await s.input(mouse(0, 90, 20, true));
+      expect(s.clipboard).toBe(url);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      setSystemTime();
+      send.mockRestore();
+      close(s);
+    }
+  },
+);
+
+test("the sign-in copies the whole wrapped URL from a continuation row", async () => {
+  const wrapped = "https://example.com/authorize?state=" + "abcdef".repeat(30);
+  const s = linkViewer(wrapped, "signin");
   try {
     setSystemTime(new Date(1000));
-    await s.input(mouse(35, 2, 1));
+    await s.input(mouse(35, 8, 2));
     s.frame();
     setSystemTime(new Date(1150));
     expect(s.frame()).toContain("Copy link");
-    const terminal = s.runtime.pane(1)!.terminal;
-    terminal.pending = [];
-    await s.input(mouse(35, 4, 3));
-    await s.input(mouse(0, 4, 3));
-    await s.input(mouse(32, 90, 20));
-    s.frame();
-    await s.input(mouse(0, 90, 20, true));
-    expect(s.clipboard).toBeNull();
-    expect(terminal.pending).toEqual([]);
+    await s.input(mouse(35, 10, 4));
+    await s.input(mouse(0, 10, 4));
+    await s.input(mouse(0, 10, 4, true));
+    expect(s.clipboard).toBe(wrapped);
   } finally {
     setSystemTime();
-    viewer.close(s);
+    close(s);
+  }
+});
+
+test("sign-in selections and dialogs hide the link card and never target the pane behind them", async () => {
+  const s = linkViewer(url, "signin");
+  const signin = s.signin!;
+  s.runtime.pane(1)!.terminal.inner.feed(url);
+  s.runtime.pane(1)!.terminal.render_dirty = true;
+  const show = async (now: number) => {
+    setSystemTime(new Date(now));
+    await s.input(mouse(35, 90, 20));
+    await s.input(mouse(35, 2, 1));
+    s.frame();
+    setSystemTime(new Date(now + 150));
+    expect(s.frame()).toContain("Copy link");
+  };
+  try {
+    await show(1000);
+    await s.input(mouse(0, 1, 1));
+    await s.input(mouse(32, 8, 1));
+    expect(s.frame()).not.toContain("Copy link");
+    await s.input(mouse(0, 8, 1, true));
+    expect(s.clipboard).toBe("https://");
+    expect(s.frame()).not.toContain("Copy link");
+    signin.child!.clearSelection();
+    await show(2000);
+    signin.working = "Checking sign-in…";
+    expect(s.frame()).not.toContain("Copy link");
+    expect(s.frame()).toContain("\x1b]22;default\x1b\\");
+    signin.working = null;
+    await show(3000);
+    signin.stopped("Sign-in failed.");
+    expect(signin.stage.kind).toBe("dialog");
+    expect(s.frame()).not.toContain("Copy link");
+    await s.input(mouse(35, 3, 1));
+    s.frame();
+    setSystemTime(new Date(4000));
+    expect(s.frame()).not.toContain("Copy link");
+    expect(s.frame()).toContain("\x1b]22;default\x1b\\");
+  } finally {
+    setSystemTime();
+    close(s);
   }
 });
 

@@ -2,7 +2,8 @@ import { createConnection, type Socket } from "node:net";
 import { parse, stringify } from "./json";
 import { milliTimestamp } from "./clock";
 import type { History, Entry } from "./launch/history";
-import { type Preview, preview as previewValue } from "./agent_launcher";
+import type { Account } from "./launcher_resume";
+import { type Preview, option as optionValue, preview as previewValue } from "./agent_launcher";
 import { Provider } from "./providers";
 import * as protocol from "./protocol";
 export class Stream {
@@ -21,12 +22,25 @@ export class Stream {
     this.fd = null;
     this.input = "";
   }
-  current(cwd: string): Preview {
+  current(cwd: string, known: readonly (Account & { managed?: boolean })[] = []): Preview {
+    if (!this.received && this.preview.accounts.length === 0 && known.length > 0)
+      this.preview = {
+        ...this.preview,
+        accounts: known.map(a => ({ ...a, managed: a.managed ?? false, option: optionValue({ pending: true }) })),
+      };
     if (cwd === this.cwd) return this.preview;
-    // Provider visibility survives a directory change; model settings don't.
+    // Provider and account visibility survives a directory change; model
+    // settings don't.
     const result = previewValue();
     result.installed = { ...this.preview.installed };
-    for (const provider of Provider.all) result.options[provider].signed_in = this.preview.options[provider].signed_in;
+    result.names = { ...this.preview.names };
+    const inFolder = (option: Preview["options"][Provider]) =>
+      optionValue({ ...option, pending: true, model: "", model_name: "", source: "" });
+    for (const provider of Provider.all) result.options[provider] = inFolder(this.preview.options[provider]);
+    result.accounts = this.preview.accounts.map(a => ({
+      ...a,
+      option: inFolder(a.option),
+    }));
     return result;
   }
   pending(cwd: string) {
@@ -95,10 +109,26 @@ export class Stream {
     const sent = previewValue(message.preview);
     let preview = sent;
     if (preview.pending) {
+      const keep = (next: Preview["options"][Provider], old: Preview["options"][Provider] | undefined) =>
+        next.pending === true && old ? { ...old, pending: true } : next;
+      for (const provider of Provider.all)
+        preview.options[provider] = keep(sent.options[provider], this.preview.options[provider]);
+      preview.accounts = sent.accounts.map(a => ({
+        ...a,
+        option: keep(
+          a.option,
+          this.preview.accounts.find(old => old.provider === a.provider && old.account === a.account)?.option,
+        ),
+      }));
+    }
+    if (preview.pending && Provider.all.every(p => sent.options[p].pending === null)) {
       if (this.received) {
         preview = previewValue(parse(stringify(this.preview)));
         preview.pending = true;
         preview.installed = sent.installed;
+      } else if (preview.accounts.length === 0) {
+        // A folder's first read lists no accounts yet; keep the ones carried over.
+        preview.accounts = this.preview.accounts;
       }
       for (const provider of Provider.all) {
         const option = preview.options[provider];

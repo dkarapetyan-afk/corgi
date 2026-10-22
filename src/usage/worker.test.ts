@@ -10,7 +10,7 @@ import { Actor } from "../conversations";
 import { hash } from "../activity/summary";
 import * as claudeUsage from "../providers/claude/usage";
 import * as codexUsage from "../providers/codex/usage";
-const readers = { codex: codexUsage.open(() => "/nonexistent/session_index.jsonl"), claude: claudeUsage.open() };
+const readers = { codex: codexUsage.open(() => ["/nonexistent/session_index.jsonl"]), claude: claudeUsage.open() };
 const reader = (req: Request) => readers[req.agent.provider as "codex" | "claude"];
 function request(provider: "codex" | "claude"): Request {
   const agent = new Agent({ provider });

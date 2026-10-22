@@ -44,7 +44,15 @@ test("the first snapshot places a reopened conversation without waiting for disc
     ]);
     await execute(r, ctx, { "pane.close": { target: id } });
     const reopened = await execute(r, ctx, {
-      "agent.resume": { workspace: home.id, cwd: "/tmp", provider: "codex", session: "known", asleep: true, name: "" },
+      "agent.resume": {
+        workspace: home.id,
+        cwd: "/tmp",
+        provider: "codex",
+        session: "known",
+        asleep: true,
+        name: "",
+        account: "",
+      },
     });
     expect(reopened.pane).not.toBe(id);
     const associations = () => snapshot(r).workspaces[0].worktrees!.agents;
@@ -190,6 +198,36 @@ test("swapping panes exchanges their places, across workspaces too", async () =>
     });
     expect(home.model.revision).toBe(rev + 1n);
     expect(away.model.revision).toBe(otherRev + 1n);
+  } finally {
+    r.destroy();
+  }
+});
+test("an account's YOLO and Show are its own, apart from its provider's", async () => {
+  const { r } = setup();
+  try {
+    const run = (cmd: protocol.CommandInput) => execute(r, ctx, protocol.decodeCommand(cmd));
+    await run({ "agent.yolo": { provider: "claude", enabled: true, account: "/accounts/work" } });
+    expect([r.yolo("claude", ""), r.yolo("claude", "/accounts/work"), r.yolo("codex", "")]).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    await run({ "agent.yolo": { provider: "claude", enabled: true } });
+    await run({ "agent.yolo": { provider: "claude", enabled: false, account: "/accounts/work" } });
+    expect([r.agent_yolo.claude, r.account_yolo]).toEqual([true, []]);
+    await expect(run({ "agent.yolo": { provider: "claude", enabled: true, account: "work" } })).rejects.toThrow(
+      "InvalidAccount",
+    );
+    await run({
+      "agent.visibility": { hidden: { codex: true }, hidden_accounts: ["/accounts/work", "/accounts/work"] },
+    });
+    // A viewer that sends no accounts keeps the hidden ones.
+    await run({ "agent.visibility": { hidden: { claude: true } } });
+    expect([r.agent_hidden, r.account_hidden]).toEqual([{ codex: false, claude: true }, ["/accounts/work"]]);
+    await expect(run({ "agent.visibility": { hidden: {}, hidden_accounts: ["work"] } })).rejects.toThrow(
+      "InvalidAccount",
+    );
+    expect(snapshot(r)).toMatchObject({ account_yolo: [], account_hidden: ["/accounts/work"] });
   } finally {
     r.destroy();
   }

@@ -82,8 +82,9 @@ export interface Transcript {
   /** Where the transcript of `session` lives when a record of the one at
    * `transcript` says it continues there. */
   continuation?(transcript: string, session: string): string;
-  /** A reader for the usage worker, closed with it. */
-  reader(): TranscriptReader;
+  /** A reader for the usage worker, closed with it. `accounts` lists the
+   * folders of the accounts besides the default. */
+  reader(accounts: () => string[]): TranscriptReader;
 }
 export interface TranscriptReader {
   /** Runs once a pass, before any transcript is read. */
@@ -113,9 +114,10 @@ export interface Observer {
 }
 /** How a provider renames a session. */
 export interface Rename {
-  /** Renames `session` through the provider's own channel, if one is open
-   * now; `connected` when its protocol spoke in the last few seconds. */
-  channel(session: string, connected: boolean): Promise<((name: string) => Promise<void>) | null>;
+  /** Renames `session`, in `account`, through the provider's own channel, if
+   * one is open now; `connected` when its protocol spoke in the last few
+   * seconds. */
+  channel(session: string, connected: boolean, account: string): Promise<((name: string) => Promise<void>) | null>;
   /** Types the rename into its composer instead. */
   typed?: { command(name: string): string; empty(t: Terminal): boolean; holds(t: Terminal, text: string): boolean };
 }
@@ -208,6 +210,53 @@ export type Inspection = {
   /** It signs in as the user's own default account. */
   default_account: boolean;
 };
+/** Who signed in: the email the provider shows, and what tells two logins
+ * apart, since one email can sign in to a personal plan and a team's. */
+export type Login = { email: string; id: string };
+/** What a first run shows while someone signs in: how to sign in, a link
+ * whose page comes back to this machine, a link whose page gives a code to
+ * paste here, or a link and a code to type on the page. */
+export type SigninStep = "method" | "browser" | "code" | "device";
+/** Its own first-run sign-in, which `corgi account add` frames. */
+export type Signin = {
+  /** Whether its screen shows something to answer yet. Until it does, or a
+   * deadline passes, the frame says it's starting. */
+  started(text: string): boolean;
+  /** The step a screen of its first run shows; null for any other screen. */
+  step(text: string): SigninStep | null;
+  /** What the frame says under a step: what its own screen leaves out. */
+  hints: Partial<Record<SigninStep, string>>;
+  /** Its first run at `directory` is over, so a session there opens at the prompt. */
+  ready(directory: string): boolean;
+  /** Arguments, run with the variable set, that exit 0 once someone signed
+   * in: its own word, as a login can live outside the folder. */
+  check: string[];
+  /** Arguments that sign out, run the same way, before Corgi deletes a
+   * folder a cancelled sign-in made. */
+  logout: string[];
+  /** Arguments its first run in a new account's folder starts with. */
+  first: string[];
+  /** Arguments that sign in to a folder it has run in before, for one whose
+   * own screens then don't offer to; null when they do. */
+  again: string[] | null;
+};
+/** How a provider keeps accounts: each in a settings directory of its own,
+ * which a variable picks. */
+export type Accounts = {
+  /** The variable that picks the directory. */
+  env: string;
+  /** The directory it uses when the variable is unset. */
+  home(env?: NodeJS.ProcessEnv): string;
+  /** What a second directory is often called, this then a name, which
+   * names a folder an agent ran in. */
+  prefix: string;
+  /** Who signed in at `directory`, as it caches that; null when no one has. */
+  identity(directory: string): Login | null;
+  /** What a directory Corgi makes links to in the default one: folders,
+   * and files the default has. */
+  shared: { dirs: string[]; files: string[] };
+  signin: Signin;
+};
 /** What a provider is called. */
 export type Info = {
   /** How data names it: the wire, checkpoints and the CLI. */
@@ -273,6 +322,7 @@ export interface Adapter extends Info {
   /** Whether a candidate's `--version` says it is this provider. Without it,
    * the first `command` on PATH is. */
   version?(stdout: string): boolean;
+  accounts: Accounts;
   /** Its judge of hooks and screens, for an account ("" for the default). */
   watch(account: string): Watcher;
   hook(v: unknown): Hook;
@@ -292,9 +342,9 @@ export interface Adapter extends Info {
     /** Arguments, after the ones it started with, that resume `session`. */
     resume(session: string): string[];
     /** Arguments, after the command, that attach to `session` where it
-     * already runs, such as a daemon of the provider's own, instead of
-     * resuming it. */
-    attach?(session: string): string[] | null;
+     * already runs in `account`, such as a daemon of the provider's own,
+     * instead of resuming it. */
+    attach?(session: string, account: string): string[] | null;
     /** Arguments, after the ones it started with, that fork `from`; null
      * while there is nothing to fork yet. */
     fork(from: { session: string; transcript: string }, name: string | null): Fork | null;
@@ -320,21 +370,23 @@ export interface Adapter extends Info {
      * hold several; false when it can't. */
     renew?(c: Client, r: Inference): boolean;
   };
-  launcher?(): Promise<Launcher>;
-  history?(): Promise<SessionHistory>;
+  /** What the launcher shows about `account`, "" for the default. */
+  launcher?(account: string): Promise<Launcher>;
+  history?(account: string): Promise<SessionHistory>;
   transcript?: Transcript;
   conversation?: Conversation;
-  observer?(): Observer;
-  /** What it needs in its own settings to report to Corgi. */
+  /** Watches the conversations of panes in `account`. */
+  observer?(account: string): Observer;
+  /** What it needs in an account's settings to report to Corgi. */
   integration: {
-    /** Where its settings live; an uninstall is remembered for it. */
-    directory(): string;
-    install(): Promise<IntegrationStepResult[]>;
-    uninstall(): Promise<IntegrationStepResult[]>;
-    status(): Promise<IntegrationStepResult[]>;
-    /** Runs when the daemon starts or takes over from an older one in a
-     * handoff, unless the user uninstalled it. */
-    startup(handoff: boolean): Promise<void>;
+    /** Where the account's settings live; an uninstall is remembered for it. */
+    directory(account: string): string;
+    install(account: string): Promise<IntegrationStepResult[]>;
+    uninstall(account: string): Promise<IntegrationStepResult[]>;
+    status(account: string): Promise<IntegrationStepResult[]>;
+    /** Runs for each account when the daemon starts or takes over from an
+     * older one in a handoff, unless the user uninstalled it there. */
+    startup(account: string, handoff: boolean): Promise<void>;
     /** Settings that make it report to Corgi, to add by hand. */
     snippet(executable: string): string;
   };

@@ -215,6 +215,24 @@ test("saved checkpoint format matches its version", () => {
   expect(value.version).toBe(migrations.checkpoint_version);
   validateCheckpoint(value);
 });
+test("an account's YOLO and Show survive checkpoints and default for old ones", async () => {
+  for (const live of [true, false]) {
+    using original = fresh();
+    original.account_yolo = ["/accounts/work"];
+    original.account_hidden = ["/accounts/side"];
+    const state = roundtrip(cp.capture(original, live));
+    validateCheckpoint(state);
+    using restored = new Runtime();
+    await restore(restored, state, live);
+    expect([restored.account_yolo, restored.account_hidden]).toEqual([["/accounts/work"], ["/accounts/side"]]);
+    delete state.account_yolo;
+    delete state.account_hidden;
+    using old = new Runtime();
+    await restore(old, state, live);
+    expect([old.account_yolo, old.account_hidden]).toEqual([[], []]);
+    expect(() => validateCheckpoint({ ...state, account_yolo: [3] })).toThrow();
+  }
+});
 test("sidebar order survives live and recovery checkpoints and defaults for old state", async () => {
   const r = fresh(),
     id = r.workspaces.items[0].id,

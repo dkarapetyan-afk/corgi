@@ -7,7 +7,17 @@ import * as preferences from "./preferences";
 import { TabMenu } from "./commands";
 import { Dialog } from "./name_dialog";
 import * as newWorkspace from "./new_workspace";
+import * as agentLauncher from "./agent_launcher";
 import { Menu as LauncherMenu } from "./agent_launcher";
+import * as agentManager from "./agent_manager";
+import * as accounts from "./accounts";
+import * as signin from "./signin";
+import * as signinExit from "./signin_exit";
+import { Terminal as NativeTerminal } from "./pane/terminal";
+import { Writer } from "./text";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Menu as SetupMenu, items as setupItems } from "./corgi_setup";
 import * as hostClipboard from "./host_clipboard";
 import * as keyboard from "./keyboard";
@@ -26,6 +36,104 @@ function controller(): any {
   });
 }
 const bytes = (text: string) => new TextEncoder().encode(text);
+
+test.each(["typing", "kitty key", "click", "resize", "flourishes off"])(
+  "%s finishes the sign-in exit without swallowing input",
+  async cause => {
+    const s = controller(),
+      terminal = new NativeTerminal(s.width, s.height);
+    s.receiveSnapshot(folders("/a"));
+    s.input_state.attached = true;
+    try {
+      setSystemTime(new Date(1000));
+      s.signin_exit = new signinExit.State(signinExit.capture(terminal.surface(0).surface), 1000);
+      await s.input(bytes("\x1b[<35;70;10M"));
+      expect(s.signin_exit).not.toBeNull();
+      switch (cause) {
+        case "typing":
+          await s.input(bytes("x"));
+          break;
+        case "kitty key":
+          await s.input(bytes("\x1b[120u"));
+          break;
+        case "click":
+          await s.input(bytes("\x1b[<0;70;10M"));
+          break;
+        case "resize":
+          s.width++;
+          break;
+        case "flourishes off":
+          s.prefs.corgi_intensity = 0;
+          break;
+      }
+      await s.expireInput();
+      expect(s.signin_exit).toBeNull();
+    } finally {
+      terminal.destroy();
+      setSystemTime();
+      viewer.close(s);
+    }
+  },
+);
+
+test.each([0, 50])(
+  "account completion holds the old frame and starts immediately at flourish intensity %i",
+  async intensity => {
+    const s = controller(),
+      open = spyOn(signin.Signin.prototype, "open").mockResolvedValue(undefined),
+      launch = spyOn(s, "launchAgent").mockResolvedValue(undefined);
+    s.receiveSnapshot(folders("/a"));
+    s.prefs.corgi_intensity = intensity;
+    let flow: signin.Signin | null = null;
+    try {
+      setSystemTime(new Date(1000));
+      s.openSignin((host: signin.Host) => {
+        flow = new signin.Signin(true, false, host);
+        flow.provider = "claude";
+        flow.name = "work";
+        flow.account = "/accounts/work";
+        return flow;
+      });
+      const current = flow!;
+      current.resize(s.width, s.height);
+      const body = current.body();
+      current.child = new NativeTerminal(body.cols, body.rows);
+      current.child.feed("Sign-in screen to keep");
+      const before = new Writer();
+      s.drawSignin(before, null);
+      current.work("Signed in. Setting up Claude Code…");
+      await current.stopChild();
+      const held = new Writer();
+      s.drawSignin(held, null);
+      expect(held.buffered()).toContain("Sign-in screen to keep");
+      expect(held.buffered()).toContain("Setting up Claude Code");
+      current.close(0, true, "Account added");
+      expect(launch).toHaveBeenCalledWith("claude", "/accounts/work", "Account added");
+      expect(s.signin).toBeNull();
+      expect(s.signin_frame).toBeNull();
+      expect(s.added_feedback.label).toBe("Claude Code · work");
+      expect(s.signin_exit !== null).toBe(intensity > 0);
+      if (intensity > 0) {
+        expect(
+          s.signin_exit.source.rows
+            .flat()
+            .map((c: { ch: string }) => c.ch)
+            .join(""),
+        ).toContain("Sign-in screen to keep");
+        setSystemTime(new Date(1000 + signinExit.duration_ms));
+        await s.expireInput();
+        expect(s.signin_exit).toBeNull();
+        expect(s.added_feedback).not.toBeNull();
+      }
+    } finally {
+      s.signin?.close(1);
+      open.mockRestore();
+      launch.mockRestore();
+      setSystemTime();
+      viewer.close(s);
+    }
+  },
+);
 
 test.each([
   ["New", 20, "agent_launcher"],
@@ -244,9 +352,10 @@ test("a paste goes to the field that owned the keyboard when it began", async ()
   expect(s.name_dialog.name()).toBe("ab");
   expect(s.input_state.paste).toBeNull();
   // The launcher takes keys before a dialog it was opened over.
-  s.agent_launcher = new LauncherMenu({ workspace: 1, selected: "add", last: "codex", pinned: true, managing: true });
+  s.agent_launcher = new LauncherMenu({ workspace: 1, last: "codex", pinned: true });
+  s.agent_launcher.manage();
   expect(s.pasteTarget()).toBe("launcher");
-  s.agent_launcher.selected = "codex";
+  s.agent_launcher.managing = false;
   expect(s.pasteTarget()).toBe("discard");
   s.agent_launcher = null;
   s.name_dialog = null;
@@ -921,6 +1030,317 @@ test("the launcher names a new worktree, then adds it before starting the agent 
   });
 });
 
+/** An attached controller whose session commands land in `sent`, each making pane 1. */
+function recording(snapshot: any) {
+  const sent: any[] = [];
+  const s: any = new Controller({
+    socket: "",
+    request: transport(async (op, fields: any) => {
+      if (op !== "session.command") return snapshot;
+      sent.push(fields.command);
+      return { result: { pane: 1 } };
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  return { s, sent };
+}
+
+test("both launch screens list snapshot accounts before any preview arrives", () => {
+  const { s } = recording({
+    ...folders("/src/app"),
+    accounts: [{ provider: "claude", account: "/accounts/work", name: "work", managed: true }],
+  });
+  s.openLauncher(true);
+  const launch: agentLauncher.Menu = s.agent_launcher;
+  const row = agentLauncher.Row.of("claude", "/accounts/work");
+  expect(launch.rows()).toContain(row);
+  expect(launch.shown(row)).toBe(true);
+  expect(launch.cells(row)).toContain("Claude Code · work");
+  launch.manage();
+  expect(launch.manageModel().agents.map(a => a.label)).toContain("Claude Code · work");
+  expect(launch.manageModel().agents.find(a => a.account === "/accounts/work")?.managed).toBe(true);
+});
+
+test("an account's row starts its agent there, and resuming keeps a conversation's account", async () => {
+  const snapshot = {
+    ...folders("/src/app"),
+    accounts: [{ provider: "claude", account: "/accounts/work", name: "work", managed: true }],
+  };
+  const { s, sent } = recording(snapshot);
+  Object.assign(s.launch_previews, {
+    cwd: "/src/app",
+    preview: agentLauncher.preview({ accounts: [{ provider: "claude", account: "/accounts/work", name: "work" }] }),
+  });
+  s.openLauncher(true);
+  // Codex, Claude Code, then Claude Code · work.
+  await s.key("2".charCodeAt(0));
+  expect(sent.at(-1)["agent.create"]).toEqual({
+    workspace: 1,
+    cwd: "/src/app",
+    provider: "claude",
+    account: "/accounts/work",
+  });
+  s.openLauncher(true);
+  expect(s.agent_launcher.selected).toBe(agentLauncher.Row.of("claude", "/accounts/work"));
+  await s.key(13);
+  expect(sent.at(-1)["agent.create"].account).toBe("/accounts/work");
+  await s.resumeEntry(
+    {
+      provider: "claude",
+      account: "/accounts/work",
+      session: "s1",
+      title: "",
+      first: "",
+      last: "",
+      cwd: "/src/app",
+      branch: "",
+      updated_at: 1,
+      interrupted: false,
+    },
+    1,
+  );
+  expect(sent.at(-1)["agent.resume"]).toEqual({
+    workspace: 1,
+    cwd: "/src/app",
+    provider: "claude",
+    session: "s1",
+    account: "/accounts/work",
+  });
+});
+
+test.each(["launcher", "settings"] as const)(
+  "%s management renames the default account in the shared model",
+  async source => {
+    const saved = process.env.CORGI_ENV_BASE,
+      base = realpathSync(mkdtempSync(join(tmpdir(), "corgi-manage-")));
+    process.env.CORGI_ENV_BASE = base;
+    process.env.CLAUDE_CONFIG_DIR = join(base, "default");
+    accounts.reset();
+    try {
+      const { s, sent } = recording(folders("/src/app"));
+      const launch = await openManagement(s, source);
+      launch.manager.at = agentManager.agentKey("claude", "");
+      await s.key(9);
+      await s.key(13);
+      for (const ch of "home") await s.key(ch.charCodeAt(0));
+      await s.key(13);
+      expect(accounts.defaultName("claude")).toBe("home");
+      expect(launch.label("claude")).toBe("Claude Code · home");
+      expect(launch.manager.rename).toBeNull();
+      // It asks the daemon for nothing: the preview reads the name again.
+      expect(sent).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.CORGI_ENV_BASE;
+      else process.env.CORGI_ENV_BASE = saved;
+      accounts.reset();
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each(["launcher", "settings"] as const)(
+  "cancelling sign-in returns to %s management with its search and selection",
+  async source => {
+    const saved = {
+        CORGI_ENV_BASE: process.env.CORGI_ENV_BASE,
+        CORGI_CLAUDE_BIN: process.env.CORGI_CLAUDE_BIN,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+      },
+      base = realpathSync(mkdtempSync(join(tmpdir(), "corgi-manage-")));
+    // Its folder is staged at once, so in a state folder of its own, sharing
+    // a default account's setup of its own.
+    process.env.CORGI_ENV_BASE = base;
+    process.env.CORGI_CLAUDE_BIN = "/usr/bin/true";
+    process.env.CLAUDE_CONFIG_DIR = join(base, "claude");
+    accounts.reset();
+    let s: any = null;
+    try {
+      const recorded = recording(folders("/src/app")),
+        sent = recorded.sent;
+      s = recorded.s;
+      await openManagement(s, source);
+      await s.key(27);
+      expect(s.agent_launcher).toBeNull();
+      expect(s.corgi_setup).toBeNull();
+      const launch = await openManagement(s, source),
+        setup = s.corgi_setup;
+      for (const ch of "claude") await s.key(ch.charCodeAt(0));
+      launch.manager.at = "add:claude";
+      await s.key(9);
+      const before = sent.length;
+      await s.key(13);
+      expect(s.agent_launcher).toBeNull();
+      // It signs in straight away, with no agent or name to ask for.
+      expect(s.signin).toMatchObject({ adding: true, provider: "claude", name: null, cwd: "/src/app" });
+      expect(s.signin.staged.dir).toBe(join(base, "corgi", "accounts", "claude", "1"));
+      expect(s.signin.stage.kind === "signin" || s.signin.stage.dialog.heading.includes("didn't start")).toBe(true);
+      expect(sent.length).toBe(before);
+      const staged = s.signin.staged;
+      await s.input(bytes("\x03"));
+      expect(s.signin).toBeNull();
+      expect(s.agent_launcher).toBe(source === "launcher" ? launch : null);
+      expect(s.corgi_setup).toBe(setup);
+      expect(launch.managing).toBe(true);
+      expect(launch.manager.query.name()).toBe("claude");
+      expect(launch.manager.at).toBe("add:claude");
+      expect(launch.manager.focus).toBe("list");
+      expect(existsSync(staged.dir)).toBe(false);
+      expect(existsSync(staged.temp)).toBe(false);
+    } finally {
+      s?.signin?.abandon();
+      for (const [key, value] of Object.entries(saved))
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      accounts.reset();
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+/** The launcher over a preview that lists Claude Code's `work` account. */
+function withWork(option: object = {}) {
+  const recorded = recording(folders("/src/app"));
+  Object.assign(recorded.s.launch_previews, {
+    cwd: "/src/app",
+    preview: agentLauncher.preview({
+      pending: false,
+      accounts: [{ provider: "claude", account: "/accounts/work", name: "work", option }],
+    }),
+  });
+  recorded.s.openLauncher(true);
+  return recorded;
+}
+const work = agentLauncher.Row.of("claude", "/accounts/work");
+
+test.each([false, true])(
+  "Manage deletes secondary accounts, guarding running agents and external folders (created: %s)",
+  async created => {
+    const previous = process.env.CORGI_ENV_BASE,
+      previousClaude = process.env.CLAUDE_CONFIG_DIR,
+      signOut = spyOn(signin, "signOut").mockResolvedValue(undefined),
+      base = realpathSync(mkdtempSync(join(tmpdir(), "corgi-manage-remove-"))),
+      dir = join(base, "imported");
+    process.env.CORGI_ENV_BASE = base;
+    accounts.reset();
+    mkdirSync(dir);
+    try {
+      const account = created ? accounts.adopt(accounts.stage("claude", "work")) : accounts.add("claude", "work", dir);
+      const accountFile = readFileSync(accounts.path(), "utf8");
+      const credential = join(account.dir, "test-credential");
+      writeFileSync(credential, "signed in");
+      const { s, sent } = withWork();
+      s.runtime.panes[0].agent.provider = "claude";
+      s.runtime.panes[0].account = account.dir;
+      s.agent_launcher.preview.accounts[0].account = account.dir;
+      await s.key(109);
+      const manager = s.agent_launcher.manager;
+      manager.at = agentManager.agentKey("claude", account.dir);
+      for (const ch of "work") await s.key(ch.charCodeAt(0));
+      for (let now = 1000; now <= 3000; now += 50) {
+        setSystemTime(new Date(now));
+        await s.key(127);
+      }
+      expect(manager.removal).toBeNull();
+      expect(accounts.named("work")).not.toBeNull();
+      expect(s.textField()).toBe(manager.query.area);
+      await s.input(bytes("\x1b[B"));
+      expect(manager.focus).toBe("list");
+      expect(s.textField()).toBeNull();
+      await s.input(bytes("\x1b[200~ignore me\x1b[201~"));
+      expect(manager.query.name()).toBe("");
+      for (let now = 4000; now <= 7000; now += 50) {
+        setSystemTime(new Date(now));
+        await s.key(127);
+        if (manager.error) break;
+      }
+      expect(accounts.named("work")).not.toBeNull();
+      expect(readFileSync(credential, "utf8")).toBe("signed in");
+      expect(readFileSync(accounts.path(), "utf8")).toBe(accountFile);
+      expect(sent).toEqual([]);
+      expect(manager.error).toContain("Close the agent");
+      expect(signOut).not.toHaveBeenCalled();
+      s.runtime.panes[0].agent.provider = null;
+      manager.open(agentManager.agentKey("claude", account.dir));
+      await s.key(9);
+      for (let now = 9000; now <= 12000; now += 50) {
+        setSystemTime(new Date(now));
+        await s.key(127);
+      }
+      await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+      await s.finishAccountRemovals();
+      expect(accounts.named("work")).toBeNull();
+      expect(s.agent_launcher.preview.accounts).toEqual([]);
+      expect(manager.error).toBe("");
+      expect(existsSync(account.dir)).toBe(!created);
+      if (created) expect(signOut).toHaveBeenCalledWith(account);
+      else {
+        expect(signOut).not.toHaveBeenCalled();
+        expect(readFileSync(credential, "utf8")).toBe("signed in");
+      }
+      accounts.reset();
+      expect(accounts.named("work")).toBeNull();
+    } finally {
+      setSystemTime();
+      signOut.mockRestore();
+      if (previousClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previousClaude;
+      if (previous === undefined) delete process.env.CORGI_ENV_BASE;
+      else process.env.CORGI_ENV_BASE = previous;
+      accounts.reset();
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a signed-out account's row signs in to it over the panes instead of starting its agent", async () => {
+  const saved = process.env.CORGI_CLAUDE_BIN;
+  process.env.CORGI_CLAUDE_BIN = "/usr/bin/true";
+  try {
+    const { s, sent } = withWork({ signed_in: false });
+    s.agent_launcher.selected = work;
+    await s.key(13);
+    expect(sent).toEqual([]);
+    expect(s.agent_launcher).toBeNull();
+    expect(s.signin).toMatchObject({ adding: false, provider: "claude", name: "work", dir: "/accounts/work" });
+    s.signin.abandon();
+  } finally {
+    if (saved === undefined) delete process.env.CORGI_CLAUDE_BIN;
+    else process.env.CORGI_CLAUDE_BIN = saved;
+  }
+});
+
+test("an account's row has a YOLO and launcher membership of its own, apart from its provider's", async () => {
+  const { s, sent } = withWork();
+  s.agent_launcher.selected = work;
+  await s.key("y".charCodeAt(0));
+  expect(sent.at(-1)).toEqual({ "agent.yolo": { provider: "claude", enabled: true, account: "/accounts/work" } });
+  expect([s.agent_launcher.yoloOf(work), s.agent_launcher.yoloOf("claude")]).toEqual([true, false]);
+  s.agent_launcher.selected = "claude";
+  // An older daemon refuses an account, so the default's row sends none.
+  await s.key("y".charCodeAt(0));
+  expect(sent.at(-1)).toEqual({ "agent.yolo": { provider: "claude", enabled: true } });
+  await s.key("m".charCodeAt(0));
+  s.agent_launcher.manager.at = agentManager.agentKey("claude", "/accounts/work");
+  await s.key(9);
+  s.runtime.account_hidden = ["/accounts/work"];
+  s.agent_launcher.account_hidden = ["/accounts/work"];
+  await s.manageAction({
+    kind: "show",
+    agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.account === "/accounts/work"),
+  });
+  expect(sent.at(-1)).toEqual({
+    "agent.visibility": { hidden: { codex: false, claude: false }, hidden_accounts: [] },
+  });
+  expect([s.agent_launcher.hiddenOf(work), s.agent_launcher.hiddenOf("claude")]).toEqual([false, false]);
+  s.agent_launcher.manager.at = agentManager.agentKey("claude", "");
+  await s.manageAction({
+    kind: "remove",
+    agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude" && !a.account),
+  });
+  expect(sent.at(-1)).toEqual({ "agent.visibility": { hidden: { codex: false, claude: true } } });
+});
+
 test("the launcher lights the checkout it starts agents in, as the overview lights a worktree", () => {
   const checkout = (path: string, branch: string, primary: boolean) => ({
     path,
@@ -1250,4 +1670,167 @@ test("the About spaceship responds to a click and the game back button restores 
   await s.input(bytes("\x1b[<0;4;1M\x1b[<0;4;1m"));
   expect(s.moonlander).toBeNull();
   expect(s.corgi_setup).toBe(setup);
+});
+
+/** Open either host through its ordinary navigation. */
+async function openManagement(s: any, source: "launcher" | "settings"): Promise<LauncherMenu> {
+  if (source === "launcher") {
+    s.openLauncher(true);
+    await s.key(109);
+    return s.agent_launcher;
+  }
+  s.openSetup();
+  while (s.corgi_setup.item !== "agents") await s.key(14);
+  await s.key(13);
+  return s.corgi_setup.agents;
+}
+
+test("settings routes manager paste, command saving, visibility and Back through the shared handlers", async () => {
+  const { s, sent } = recording(folders("/src/app"));
+  const launch = await openManagement(s, "settings"),
+    setup = s.corgi_setup;
+  expect(s.agent_launcher).toBeNull();
+  launch.manager.at = agentManager.agentKey("claude", "");
+  await s.key(9);
+  await s.manageAction({
+    kind: "remove",
+    agent: launch.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude"),
+  });
+  expect(sent.at(-1)["agent.visibility"].hidden.claude).toBe(true);
+  await s.input(bytes("\x1b[D"));
+  expect(setup.focus).toBe("list");
+  expect(s.corgi_setup).toBe(setup);
+  await s.key(13);
+  await s.key(9);
+  await s.input(bytes("\x1b[200~custom\x1b[201~"));
+  expect(launch.manager.query.name()).toBe("custom");
+  expect(s.textField()).toBe(launch.manager.query.area);
+  await s.key(9);
+  await s.key(13);
+  await s.input(bytes("\x1b[200~claude --model opus\x1b[201~"));
+  launch.manager.form.save_requested = true;
+  await s.input(bytes("\x1b[27u"));
+  expect(s.corgi_setup).toBe(setup);
+  expect(launch.manager.page).toBe("list");
+  expect(launch.manager.query.name()).toBe("custom");
+  expect(launch.manager.form.save_requested).toBe(false);
+  expect(sent.some((command: any) => "agent.command" in command)).toBe(false);
+  await s.key(13);
+  expect(launch.manager.form.editor.name()).toBe("");
+  await s.input(bytes("\x1b[200~claude --model opus\x1b[201~"));
+  const f = launch.manager.form;
+  expect(f.editor.name()).toBe("claude --model opus");
+  // The daemon has resolved this draft, so Enter saves that exact result.
+  f.draft.set(f.editor.name());
+  f.resolution = agentLauncher.resolution({
+    pending: false,
+    semantics: { provider: "claude", suggested_name: "Opus" },
+  });
+  f.resolution.command.set(f.editor.name());
+  await s.key(13);
+  expect(sent.at(-1)["agent.command"]).toMatchObject({
+    index: 0,
+    command: "claude --model opus",
+    name: "Opus",
+    resolve: false,
+  });
+  expect(launch.manager.page).toBe("list");
+  await s.key(27);
+  expect(s.corgi_setup).toBeNull();
+  expect(sent.some((command: any) => "pane.create" in command)).toBe(false);
+});
+
+test.each([false, true])(
+  "slow account deletion returns input immediately and ignores a reopened manager (reopen: %s)",
+  async reopen => {
+    const { s } = withWork(),
+      known = { provider: "claude" as const, dir: "/accounts/work", name: "work", managed: true },
+      gate = Promise.withResolvers<void>(),
+      find = spyOn(accounts, "find").mockReturnValue(known),
+      owns = spyOn(accounts, "owns").mockReturnValue(true),
+      signOut = spyOn(signin, "signOut").mockReturnValue(gate.promise),
+      remove = spyOn(accounts, "remove").mockResolvedValue(true);
+    let pending: Promise<void> | null = null;
+    try {
+      await s.key(109);
+      const launch = s.agent_launcher,
+        manager = launch.manager;
+      manager.at = agentManager.agentKey("claude", known.dir);
+      await s.key(9);
+      manager.key(127, launch.manageModel(), 0);
+      let returned = false;
+      pending = s.manageAction({
+        kind: "remove",
+        agent: launch.manageModel().agents.find((a: agentManager.Agent) => a.account === known.dir),
+      });
+      void pending!.then(() => {
+        returned = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(returned).toBe(true);
+      expect(signOut).toHaveBeenCalledTimes(1);
+      expect(remove).not.toHaveBeenCalled();
+      await s.key(9);
+      expect(manager.focus).toBe("search");
+      if (reopen) {
+        manager.open();
+        manager.fail("New manager state");
+        // A second request cannot start another logout for the same account.
+        await s.manageAction({
+          kind: "remove",
+          agent: launch.manageModel().agents.find((a: agentManager.Agent) => a.account === known.dir),
+        });
+        expect(signOut).toHaveBeenCalledTimes(1);
+        manager.at = agentManager.agentKey("claude", "");
+        manager.focus = "list";
+        manager.key(127, launch.manageModel(), 1000);
+      }
+      const newer = reopen ? manager.removal : null;
+      gate.resolve();
+      await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+      await s.finishAccountRemovals();
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(launch.preview.accounts).toEqual([]);
+      if (reopen) {
+        expect(manager.removal).toBe(newer);
+        expect(manager.removal.phase).toBe("held");
+      }
+    } finally {
+      gate.resolve();
+      await pending?.catch(() => {});
+      await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+      for (const mock of [find, owns, signOut, remove]) mock.mockRestore();
+    }
+  },
+);
+
+test("a failed background logout restores the account row and reports the failure", async () => {
+  const { s } = withWork(),
+    known = { provider: "claude" as const, dir: "/accounts/work", name: "work", managed: true },
+    find = spyOn(accounts, "find").mockReturnValue(known),
+    owns = spyOn(accounts, "owns").mockReturnValue(true),
+    signOut = spyOn(signin, "signOut").mockRejectedValue(Error("LogoutFailed")),
+    remove = spyOn(accounts, "remove").mockResolvedValue(true);
+  try {
+    await s.key(109);
+    const launch = s.agent_launcher,
+      manager = launch.manager;
+    manager.at = agentManager.agentKey("claude", known.dir);
+    manager.focus = "list";
+    manager.key(127, launch.manageModel(), 0);
+    await s.manageAction({
+      kind: "remove",
+      agent: launch.manageModel().agents.find((a: agentManager.Agent) => a.account === known.dir),
+    });
+    await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+    await s.finishAccountRemovals();
+    expect(remove).not.toHaveBeenCalled();
+    expect(manager.removal).toBeNull();
+    expect(manager.error).toContain("LogoutFailed");
+    expect(launch.preview.accounts).toHaveLength(1);
+  } finally {
+    await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+    for (const mock of [find, owns, signOut, remove]) mock.mockRestore();
+  }
 });

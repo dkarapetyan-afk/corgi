@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Launcher } from "../adapter";
 import { Client } from "./account";
 import { configDir } from "./index";
+import { vocabulary } from "./info";
 function readModel(root: string, relative: string): string | null {
   try {
     const file = join(root, relative),
@@ -32,12 +33,13 @@ export function settingsModel(cwd: string, env = process.env) {
   read("/Library/Application Support/ClaudeCode", "managed-settings.json", "Managed settings");
   return chosen;
 }
-export function open(): Launcher {
-  const client = new Client();
+export function open(account: string): Launcher {
+  const env = account ? { ...process.env, [vocabulary.config_env]: account } : process.env,
+    client = new Client(env);
   return {
     account: quit => client.preview(quit, quit),
     async model(cwd) {
-      const chosen = settingsModel(cwd);
+      const chosen = settingsModel(cwd, env);
       if (chosen.model || !client.default_model.len) return chosen;
       return { model: client.default_model.text(), source: "Claude Code default" };
     },

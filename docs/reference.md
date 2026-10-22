@@ -201,6 +201,7 @@ to `~/.local/state/corgi`:
 | `settings.json` | Runtime settings, including shell and inference choices |
 | `recovery/` | Saved layout, terminal output and agent recovery context |
 | `account-previews/`, `limit-history/` | Cached account/usage metadata and rate-limit history |
+| `accounts.json`, `accounts/` | Provider accounts besides the default, and the folders Corgi made for them; shared by every environment. A new one waits in a private `corgi-account-*` folder in the temporary directory until it's signed in |
 
 An explicit `CORGI_SOCKET` selects another runtime; its workspace/settings
 files live beside the socket. Viewer preferences remain shared. Developer
@@ -212,7 +213,8 @@ Saved inference choices override inference environment defaults.
 | A shortcut goes to the terminal or does nothing | Open `prefix ?`, check the preset and prefix, then check host key forwarding. Reload Ghostty after setup changes its bindings. |
 | Mouse selection or links do not work | Hold Shift for terminal selection; use Cmd+Shift-click for Ghostty's native link handling on macOS. |
 | Image paste fails, especially over SSH | Open **Corgi setup → Terminal capabilities**. The paste notice identifies missing terminal support, tmux interference or clipboard permission. Text paste is independent. |
-| An agent is missing or status is wrong | Run `corgi which codex` or `corgi which claude`, then `corgi integration status`. Codex hooks need trust in `/hooks`; newly installed hooks need a new agent session. |
+| An agent is missing or status is wrong | Run `corgi which codex` or `corgi which claude`, then `corgi integration status`. Codex hooks need trust in `/hooks`, once per account; newly installed hooks need a new agent session. |
+| An agent in a second account doesn't show its usage or history | `corgi account list` shows the accounts Corgi knows and who signed in; `corgi account add claude NAME --dir FOLDER` adds a folder it doesn't. |
 | Usage says Unavailable | Check the provider's login and the reason shown in the launcher; usage failures do not necessarily prevent launching. |
 | Installed Corgi seems out of date | `corgi update status` shows installed/running versions; `corgi update --check` checks for a release without installing it. |
 | A release needs reverting | `corgi update rollback` switches to the retained previous release, when available. |

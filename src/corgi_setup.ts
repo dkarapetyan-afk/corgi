@@ -41,6 +41,7 @@ import * as dropdown from "./dropdown";
 import * as menuAim from "./menu_aim";
 import { milliTimestamp } from "./clock";
 import type { ShellStatus } from "./launch/command";
+import type { Menu as LauncherMenu } from "./agent_launcher";
 import type { Connection } from "./rpc";
 import type { Use, Uses } from "./inference/setup";
 
@@ -90,6 +91,7 @@ export type Item =
   | "theme"
   | "shell"
   | "keyboard"
+  | "agents"
   | "source_control"
   | "terminal"
   | "about"
@@ -114,6 +116,8 @@ const list: ListRow[] = [
   "keyboard",
   "source_control",
   null,
+  "agents",
+  null,
   "terminal",
   null,
   { heading: "Import from" },
@@ -133,6 +137,7 @@ const labels: Record<Item, string> = {
   shell: "Shell",
   keyboard: "Keymap",
   source_control: "Source control",
+  agents: "Manage agents",
   terminal: "Terminal capabilities",
   about: "About",
   import_tmux: "tmux",
@@ -178,6 +183,7 @@ export type Hit =
   | { option: number }
   | { choice: number }
   | { picker: importPicker.Hit }
+  | { manager: Rect }
   | { intensity: number }
   | { url: string };
 
@@ -345,6 +351,26 @@ const spark = "▁▂▃▄▅▆▇█";
 const grow_ms = 280;
 const shrink_ms = 200;
 
+/** Shared expansion timing for the Keymap detail and agent management. */
+class Growth {
+  from = 0;
+  to = 0;
+  at_ms = 0;
+  value(now_ms: number): number {
+    const span = this.to > this.from ? grow_ms : shrink_ms,
+      k = Math.max(0, (now_ms - this.at_ms) / span);
+    return k >= 1 ? this.to : this.from + (this.to - this.from) * (1 - (1 - k) ** 3);
+  }
+  toward(target: number, now_ms: number): number {
+    if (target !== this.to) {
+      this.from = this.value(now_ms);
+      this.to = target;
+      this.at_ms = now_ms;
+    }
+    return this.value(now_ms);
+  }
+}
+
 /** Onboarding's preset detail at the largest size that fits beside the
  * presets, and the frame it needs; null when it doesn't fit. Its column adds
  * a divider and two columns of padding on each side. */
@@ -382,7 +408,7 @@ interface Layout {
   detail: { x: number; y: number; width: number; compact: boolean } | null;
 }
 /** `grown` runs from 0 (list and options) to 1 (options and preset detail). */
-function layout(cols: number, rows: number, grown: number): Layout | null {
+function layout(cols: number, rows: number, grown: number, expanded = 0): Layout | null {
   // As tall as the terminal allows, a row short of each edge where it can.
   const h0 = Math.min(height_max, Math.max(Math.min(rows, 12), rows - 2));
   if (h0 - 4 < 8) return null;
@@ -401,7 +427,8 @@ function layout(cols: number, rows: number, grown: number): Layout | null {
       detail: null,
     };
   }
-  const base = Math.min(cols - 4, 84),
+  const normal = Math.min(cols - 4, 84),
+    base = normal + (Math.min(cols - 4, 140) - normal) * expanded,
     size = detailSize(cols, rows),
     t = size ? grown : 0,
     w = Math.round(base + ((size?.w ?? base) - base) * t),
@@ -430,6 +457,11 @@ function layout(cols: number, rows: number, grown: number): Layout | null {
 
 export class Menu {
   item: Item = "clever_corgi";
+  /** The same model and manager the new-tab picker uses. */
+  agents: LauncherMenu | null = null;
+  managing(): boolean {
+    return this.item === "agents" && this.focus === "options" && this.agents !== null;
+  }
   focus: "list" | "options" = "list";
   /** The highlighted option while the options have focus. */
   cursor = 0;
@@ -485,7 +517,10 @@ export class Menu {
   } | null = null;
   private pending_item: Item | null = null;
   /** The frame's growth toward the preset detail, eased between draws. */
-  private grow = { from: 0, to: 0, at_ms: 0 };
+  private grow = new Growth();
+  private expand = new Growth();
+  /** Pointer targets follow the frame actually drawn during expansion. */
+  private rendered: { cols: number; rows: number; layout: Layout } | null = null;
   static open(): Menu {
     return new Menu();
   }
@@ -602,12 +637,6 @@ export class Menu {
       this.item === "keyboard" && this.focus === "options" && cols >= two_pane_cols && detailSize(cols, rows) !== null
     );
   }
-  private grown(now_ms: number): number {
-    const g = this.grow,
-      span = g.to > g.from ? grow_ms : shrink_ms,
-      k = Math.max(0, (now_ms - g.at_ms) / span);
-    return k >= 1 ? g.to : g.from + (g.to - g.from) * (1 - (1 - k) ** 3);
-  }
   /** Escape sequences the field takes while it has focus: caret movement
    * and Delete. Arrows up and down stay with it rather than move. */
   sequence(text: string): boolean {
@@ -617,6 +646,10 @@ export class Menu {
     return true;
   }
   paste(byte: number): void {
+    if (this.managing()) {
+      this.agents!.manager.paste(byte, this.agents!.manageModel());
+      return;
+    }
     this.editing?.pasteByte(byte);
     this.completeRoot();
   }
@@ -665,7 +698,7 @@ export class Menu {
   /** Gives the options focus, on the one in use. False when none can be chosen. */
   openOptions(s: Status, prefs: Preferences): boolean {
     this.clearAim();
-    if (this.importing()) {
+    if (this.importing() || (this.item === "agents" && this.agents)) {
       this.focus = "options";
       return true;
     }
@@ -762,6 +795,7 @@ export class Menu {
   /** A click: the list selects, then opens; an option applies. */
   click(hit: Hit, s: Status, prefs: Preferences): Apply | null {
     this.clearAim();
+    if ("manager" in hit) return null;
     if ("intensity" in hit) {
       this.focus = "options";
       this.cursor = 0;
@@ -875,6 +909,7 @@ export class Menu {
     x: number,
     y: number,
   ): boolean {
+    if (this.item === "agents") return menuAim.grazed(managerArea(l), from, x, y);
     const lines = this.lines(s, prefs, l),
       first = lines.findIndex(clickable),
       last = lines.some(line => line.tag === "picker") ? l.body - 1 : lines.findLastIndex(clickable);
@@ -883,7 +918,9 @@ export class Menu {
   }
   /** The frame as it rests after the current change. */
   private rest(cols: number, rows: number): Layout | null {
-    return layout(cols, rows, this.growing(cols, rows) ? 1 : 0);
+    if ((this.expand.from > 0 || this.expand.to > 0) && this.rendered?.cols === cols && this.rendered.rows === rows)
+      return this.rendered.layout;
+    return layout(cols, rows, this.growing(cols, rows) ? 1 : 0, this.managing() ? 1 : 0);
   }
   contains(cols: number, rows: number, x: number, y: number): boolean {
     return this.rest(cols, rows)?.b.contains(x, y) ?? false;
@@ -896,6 +933,10 @@ export class Menu {
       if (spot === null || x < spot.link || x >= spot.link + displayWidth(releaseLabel.short(this.release)))
         return null;
       return { url: commit_url + this.release.commit };
+    }
+    if (this.item === "agents" && this.agents && !(l.single && this.focus === "list")) {
+      const area = managerArea(l);
+      if (area.contains(x, y) && area.h >= this.agents.manager.minimumHeight()) return { manager: area };
     }
     const row = y - l.b.y - 2;
     if (row < 0 || row >= l.body) return null;
@@ -931,10 +972,14 @@ export class Menu {
     return this.drawAt(w, s, prefs, cols, rows, Date.now());
   }
   drawAt(w: Writer, s: Status, prefs: Preferences, cols: number, rows: number, now_ms: number): void {
-    const target = this.growing(cols, rows) ? 1 : 0;
-    if (target !== this.grow.to) this.grow = { from: this.grown(now_ms), to: target, at_ms: now_ms };
-    const l = layout(cols, rows, this.grown(now_ms));
-    if (!l) return;
+    const grown = this.grow.toward(this.growing(cols, rows) ? 1 : 0, now_ms),
+      expanded = this.expand.toward(this.managing() ? 1 : 0, now_ms),
+      l = layout(cols, rows, grown, expanded);
+    if (!l) {
+      this.rendered = null;
+      return;
+    }
+    this.rendered = { cols, rows, layout: l };
     const b = l.b,
       top = b.y + 2;
     this.caret = null;
@@ -950,7 +995,8 @@ export class Menu {
     this.drawRelease(w, l);
     const list_shown = l.single ? this.focus === "list" : l.list === list_w;
     if (list_shown) this.drawList(w, b.x + 1, top, l.single ? b.w - 2 : list_w, l.body, s, prefs);
-    if (!(l.single && this.focus === "list")) this.drawOptions(w, l, s, prefs, now_ms);
+    const managing = this.item === "agents" && this.agents !== null && !(l.single && this.focus === "list");
+    if (!(l.single && this.focus === "list") && !managing) this.drawOptions(w, l, s, prefs, now_ms);
     const open = this.dropdownBox(l, s, prefs);
     if (open)
       dropdown.draw(
@@ -977,6 +1023,16 @@ export class Menu {
     // drawField sets it, after the reset above.
     const caret = this.caret as { x: number; y: number } | null;
     if (caret) w.write(at(caret.x, caret.y) + "\x1b[?25h");
+    if (managing) {
+      const launch = this.agents!,
+        area = managerArea(l);
+      if (area.h >= launch.manager.minimumHeight())
+        launch.manager.draw(w, area, launch.manageModel(), milliTimestamp(), {
+          framed: false,
+          focused: this.focus === "options",
+        });
+      else w.write(at(area.x + 2, area.y + 1) + text + "Make the terminal taller to manage agents.");
+    }
   }
   /** The setting the options belong to, on the top border while the list is hidden. */
   private crumb(l: Layout): string | null {
@@ -1483,6 +1539,8 @@ export class Menu {
       title = (text: string): Line => ({ tag: "title", text }),
       blank: Line = { tag: "blank" };
     switch (this.item) {
+      case "agents":
+        return [];
       case "about":
         return [
           title("About Corgi"),
@@ -1817,6 +1875,7 @@ export class Menu {
           : { text: "custom", tone: "muted" };
       case "terminal":
       case "about":
+      case "agents":
         return { text: "", tone: "faint" };
       case "detach":
         return { text: detachKey(prefs), tone: "faint" };
@@ -1836,7 +1895,7 @@ export class Menu {
     const picker = this.importing();
     if (this.focus === "list") {
       const flip = this.flip(prefs),
-        open = picker !== null || this.options(s, prefs).some(o => !o.disabled);
+        open = this.item === "agents" || picker !== null || this.options(s, prefs).some(o => !o.disabled);
       const enter: [string, string][] =
         flip?.kind === "detach"
           ? [["enter", "detach"]]
@@ -1847,6 +1906,7 @@ export class Menu {
               : [];
       return [["↑↓", "move"], ...enter, ["esc", "close"]];
     }
+    if (this.item === "agents") return [];
     if (picker) return importHints(picker);
     if (this.item === "flourishes")
       return [
@@ -1866,6 +1926,10 @@ export class Menu {
       option && !option.disabled && (option.apply || option.choice !== undefined) ? [["enter", option.action]] : [];
     return [["↑↓", "move"], ...enter, ["←", "back"], ["esc", "close"]];
   }
+}
+/** The manager fills the options pane, leaving the outer frame intact. */
+function managerArea(l: Layout): Rect {
+  return new Rect(l.options.x, l.b.y + 1, l.options.w, l.b.h - 2);
 }
 /** Enter in the import picker: copy the chosen sessions, go back after a
  * failed copy, or open what a finished one made. */

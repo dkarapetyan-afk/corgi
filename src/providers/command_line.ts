@@ -115,11 +115,11 @@ export function keep(c: CommandLine, k: Keeping): Kept {
   }
   return { args, env: c.env.filter(([key, value]) => k.env.test(key) && value !== process.env[key]) };
 }
-/** A small JSON file in `root`, or null. */
-export function cached(root: string, name: string): any {
+/** A JSON file in `root` no bigger than `limit`, or null. */
+export function cached(root: string, name: string, limit = 65536): any {
   try {
     const file = resolve(root, name);
-    return statSync(file).size <= 65536 ? JSON.parse(readFileSync(file, "utf8")) : null;
+    return statSync(file).size <= limit ? JSON.parse(readFileSync(file, "utf8")) : null;
   } catch {
     return null;
   }
