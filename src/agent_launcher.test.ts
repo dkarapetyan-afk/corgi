@@ -256,6 +256,37 @@ test("Manage agents lists the signed-out and hidden agents the picker leaves out
   expect(m.shown("codex")).toBe(true);
 });
 
+test("rows hidden in this workspace leave its picker but stay in Manage agents, unchecked", () => {
+  const m = menu({ workspace_name: "corgi", workspace_hidden: ["claude", work, "custom0"] });
+  m.preview = preview({ pending: false, accounts: [workAccount({ account: "work@example.com" })] });
+  m.commands[0].set("claude --model opus");
+  m.normalize();
+  expect(["codex", "claude", work, "custom0", "terminal"].map(row => m.shown(row as Row))).toEqual([
+    true,
+    false,
+    false,
+    false,
+    true,
+  ]);
+  const model = m.manageModel();
+  expect(model.workspace).toBe("corgi");
+  expect(model.agents.map(a => [a.label, a.shown, a.here])).toEqual([
+    ["Codex", true, true],
+    ["Claude Code", true, false],
+    ["Claude Code · work", true, false],
+  ]);
+  expect([model.here(0), model.here(1)]).toEqual([false, true]);
+  expect(["codex", "claude:/a", "custom5", "terminal", "claude:work", "custom6", ""].map(Row.parse)).toEqual([
+    "codex",
+    "claude:/a",
+    "custom5",
+    null,
+    null,
+    null,
+    null,
+  ]);
+});
+
 test("digit shortcuts enumerate visible agents and exclude terminal and management", () => {
   const m = menu();
   const c = (s: string) => s.charCodeAt(0);
@@ -511,10 +542,10 @@ test("Manage agents takes the card with its own selection", () => {
   expect(b.w).toBe(before.w);
   expect(lines[b.y]).toMatch(/╭─ ← New tab ─ Manage agents ─+ +esc +close ─╮/);
   expect(lines[b.y + 6]).toMatch(/│› +Codex /);
-  expect(lines[b.y + 8]).toMatch(/│ +Claude Code · work +work@example.com +(— +)?│/);
+  expect(lines[b.y + 8]).toMatch(/│ +Claude Code · work +work@example.com +(— +)?✓ +│/);
   // The picker's rows don't answer clicks under it.
   expect(m.hit(120, 40, side, b.x + 6, b.y + 8)).toBeNull();
-  expect(lines[b.y + b.h - 2]).toMatch(/↵ +rename +hold ⌫ +remove/);
+  expect(lines[b.y + b.h - 2]).toMatch(/↵ +rename +space +hide in workspace +hold ⌫ +remove/);
   m.back();
   expect(m.selected).toBe(work);
 });

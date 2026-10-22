@@ -31,6 +31,8 @@ export type Agent = {
   who: string;
   signed_out: boolean;
   shown: boolean;
+  /** It shows in the current workspace's launcher, once it's in the launcher. */
+  here: boolean;
   /** Corgi made its folder. */
   managed: boolean;
   usage: launcherUsage.Cell;
@@ -40,6 +42,10 @@ export type Model = {
   agents: Agent[];
   /** The saved commands' slots; an empty one lists nothing. */
   commands: CommandEntry[];
+  /** The current workspace's name, which the Show column's toggles apply to. */
+  workspace: string;
+  /** Whether saved command `index` shows in the current workspace's launcher. */
+  here(index: number): boolean;
   /** The agents a new account can be added for. */
   add: Provider[];
   /** The account a saved command's agent runs in, for its form. */
@@ -53,6 +59,8 @@ export type Action =
   | { kind: "back" }
   | { kind: "show"; agent: Agent }
   | { kind: "show_command"; index: number }
+  | { kind: "here"; agent: Agent; shown: boolean }
+  | { kind: "here_command"; index: number; shown: boolean }
   | { kind: "rename"; agent: Agent; name: string }
   | { kind: "remove"; agent: Agent }
   | { kind: "remove_command"; index: number }
@@ -408,6 +416,17 @@ export class View {
     if (item.kind === "agent") return item.agent.account.length > 0 || item.agent.shown;
     return item.kind === "command" && model.commands[item.index].command.length > 0;
   }
+  /** Whether a row in the launcher shows in this workspace; null for the rows that aren't. */
+  private hereOf(item: Item, model: Model): boolean | null {
+    if (!this.inLauncher(item, model)) return null;
+    if (item.kind === "agent") return item.agent.here;
+    return item.kind === "command" ? model.here(item.index) : null;
+  }
+  private toggleHere(item: Item | null, model: Model): Action | null {
+    if (!item || this.removal || this.hereOf(item, model) === null) return null;
+    if (item.kind === "agent") return { kind: "here", agent: item.agent, shown: !item.agent.here };
+    return item.kind === "command" ? { kind: "here_command", index: item.index, shown: !model.here(item.index) } : null;
+  }
   private act(item: Item, model: Model): Action | null {
     switch (item.kind) {
       case "agent": {
@@ -556,7 +575,7 @@ export class View {
         this.move(model, -1);
         return null;
       case 32:
-        if (this.focus === "list") return null;
+        if (this.focus === "list") return this.toggleHere(item, model);
         break;
       case 8:
       case 127:
@@ -638,14 +657,16 @@ export class View {
     const row = this.rows(b, model).find(r => r.y === y);
     if (!row || x <= b.x || x >= b.x + b.w - 1) return null;
     const key = itemKey(row.item),
-      again = this.focus === "list" && key === this.at && !this.rename && !this.removal;
+      again = this.focus === "list" && key === this.at && !this.rename && !this.removal,
+      here = View.here(b, model);
     this.cancelRemoval();
     this.focus = "list";
     this.at = key;
     this.rename = null;
     this.error = "";
     if (this.removal) return null;
-    return again ? this.act(row.item, model) : null;
+    const toggle = x >= here.x && x < here.x + displayWidth(here.label) ? this.toggleHere(row.item, model) : null;
+    return toggle ?? (again ? this.act(row.item, model) : null);
   }
 
   /** Where the title's Esc hint starts, as the launcher's Manage button sits. */
@@ -657,6 +678,13 @@ export class View {
       usage = b.w >= 100 ? b.x + Math.max(56, Math.floor(b.w * 0.52)) : null;
     return { name, who, usage };
   }
+  /** The Show column, whose toggles apply to the current workspace: its heading, and where it starts.
+   * A narrow box heads it with the workspace's name alone. */
+  private static here(b: Rect, model: Model): { x: number; label: string } {
+    const label = b.w < 60 ? ellipsis(View.workspace(model), 12) : ellipsis(`Show in ${View.workspace(model)}`, 18);
+    return { x: b.x + b.w - 4 - displayWidth(label), label };
+  }
+  private static workspace = (model: Model) => model.workspace || "workspace";
   private backLabel(b: Rect): string {
     return b.w >= 56 ? ` ← ${this.back_label} ` : " ← ";
   }
@@ -743,6 +771,7 @@ export class View {
       faint = new Style({ fg: "faint", bg: "surface" }).sgr(),
       rule = new Style({ fg: "line", bg: "surface" }).sgr(),
       { name: name_x, who: who_x, usage: usage_x } = View.columns(b),
+      here = View.here(b, model),
       { have, add } = this.items(model),
       chosen = this.selected(model),
       search_w = sat(b.w, 7);
@@ -759,12 +788,12 @@ export class View {
       searching ? "selected" : "surface",
       searching ? "muted" : "faint",
     );
-    w.write(at(name_x, b.y + 4) + faint + "Agent" + at(who_x, b.y + 4) + "Account");
+    w.write(at(name_x, b.y + 4) + faint + "Agent" + at(who_x, b.y + 4) + "Account" + at(here.x, b.y + 4) + here.label);
     const usage_grid = new launcherUsage.Grid();
     for (const a of model.agents) usage_grid.add(a.usage);
     if (usage_x !== null) {
       w.write(at(usage_x, b.y + 4) + faint);
-      writeEllipsis(w, "Usage (used) · resets in", b.x + b.w - 2 - usage_x);
+      writeEllipsis(w, "Usage (used) · resets in", here.x - 2 - usage_x);
     }
     w.write(at(b.x + 3, b.y + 5) + rule + "─".repeat(sat(b.w, 6)));
     let caret = { x: b.x + 3 + this.queryColumn(search_w), y: b.y + 2 };
@@ -794,7 +823,12 @@ export class View {
         continue;
       }
       if (!this.inLauncher(item, model)) w.write(at(b.x + 3, y) + "+");
-      const who_w = sat(b.x + b.w - 2, who_x);
+      const who_w = sat(here.x - 2, who_x),
+        shown_here = this.hereOf(item, model);
+      if (shown_here !== null)
+        w.write(at(here.x, y) + (shown_here ? "\x1b[1m" + palette.fg("strong") + "✓" : quiet + "·") + style);
+      // A row hidden here reads dimmed, as the launcher here leaves it out.
+      if (shown_here === false) w.write(quiet);
       switch (item.kind) {
         case "add":
           w.write(at(name_x, y));
@@ -836,7 +870,7 @@ export class View {
           writeEllipsis(w, cleanControls(a.who), usage_x === null ? who_w : usage_x - who_x - 2);
           if (usage_x !== null) {
             w.write(at(usage_x, y) + style);
-            a.usage.write(w, usage_grid, b.x + b.w - 2 - usage_x, style, on);
+            a.usage.write(w, usage_grid, here.x - 2 - usage_x, style, on);
           }
           break;
         }
@@ -905,6 +939,7 @@ export class View {
           ];
         return [
           ["↵", item.kind === "agent" ? "rename" : "edit"],
+          ["space", `${this.hereOf(item, model) ? "hide" : "show"} in ${ellipsis(View.workspace(model), 16)}`],
           ["hold ⌫", item.kind === "agent" && !item.agent.account ? "remove" : "delete"],
           ["tab", "search"],
         ];

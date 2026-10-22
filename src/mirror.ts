@@ -9,7 +9,7 @@ import * as surface from "./pane/surface";
 import * as resources from "./trackers/resources";
 import * as protocol from "./protocol";
 import * as viewerVersion from "./viewer_version";
-import { commandEntry } from "./agent_launcher";
+import { commandEntry, Row } from "./agent_launcher";
 import type { Entry as CommandEntry } from "./launch/command";
 import { status as setupStatus, type Status as SetupStatus } from "./corgi_setup";
 import { status as shellStatus } from "./shell_picker";
@@ -298,6 +298,8 @@ export interface Workspace {
   model: Model;
   agent_order: ({ pane: number } | { headless: number })[];
   last_agent: Provider | null;
+  /** The launcher rows hidden in this workspace only. */
+  launcher_hidden: Row[];
   closed_agents: number;
   git_commits: any[];
   git_ahead: number | null;
@@ -318,6 +320,7 @@ function workspace(value: any): Workspace {
     model: Model.fromData(value.model),
     agent_order: value.agent_order ?? [],
     last_agent: value.last_agent ?? null,
+    launcher_hidden: strings(value.launcher_hidden).flatMap(text => Row.parse(text) ?? []),
     closed_agents: Number(value.closed_agents ?? 0),
     git_commits: value.git_commits ?? [],
     git_ahead: value.git_ahead === null || value.git_ahead === undefined ? null : Number(value.git_ahead),

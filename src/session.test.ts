@@ -232,6 +232,27 @@ test("an account's YOLO and Show are its own, apart from its provider's", async 
     r.destroy();
   }
 });
+test("a workspace hides launcher rows for itself, and a deleted command's slot comes back shown", async () => {
+  const { r, home, away } = setup();
+  try {
+    const run = (cmd: protocol.CommandInput) => execute(r, ctx, protocol.decodeCommand(cmd));
+    for (const row of ["claude", "claude:/accounts/work", "custom0", "custom0"])
+      await run({ "agent.workspace_visibility": { workspace: home.id, row, shown: false } });
+    await run({ "agent.workspace_visibility": { workspace: away.id, row: "custom0", shown: false } });
+    await run({ "agent.workspace_visibility": { workspace: home.id, row: "claude", shown: true } });
+    expect([home.launcher_hidden, away.launcher_hidden]).toEqual([["claude:/accounts/work", "custom0"], ["custom0"]]);
+    for (const row of ["terminal", "claude:work", "custom9"])
+      await expect(run({ "agent.workspace_visibility": { workspace: home.id, row, shown: false } })).rejects.toThrow(
+        "InvalidRow",
+      );
+    expect(snapshot(r).workspaces[0].launcher_hidden).toEqual(["claude:/accounts/work", "custom0"]);
+    await run({ "agent.command": { index: 0, command: "claude --model opus", resolve: false } });
+    await run({ "agent.command": { index: 0, command: "", resolve: false } });
+    expect([home.launcher_hidden, away.launcher_hidden]).toEqual([["claude:/accounts/work"], []]);
+  } finally {
+    r.destroy();
+  }
+});
 test("a viewer's snapshot stays byte-stable while only output and stamps move", () => {
   const { r, home } = setup();
   try {

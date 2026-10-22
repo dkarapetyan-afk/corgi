@@ -36,6 +36,9 @@ $.requests|session.command.command|agent.visibility.hidden.codex: bool
 $.requests|session.command.command|agent.visibility.hidden.claude: bool
 $.requests|session.command.command|agent.visibility.hidden_accounts: optional
 $.requests|session.command.command|agent.visibility.hidden_accounts?[]: string
+$.requests|session.command.command|agent.workspace_visibility.workspace: u32
+$.requests|session.command.command|agent.workspace_visibility.row: string
+$.requests|session.command.command|agent.workspace_visibility.shown: bool
 $.requests|session.command.command|agent.yolo.provider: enum codex claude
 $.requests|session.command.command|agent.yolo.enabled: bool
 $.requests|session.command.command|agent.yolo.account: string
@@ -518,6 +521,7 @@ $.snapshot.workspaces[].agent_order[]|pane: u32
 $.snapshot.workspaces[].agent_order[]|headless: u32
 $.snapshot.workspaces[].last_agent: optional
 $.snapshot.workspaces[].last_agent?: enum codex claude
+$.snapshot.workspaces[].launcher_hidden[]: string
 $.snapshot.workspaces[].closed_agents: usize
 $.snapshot.workspaces[].git_commits[].timestamp: i64
 $.snapshot.workspaces[].git_commits[].hash: string

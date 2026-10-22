@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import * as agentManager from "./agent_manager";
+import * as palette from "./palette";
 import { Entry as CommandEntry } from "./launch/command";
 import { Rect } from "./layout";
 import { Cell } from "./launcher_usage";
@@ -14,6 +15,7 @@ const agent = (fields: Partial<agentManager.Agent>): agentManager.Agent => ({
   who: "me@example.com",
   signed_out: false,
   shown: true,
+  here: true,
   managed: false,
   usage: Cell.status("—"),
   ...fields,
@@ -31,6 +33,8 @@ function model(): agentManager.Model {
       agent({ account: "/o/side", name: "side", label: "Claude Code · side", who: "Not signed in", signed_out: true }),
     ],
     commands,
+    workspace: "corgi",
+    here: () => true,
     add: ["codex", "claude"],
     account: () => "me@example.com",
     suggest: a => (a === work ? "acme" : "example"),
@@ -63,13 +67,13 @@ test("it lists what there is, then what can be added, and opens on the account i
   const { lines, b } = screen(v, m);
   expect(screen(v, m).raw).toContain("\x1b[?25l");
   expect(lines[0]).toMatch(/^╭─ ← New tab ─ Manage agents ─+ +esc +close ─╮/);
-  expect(lines[4]).toMatch(/│ +Agent +Account +│/);
+  expect(lines[4]).toMatch(/│ +Agent +Account +Show in corgi +│/);
   expect(lines.slice(6, 11)).toEqual([
-    expect.stringMatching(/│ +Codex +me@example.com +│/),
-    expect.stringMatching(/│ +Claude Code +me@example.com +│/),
-    expect.stringMatching(/│› +Claude Code · work +me@acme.com +│/),
-    expect.stringMatching(/│ +Claude Code · side +Not signed in +│/),
-    expect.stringMatching(/│ +review-bot +claude --model opus -p "review this diff" +│/),
+    expect.stringMatching(/│ +Codex +me@example.com +✓ +│/),
+    expect.stringMatching(/│ +Claude Code +me@example.com +✓ +│/),
+    expect.stringMatching(/│› +Claude Code · work +me@acme.com +✓ +│/),
+    expect.stringMatching(/│ +Claude Code · side +Not signed in +✓ +│/),
+    expect.stringMatching(/│ +review-bot +claude --model opus -p "review th… +✓ +│/),
   ]);
   expect(lines.slice(12, 16)).toEqual([
     expect.stringMatching(/│  Available to add +│/),
@@ -77,7 +81,7 @@ test("it lists what there is, then what can be added, and opens on the account i
     expect.stringMatching(/│ +\+ New Claude Code account +│/),
     expect.stringMatching(/│ +\+ Custom command +│/),
   ]);
-  expect(lines[b.h - 2]).toMatch(/↵ +rename +hold ⌫ +delete/);
+  expect(lines[b.h - 2]).toMatch(/↵ +rename +space +hide in corgi +hold ⌫ +delete/);
   expect(b.h).toBe(19);
 });
 
@@ -190,7 +194,7 @@ test("Tab and Down leave search on the current result, and arrows wrap inside th
   const selected = v.at;
   v.sequence("\x1b[B", m);
   expect([v.focus, v.at]).toEqual(["list", selected]);
-  expect(v.key(32, m)).toBeNull();
+  expect(v.key(32, m)).toEqual({ kind: "here", agent: work, shown: false });
   expect(v.query.name()).toBe("work");
   v.sequence("\x1b[A", m);
   expect([v.focus, v.at]).toEqual(["list", selected]);
@@ -438,9 +442,15 @@ test("default accounts and previously hidden commands stay searchable and Enter 
     { kind: "agent", agent: m.agents[0] },
     { kind: "command", index: 0 },
   ]);
-  const text = screen(v, m).lines.join("\n");
-  expect(text).not.toContain("Show");
+  const { lines } = screen(v, m),
+    text = lines.join("\n");
   expect(text.indexOf("Codex")).toBeGreaterThan(text.indexOf("Available to add"));
+  // Rows out of the launcher have no workspace toggle.
+  expect(lines.find(line => line.includes("+ Codex"))).not.toMatch(/[✓·]/);
+  expect(v.key(9, m)).toBeNull();
+  v.at = agentManager.agentKey("codex", "");
+  expect(v.key(32, m)).toBeNull();
+  v.key(9, m);
   type(v, m, "review-bot");
   v.key(9, m);
   expect(v.key(13, m)).toEqual({ kind: "show_command", index: 0 });
@@ -448,6 +458,35 @@ test("default accounts and previously hidden commands stay searchable and Enter 
   m.commands[0].hidden = false;
   expect(v.items(m).have).toEqual([{ kind: "command", index: 0 }]);
   expect(v.items(m).add).toEqual([]);
+});
+
+test("space and the Show column hide a row in this workspace only, which then reads dimmed", () => {
+  const m = model(),
+    v = new agentManager.View();
+  m.here = index => index !== 0;
+  m.agents[2] = { ...work, here: false };
+  v.open(agentManager.agentKey("claude", "/a/2"));
+  v.key(9, m);
+  expect(v.key(32, m)).toEqual({ kind: "here", agent: m.agents[2], shown: true });
+  const { lines, b, raw } = screen(v, m);
+  expect(lines[8]).toMatch(/│› +Claude Code · work +me@acme.com +· +│/);
+  expect(lines[10]).toMatch(/│ +review-bot +claude .* +· +│/);
+  expect(lines[b.h - 2]).toMatch(/space +show in corgi/);
+  expect(raw).toContain(palette.fg("muted") + "\x1b[9;6HClaude Code · work");
+  // A click on the toggle selects its row and flips it; elsewhere on the row only selects.
+  const x = lines[4].indexOf("Show in corgi");
+  expect(v.click(b, x, 6, m)).toEqual({ kind: "here", agent: m.agents[0], shown: false });
+  expect(v.at).toBe(agentManager.agentKey("codex", ""));
+  expect(v.click(b, x, 10, m)).toEqual({ kind: "here_command", index: 0, shown: true });
+  expect(v.click(b, 8, 7, m)).toBeNull();
+  // Narrow, the heading is the workspace's name alone; Esc still closes.
+  m.workspace = "personal-projects";
+  const narrow = new Rect(0, 0, 50, v.height(m)),
+    w = new Writer();
+  v.draw(w, narrow, m);
+  expect(w.s).toContain("Account\x1b[5;35Hpersonal-pr…");
+  expect(w.s).not.toContain("Show in");
+  expect(v.key(27, m)).toEqual({ kind: "close" });
 });
 
 test("only default accounts move to Available after removal", () => {

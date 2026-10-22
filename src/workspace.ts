@@ -13,6 +13,8 @@ export class Workspace {
   model = new Model();
   agent_order = new Order();
   last_agent: string | null = null;
+  /** The launcher rows hidden in this workspace only. */
+  launcher_hidden: string[] = [];
   /** The pane a viewer last used here, for the next viewer to open on. */
   focus = 0;
   git_ahead: bigint | null = null;

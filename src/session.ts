@@ -11,6 +11,7 @@ import { logicalKey } from "./keys";
 import { encode } from "./keyboard";
 import * as accounts from "./accounts";
 import * as integration from "./integration";
+import { Row } from "./launch/row";
 import type { Provider } from "./providers";
 export type Context = { socket: string; executable: string; theme: any };
 /** The account a request names for `provider`: "" for the default. */
@@ -99,8 +100,12 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         e.setOriginal(request.payload.original);
       else if (request.payload.resolve) e.setOriginal(request.payload.command);
       if (request.payload.name !== null && request.payload.name !== undefined) e.name = request.payload.name;
-      if (!source) r.agent_commands[Number(request.payload.index)] = new Entry();
-      else
+      if (!source) {
+        r.agent_commands[Number(request.payload.index)] = new Entry();
+        // A command saved in its slot later starts shown everywhere.
+        const row = Row.ofCommand(Number(request.payload.index));
+        for (const w of r.workspaces.items) w.launcher_hidden = w.launcher_hidden.filter(h => h !== row);
+      } else
         e.semantics = request.payload.semantics
           ? Object.assign(new Semantics(), request.payload.semantics)
           : analyze(source, request.payload.cwd ?? ".");
@@ -125,6 +130,14 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       r.agent_hidden = { ...request.payload.hidden };
       // An older viewer sends no accounts, which keeps the hidden ones.
       if (hidden) r.account_hidden = [...new Set(hidden)];
+      r.changed();
+      return {};
+    }
+    case "agent.workspace_visibility": {
+      const { row, shown } = request.payload,
+        ws = r.getWorkspace(request.payload.workspace);
+      if (Row.parse(row) === null) throw Error("InvalidRow");
+      ws.launcher_hidden = [...ws.launcher_hidden.filter(h => h !== row), ...(shown ? [] : [row])];
       r.changed();
       return {};
     }
@@ -563,6 +576,7 @@ function build(r: Runtime, viewer: boolean) {
     workspaces: r.workspaces.items.map((w: any) => ({
       agent_order: w.agent_order.slice(),
       last_agent: w.last_agent,
+      launcher_hidden: w.launcher_hidden,
       closed_agents: r.closedCount(w.id),
       git_commits:
         w.git_commits.items?.slice(0, w.git_commits.len).map((c: any) => ({

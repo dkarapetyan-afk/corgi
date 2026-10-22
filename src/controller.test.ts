@@ -1371,6 +1371,28 @@ test("a signed-out account's row signs in to it over the panes instead of starti
   }
 });
 
+test("space in Manage hides a row in the current workspace's picker only", async () => {
+  const { s, sent } = withWork(),
+    id = s.current().id;
+  await s.key("m".charCodeAt(0));
+  s.agent_launcher.manager.at = agentManager.agentKey("claude", "/accounts/work");
+  await s.key(9);
+  await s.key(32);
+  expect(sent.at(-1)).toEqual({ "agent.workspace_visibility": { workspace: id, row: work, shown: false } });
+  expect(s.agent_launcher.shown(work)).toBe(false);
+  expect(s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.account)).toMatchObject({
+    shown: true,
+    here: false,
+  });
+  // The daemon's snapshot keeps it so.
+  s.current().launcher_hidden = [work];
+  await s.pollLauncher(false);
+  expect(s.agent_launcher.shown(work)).toBe(false);
+  await s.key(32);
+  expect(sent.at(-1)).toEqual({ "agent.workspace_visibility": { workspace: id, row: work, shown: true } });
+  expect(s.agent_launcher.shown(work)).toBe(true);
+});
+
 test("an account's row has a YOLO and launcher membership of its own, apart from its provider's", async () => {
   const { s, sent } = withWork();
   s.agent_launcher.selected = work;

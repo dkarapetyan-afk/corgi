@@ -219,7 +219,10 @@ class InputState {
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 /** `list` with `item` in it, or without it. */
-const toggled = (list: string[], item: string, on: boolean) => [...list.filter(x => x !== item), ...(on ? [item] : [])];
+const toggled = <T extends string>(list: T[], item: T, on: boolean) => [
+  ...list.filter(x => x !== item),
+  ...(on ? [item] : []),
+];
 
 type AccountRemoval = {
   agent: agentManager.Agent;
@@ -2103,6 +2106,10 @@ export class Controller {
         await this.setCommandShown(action.index, true);
         this.addedAgent(launch.commands[action.index].label());
         return;
+      case "here":
+        return this.setWorkspaceShown(Row.of(action.agent.provider, action.agent.account), action.shown);
+      case "here_command":
+        return this.setWorkspaceShown(Row.ofCommand(action.index), action.shown);
       case "rename":
         return this.renameAccount(action.agent, action.name);
       case "remove":
@@ -2195,12 +2202,15 @@ export class Controller {
         for (const preview of previews)
           if (preview)
             preview.accounts = preview.accounts.filter(o => !(o.provider === a.provider && o.account === a.account));
-        if (this.runtime.account_hidden.includes(a.account)) {
-          try {
-            await this.setLauncherShown(a, true);
-          } catch (error) {
-            warning = ` Removed ${a.label}, but couldn't update launcher settings: ${signin.problem(error)}`;
-          }
+        const row = Row.of(a.provider, a.account),
+          hidden = this.runtime.workspaces.items.filter(ws => ws.launcher_hidden.includes(row));
+        try {
+          if (this.runtime.account_hidden.includes(a.account)) await this.setLauncherShown(a, true);
+          // An account added later in its folder starts shown everywhere.
+          for (const ws of hidden)
+            await this.execute({ "agent.workspace_visibility": { workspace: ws.id, row, shown: true } });
+        } catch (error) {
+          warning = ` Removed ${a.label}, but couldn't update launcher settings: ${signin.problem(error)}`;
         }
       }
       if (current === launch && launch.manager.removal === job.removal) launch.manager.removed(result.error);
@@ -2659,6 +2669,18 @@ export class Controller {
     }
     this.dirty = true;
   }
+  /** Shows or hides a row in the launcher's workspace only. */
+  private async setWorkspaceShown(row: LauncherRow, shown: boolean): Promise<void> {
+    const launch = this.launcherModel();
+    if (!launch) return;
+    try {
+      await this.execute({ "agent.workspace_visibility": { workspace: launch.workspace, row, shown } });
+    } catch (error) {
+      return launch.manager.fail(signin.problem(error));
+    }
+    launch.workspace_hidden = toggled(launch.workspace_hidden, row, !shown);
+    this.dirty = true;
+  }
   private rememberLauncherSelection(): void {
     const launch = this.agent_launcher;
     if (!launch) return;
@@ -2729,6 +2751,8 @@ export class Controller {
       hidden: { ...this.runtime.agent_hidden },
       account_yolo: this.runtime.account_yolo,
       account_hidden: this.runtime.account_hidden,
+      workspace_hidden: this.current().launcher_hidden,
+      workspace_name: this.current().name,
       commands: this.runtime.agent_commands,
       accounts: this.runtime.accounts,
       pinned,
@@ -2788,6 +2812,8 @@ export class Controller {
       launch.hidden = { ...this.runtime.agent_hidden };
       launch.account_yolo = this.runtime.account_yolo;
       launch.account_hidden = this.runtime.account_hidden;
+      const i = this.runtime.workspaces.index(launch.workspace);
+      if (i !== null) launch.workspace_hidden = this.runtime.workspaces.items[i].launcher_hidden;
       launch.commands = this.runtime.agent_commands;
       launch.accounts = this.runtime.accounts;
       launch.normalize();

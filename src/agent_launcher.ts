@@ -24,41 +24,11 @@ import * as dropdown from "./dropdown";
 import type * as worktrees from "./worktrees";
 import type { View as SidebarView, Spotlight } from "./sidebar";
 import { Writer, displayWidth, ellipsis, writeEllipsis, sat } from "./text";
+import { Row, customs, type Launch } from "./launch/row";
+export { Row, type Launch };
 
 const providers = Provider.all;
-const customs = ["custom0", "custom1", "custom2", "custom3", "custom4", "custom5"] as const;
 
-/** One of a provider's accounts' rows: the provider, then the account's folder. */
-type AccountRow = `${Provider}:${string}`;
-/** Launcher rows: each provider's and its accounts', saved commands and a
- * plain terminal. */
-export type Row = Provider | AccountRow | (typeof customs)[number] | "terminal";
-/** What a row starts: a provider's agent in one of its accounts, "" the default. */
-export type Launch = { provider: Provider; account: string };
-export const Row = {
-  /** `provider`'s row, or the row of its `account`. */
-  of(provider: Provider, account = ""): Row {
-    return account.length > 0 ? `${provider}:${account}` : provider;
-  },
-  custom(row: Row): number | null {
-    const i = customs.indexOf(row as (typeof customs)[number]);
-    return i >= 0 ? i : null;
-  },
-  /** The provider of its own row; null for its accounts' rows. */
-  agent(row: Row): Provider | null {
-    return Provider.parse(row);
-  },
-  /** What a provider's or an account's row starts. */
-  launch(row: Row): Launch | null {
-    const colon = row.indexOf(":");
-    const provider = Provider.parse(colon < 0 ? row : row.slice(0, colon));
-    return provider === null ? null : { provider, account: colon < 0 ? "" : row.slice(colon + 1) };
-  },
-  /** Rows with a digit and the agent columns: a provider's, an account's or a saved command's. */
-  starts(row: Row): boolean {
-    return Row.launch(row) !== null || Row.custom(row) !== null;
-  },
-};
 /** The agent a launcher key starts. */
 export function keyAgent(byte: number): Provider | null {
   for (const provider of providers) if (adapter(provider).launcher_key.charCodeAt(0) === byte) return provider;
@@ -171,6 +141,9 @@ export class Menu {
   /** The accounts whose rows have YOLO on, and those the picker hides. */
   account_yolo: string[] = [];
   account_hidden: string[] = [];
+  /** The rows hidden in this workspace only. */
+  workspace_hidden: Row[] = [];
+  workspace_name = "";
   /** Manage agents has the card. */
   managing = false;
   manager = new agentManager.View();
@@ -281,6 +254,7 @@ export class Menu {
     return expired(o.usage_fetched_at, at) ? Cell.status("—") : Cell.init(limits.windows as any, at);
   }
   shown(row: Row): boolean {
+    if (this.workspace_hidden.includes(row)) return false;
     const index = Row.custom(row);
     if (index !== null) return this.commands[index].command.length > 0 && !this.commands[index].hidden;
     if (row === "terminal") return true;
@@ -644,6 +618,7 @@ export class Menu {
             : o.account || ((o.pending ?? this.preview.pending) ? "Reading…" : "Unavailable"),
         signed_out: out,
         shown: !this.hiddenOf(row),
+        here: !this.workspace_hidden.includes(row),
         managed: a?.managed ?? false,
         usage: !installed || out || o.usage_needs_consent ? Cell.status("—") : this.usageCell(row),
       });
@@ -651,6 +626,8 @@ export class Menu {
     return {
       agents,
       commands: this.commands,
+      workspace: this.workspace_name,
+      here: index => !this.workspace_hidden.includes(Row.ofCommand(index)),
       add: providers.filter(p => this.preview.installed[p]),
       account: info => this.account(info),
       suggest: a => accounts.suggest(a.provider, accounts.identity(a.provider, a.account), a.account),
