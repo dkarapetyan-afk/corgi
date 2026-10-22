@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { View as ToolView } from "../activity/tools";
 import { test, expect } from "bun:test";
-import { Tail, Result as UsageResult, type Request } from "./worker";
+import { Tail, Worker, Result as UsageResult, type Request } from "./worker";
 import { Agent, Text, Path } from "../agents";
 import { Result as ActivityResult, Request as ActivityRequest, Slot } from "../activity/worker";
 import { Actor } from "../conversations";
 import { hash } from "../activity/summary";
 import * as claudeUsage from "../providers/claude/usage";
 import * as codexUsage from "../providers/codex/usage";
+import * as json from "../json";
 const readers = { codex: codexUsage.open(() => ["/nonexistent/session_index.jsonl"]), claude: claudeUsage.open() };
 const reader = (req: Request) => readers[req.agent.provider as "codex" | "claude"];
 function request(provider: "codex" | "claude"): Request {
@@ -464,6 +465,139 @@ test("real file usage reader accepts large Codex metadata and counts later activ
     expect((await tail.poll(req, reader(req))).any()).toBe(false);
     req.agent.session = new Text("other-session");
     await expect(new Tail().poll(req, reader(req))).rejects.toThrow("WrongSession");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** Carries `tail` through a handoff and returns the next daemon's tail. */
+function handOver(tail: Tail) {
+  const before = new Worker();
+  before.watchers.set(tail.actor, tail);
+  const saved = json.clone(before.capture());
+  return () => Worker.restore(json.clone(saved)).watchers.get(tail.actor)!;
+}
+test("a handoff's usage tail counts on from where the last daemon stopped", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-"));
+  try {
+    const file = join(root, "s.jsonl"),
+      line = (id: string, input: number, output: number) =>
+        JSON.stringify({
+          type: "assistant",
+          sessionId: "s",
+          timestamp: "1970-01-01T00:00:02.000Z",
+          message: { id, usage: { input_tokens: input, output_tokens: output } },
+        }) + "\n";
+    writeFileSync(file, line("m1", 7, 1));
+    const req = request("claude");
+    req.agent.session = new Text("s");
+    req.agent.transcript = new Path(file);
+    const tail = new Tail();
+    tail.actor = 1;
+    await tail.poll(req, reader(req));
+    appendFileSync(file, line("m2", 10, 2) + `{"type":"assistant","sessionId":"s"`);
+    await tail.poll(req, reader(req));
+    expect(tail.live.meter.value.tokens.input).toBe(10n);
+    const next = handOver(tail);
+    // Written while the daemons hand over, finishing the line the last one read half of.
+    appendFileSync(file, `,"message":{"id":"m3","usage":{"input_tokens":20,"output_tokens":3}}}\n`);
+    const after = next();
+    await after.poll(req, reader(req));
+    expect(after.live.meter.value.tokens.input).toBe(30n);
+    expect(after.live.meter.value.tokens.output).toBe(5n);
+    expect(after.live.meter.value.partial).toBe(false);
+    appendFileSync(file, line("m4", 1, 1));
+    await after.poll(req, reader(req));
+    expect(after.live.meter.value.tokens.input).toBe(31n);
+    const moved = join(root, "moved.jsonl");
+    writeFileSync(moved, line("m1", 7, 1));
+    req.agent.transcript = new Path(moved);
+    const replaced = next();
+    await replaced.poll(req, reader(req));
+    expect(replaced.live.meter.value.tokens.input).toBe(10n);
+    expect(replaced.live.meter.value.partial).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a Codex subagent's count stays whole through a handoff", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-"));
+  try {
+    const file = join(root, "child.jsonl"),
+      count = (ordinal: number, total: number, last: number) =>
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "1970-01-01T00:00:06.000Z",
+          ordinal,
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: total, output_tokens: total / 10 },
+              last_token_usage: { input_tokens: last, output_tokens: last / 10 },
+            },
+          },
+        }) + "\n";
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "child", subagent_history_start_ordinal: 2, timestamp: "1970-01-01T00:00:05.000Z" },
+      }) +
+        "\n" +
+        count(1, 900, 900) +
+        count(2, 100, 100) +
+        count(3, 150, 50),
+    );
+    const req = request("codex");
+    req.agent.session = new Text("child");
+    req.agent.transcript = new Path(file);
+    req.child = true;
+    req.tracked_since = 1000;
+    const tail = new Tail();
+    tail.actor = 2;
+    await tail.poll(req, reader(req));
+    expect(tail.live.meter.value.tokens.input).toBe(150n);
+    expect(tail.live.meter.value.partial).toBe(false);
+    const after = handOver(tail)();
+    appendFileSync(file, count(4, 200, 50));
+    await after.poll(req, reader(req));
+    expect(after.live.meter.value.tokens.input).toBe(200n);
+    expect(after.live.meter.value.tokens.output).toBe(20n);
+    expect(after.live.meter.value.partial).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a handoff in the middle of a subagent's catch-up keeps its count as partial", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-"));
+  try {
+    const file = join(root, "agent-a1.jsonl"),
+      line = (i: number) =>
+        JSON.stringify({
+          type: "assistant",
+          sessionId: "s",
+          isSidechain: true,
+          agentId: "a1",
+          timestamp: "1970-01-01T00:00:02.000Z",
+          message: { id: `m${i}`, content: "x".repeat(1000), usage: { input_tokens: 1, output_tokens: 0 } },
+        }) + "\n";
+    writeFileSync(file, Array.from({ length: 100 }, (_, i) => line(i)).join(""));
+    const req = request("claude");
+    req.agent.session = new Text("a1");
+    req.agent.transcript = new Path(file);
+    req.child = true;
+    req.tracked_since = 1000;
+    const tail = new Tail();
+    tail.actor = 3;
+    await tail.poll(req, reader(req));
+    const counted = tail.live.meter.value.tokens.input;
+    expect(counted).toBeGreaterThan(0n);
+    expect(counted).toBeLessThan(100n);
+    const after = handOver(tail)();
+    await after.poll(req, reader(req));
+    await after.poll(req, reader(req));
+    expect(after.live.meter.value.tokens.input).toBe(counted);
+    expect(after.live.meter.value.partial).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,4 +1,5 @@
 import type { Worker as SummaryWorker } from "./activity/worker";
+import type { Worker as UsageWorker } from "./usage/worker";
 import { chmodSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { Runtime } from "./runtime";
@@ -26,6 +27,7 @@ import * as worktreeAdd from "./worktree_add";
 import { testBuild } from "./build_assets";
 export class Server {
   summaries: SummaryWorker | null = null;
+  usage: UsageWorker | null = null;
   runtime = new Runtime();
   clients: Client[] = [];
   theme = new Theme();

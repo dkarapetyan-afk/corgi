@@ -153,12 +153,11 @@ function notes(t: Tail, session: string, value: any) {
 }
 export function open(): TranscriptReader {
   return {
-    open(t, _req, _head, catch_up) {
+    open(t) {
       if (!t.live.meter.value.known) {
         t.live.meter.value.known = true;
         t.live.meter.value.since = Date.now();
       }
-      t.catch_up = catch_up;
     },
     record(t, req, value, appended, stamp) {
       const session = req.agent.sessionId();

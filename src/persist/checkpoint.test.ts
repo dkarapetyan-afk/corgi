@@ -17,6 +17,7 @@ import * as links from "../trackers/link_labels";
 import * as worktrees from "../worktrees";
 import { parseInventory } from "../trackers/worktrees";
 import { snapshot } from "../session";
+import { Tokens } from "../usage/live";
 const fixtures = resolve(import.meta.dir, "../fixtures");
 const fresh = () => {
   const r = new Runtime(),
@@ -231,6 +232,30 @@ test("an account's YOLO and Show survive checkpoints and default for old ones", 
     await restore(old, state, live);
     expect([old.account_yolo, old.account_hidden]).toEqual([[], []]);
     expect(() => validateCheckpoint({ ...state, account_yolo: [3] })).toThrow();
+  }
+});
+test("a conversation's headless count and tracking start survive handoffs, not cold restores", async () => {
+  for (const live of [true, false]) {
+    using original = fresh();
+    const actor = original.conversations.get("codex", "headless-usage");
+    actor.tracked_since = 1234;
+    show(original, actor);
+    const first = new Tokens({ input: 100n, cached_input: 40n, output: 10n });
+    actor.beginHeadlessUsage(false);
+    actor.headless_meter.sample(first, first, true, 60_000);
+    const state = roundtrip(cp.capture(original, live));
+    validateCheckpoint(state);
+    using next = new Runtime();
+    await restore(next, state, live);
+    const restored = next.conversations.byId(actor.id)!;
+    expect(restored.headless_usage).toBe(live);
+    expect(restored.tracked_since === 1234).toBe(live);
+    if (!live) continue;
+    restored.headless_meter.sample(new Tokens({ input: 150n, cached_input: 60n, output: 15n }), null, true, 60_000);
+    const usage = restored.usageView(60_000);
+    expect(usage.tokens).toEqual(new Tokens({ input: 150n, cached_input: 60n, output: 15n }));
+    expect(usage.partial).toBe(false);
+    expect(usage.recent_tokens).toBe(165n);
   }
 });
 test("a workspace's hidden launcher rows survive checkpoints and default for old ones", async () => {

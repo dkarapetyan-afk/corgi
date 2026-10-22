@@ -571,5 +571,35 @@ class Observations extends Runtime {
       claude.kill("SIGKILL");
     }
   }
+  async test_observed_tokens_count_on_through_a_reload() {
+    const count = (total: number, last: number) =>
+      appendFileSync(
+        this.log,
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: new Date().toISOString(),
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: total, output_tokens: total / 10 },
+              last_token_usage: { input_tokens: last, output_tokens: last / 10 },
+            },
+          },
+        }) + "\n",
+      );
+    const usage = async () => {
+      const snapshot = await this.session();
+      const id = snapshot.panes.find((p: any) => p.id === this.pane).agent.conversation;
+      return snapshot.conversations.find((c: any) => c.id === id)?.usage;
+    };
+    await this.settleTranscript();
+    count(100, 100);
+    await this.until(async () => (await usage())?.tokens.input === 100);
+    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    count(150, 50);
+    await this.until(async () => (await usage())?.tokens.input === 150);
+    this.assertEqual((await usage()).tokens.output, 15);
+    this.assertFalse((await usage()).partial);
+  }
 }
 registerCase("Observations", Observations, { inherited: false });

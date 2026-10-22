@@ -11,6 +11,7 @@ import { Pane } from "./runtime";
 import { Workspace } from "./workspace";
 import { Terminal } from "./pane/terminal";
 import { Worker, Request, Result, Slot } from "./activity/worker";
+import { Worker as UsageWorker, Tail } from "./usage/worker";
 import { parseLabel } from "./activity/summary";
 import { captureManifest } from "./persist/handoff";
 import { checkpoint_version, handoff_version } from "./persist/migrations";
@@ -209,7 +210,7 @@ test("saved handoff format matches its version", async () => {
   expect(handoff_version).toBe(5);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "b2b14bfedfd18e0ae93267468210db76ee53193377de97f3763fc64d5ffea11f",
+    "8dcd26b5e69d11fcf0667472c174c053bcd0f356c914419d00e3b28062ef088f",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();
@@ -219,6 +220,10 @@ test("saved handoff format matches its version", async () => {
   summaries.slots[0].result = new Result(request, parseLabel("Running unit tests"), "amend");
   (server as any).summaries = summaries;
   await summaries.pause();
+  const usage = new UsageWorker(),
+    tail = Object.assign(new Tail(), { actor: 1, opened: true, inode: 7, device: 1, offset: 42 });
+  usage.watchers.set(1, tail);
+  server.usage = usage;
   try {
     const captured = json.parse(json.stringify(captureManifest(server, client)));
     validate(schemas.handoff, captured);
@@ -227,6 +232,7 @@ test("saved handoff format matches its version", async () => {
     expect(captured.clients).toHaveLength(1);
     expect(captured.clients[0].launch_preview.preview.options.claude.spend.used_minor).toBe(59);
     expect(captured.summaries.pool.slots).toHaveLength(4);
+    expect(captured.usage[0].position.offset).toBe(42);
     expect(() => validate(schemas.handoff, { ...captured, listener: "bad" })).toThrow();
   } finally {
     await summaries.stop();

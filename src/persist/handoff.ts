@@ -10,6 +10,7 @@ import * as recovery from "./recovery";
 import * as migrations from "./migrations";
 import * as json from "../json";
 import { Worker as SummaryWorker } from "../activity/worker";
+import { Worker as UsageWorker } from "../usage/worker";
 import * as build_id from "../build_id";
 import * as setup from "../inference/setup";
 
@@ -76,6 +77,7 @@ export function captureManifest(server: Server, requester: Client) {
     requester: requester.fd,
     runtime: checkpoint.capture(server.runtime, true),
     summaries: server.summaries?.capture() ?? null,
+    usage: server.usage?.capture() ?? null,
     // A one-shot HTTP request is not handed over; its sender sees the close.
     clients: server.clients.filter(client => client.http === "no").map(captureClient),
     theme: server.theme,
@@ -286,6 +288,7 @@ export async function importAndRun(
       server.summaries.uses = setup.loadUses(setup.path(server.socket));
       server.summaries.link_names = !setup.off(setup.path(server.socket));
     }
+    if (m.usage) server.usage = UsageWorker.restore(m.usage);
     for (const pane of server.runtime.panes) if (pane.terminal.fd >= 0) fdNative.fd_cloexec(pane.terminal.fd);
     for (const saved of m.clients) {
       if (saved.interests.length > 64) throw Error("InvalidCheckpoint");
@@ -302,6 +305,7 @@ export async function importAndRun(
     for (const session of server.runtime.sessions) session.adopt();
     server.summaries?.inherit();
     server.summaries?.activate();
+    server.usage?.activate();
     await server.run();
   } catch (error) {
     try {

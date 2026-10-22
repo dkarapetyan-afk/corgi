@@ -9,11 +9,13 @@ import { Model } from "../providers/model";
 import { parse } from "../json";
 import { head } from "../transcript";
 import { Counts, Tracker } from "./tokens";
-import { Counter, View } from "./live";
+import { Counter, Meter, View } from "./live";
 import { Reading } from "./context_window";
 import { Tracker as Tools, View as Progress } from "../activity/tools";
 import { Ended } from "../activity/background_tasks";
 import * as accounts from "../accounts";
+import { max_actors } from "../conversations";
+import { hydrate } from "../persist/checkpoint";
 export type Request = {
   actor: number;
   workspace: number;
@@ -22,6 +24,8 @@ export type Request = {
   child: boolean;
   tracked_since: number;
 };
+/** A transcript file, and how far into it usage was counted. */
+export type Position = { inode: number; device: number; offset: number };
 export class Result {
   actor = 0;
   workspace = 0;
@@ -64,6 +68,8 @@ export class Tail {
   update_at = 0;
   spoke_at = 0;
   ended = new Ended();
+  /** Where the daemon before a handoff stopped counting, until the file opens. */
+  carried: Position | null = null;
   closeFile() {
     this.inode = 0;
     this.device = 0;
@@ -73,6 +79,13 @@ export class Tail {
   }
   close() {
     Object.assign(this, new Tail());
+  }
+  /** How far usage was counted: lines ending past it are not counted yet. */
+  position(): Position | null {
+    if (this.carried) return this.carried;
+    // A catch-up stopped halfway counted only part of what precedes initial_until.
+    if (!this.inode || (this.catch_up && this.offset < this.initial_until)) return null;
+    return { inode: this.inode, device: this.device, offset: Math.max(this.offset, this.initial_until) };
   }
   observeModel(message: any) {
     const id = str(message, "model");
@@ -125,20 +138,32 @@ export class Tail {
       if (!resumed) {
         const first = await head(file);
         adapter(req.agent.provider!).transcript?.verify?.(first, req.agent.sessionId());
-        this.initial_until = stat.size;
-        this.offset = Math.max(0, stat.size - 256 * 1024);
+        const carried = this.carried,
+          continues =
+            carried !== null &&
+            stat.ino === carried.inode &&
+            stat.dev === carried.device &&
+            stat.size >= carried.offset;
+        this.carried = null;
+        this.initial_until = continues ? carried.offset : stat.size;
+        this.offset = Math.max(0, this.initial_until - 256 * 1024);
         const catch_up = req.child && !this.opened && stat.size <= 2 * 1024 * 1024;
         if (catch_up) this.offset = 0;
+        this.catch_up = catch_up;
         const retained = this.live.meter;
         this.live = new Counter();
-        this.live.meter = retained;
-        if (this.opened) this.live.meter.lose();
+        if (!continues) {
+          this.live.meter = retained;
+          if (this.opened) this.live.meter.lose();
+        }
         this.opened = true;
         this.partial = Buffer.alloc(0);
         this.tracker = new Tracker();
         this.progress = new Tools();
         this.context = new Reading();
         reader.open(this, req, first, catch_up);
+        // The carried count already covers the file up to initial_until; opening readies a new one.
+        if (continues) this.live.meter = retained;
         this.discard = this.offset > 0;
       }
       this.inode = stat.ino;
@@ -168,7 +193,31 @@ export class Worker {
   running = false;
   static start() {
     const w = new Worker();
-    w.timer = setInterval(() => void w.run(), 250);
+    w.activate();
+    return w;
+  }
+  activate() {
+    this.timer = setInterval(() => void this.run(), 250);
+  }
+  /** What a handoff carries: each transcript's count and how far it got. */
+  capture() {
+    return [...this.watchers.values()]
+      .filter(t => t.opened)
+      .map(t => ({ actor: t.actor, meter: t.live.meter, position: t.position() }));
+  }
+  /** A worker that goes on counting where a handoff's left off, once activated. */
+  static restore(saved: any) {
+    if (!Array.isArray(saved) || saved.length > max_actors) throw Error("InvalidCheckpoint");
+    const w = new Worker();
+    for (const entry of saved) {
+      if (!Number.isInteger(entry.actor) || w.watchers.has(entry.actor)) throw Error("InvalidCheckpoint");
+      const t = new Tail();
+      t.actor = entry.actor;
+      t.opened = true;
+      t.live.meter = hydrate(new Meter(), entry.meter);
+      t.carried = entry.position ? hydrate({ inode: 0, device: 0, offset: 0 }, entry.position) : null;
+      w.watchers.set(t.actor, t);
+    }
     return w;
   }
   stop() {

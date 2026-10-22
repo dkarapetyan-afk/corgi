@@ -41,7 +41,7 @@ export function start(server: Server) {
       }),
     ),
     watchers: new Map<string, Watcher>(),
-    usage: UsageWorker.start(),
+    usage: server.usage ?? UsageWorker.start(),
     summaries:
       server.summaries ??
       SummaryWorker.start(
@@ -52,6 +52,7 @@ export function start(server: Server) {
     settling: 0,
   };
   server.summaries = workers.summaries;
+  server.usage = workers.usage;
   services.set(server, workers);
   publishInference(server, workers);
   return workers;

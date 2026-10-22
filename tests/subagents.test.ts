@@ -250,7 +250,7 @@ class HeadlessUsage extends Runtime {
     await a.input("x");
     this.assertNotIn("Total", a.state.data);
   }
-  async test_reload_baselines_replayed_native_usage_but_counts_new_requests() {
+  async test_reload_keeps_native_usage_and_ignores_replayed_reports() {
     await this.command("pane.create", { workspace: 1, command: "sleep 60" });
     const headless = (
       await this.rpc({
@@ -281,15 +281,15 @@ class HeadlessUsage extends Runtime {
     await this.until(async () => (await actor()).usage.tokens.input === 100);
     await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
     const restored = await actor();
-    this.assertFalse(restored.usage.known);
-    this.assertEqual(restored.usage.tokens.input, 0);
+    this.assertTrue(restored.usage.known);
+    this.assertEqual(restored.usage.tokens.input, 100);
     await send("thread/tokenUsage/updated", {
       threadId: "headless-child",
       tokenUsage: first,
     });
     await this.until(async () => (await actor()).observed_at > restored.observed_at);
-    this.assertEqual((await actor()).usage.tokens.input, 0);
-    this.assertTrue((await actor()).usage.partial);
+    this.assertEqual((await actor()).usage.tokens.input, 100);
+    this.assertFalse((await actor()).usage.partial);
     await send("thread/tokenUsage/updated", {
       threadId: "headless-child",
       tokenUsage: {
@@ -297,8 +297,8 @@ class HeadlessUsage extends Runtime {
         last: { inputTokens: 30, outputTokens: 5 },
       },
     });
-    await this.until(async () => (await actor()).usage.tokens.input === 30);
-    this.assertEqual((await actor()).usage.tokens.output, 5);
+    await this.until(async () => (await actor()).usage.tokens.input === 130);
+    this.assertEqual((await actor()).usage.tokens.output, 25);
   }
 }
 registerCase("Children", Children, { inherited: false });
