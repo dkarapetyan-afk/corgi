@@ -161,6 +161,8 @@ export class State {
     if (!b.contains(x, y) || b.w < 76 || b.h < 26) return false;
     const rx = x - b.x,
       ry = y - b.y;
+    if (this.step === "import" && this.picker.stage === "choose" && skipImportButton(b).contains(x, y))
+      return this.key("s", conn);
     if (ry === b.h - 3) {
       if (this.step === "presets") this.focus = 0;
       if (rx < 15 && (this.step !== "presets" || this.dismissable)) return this.key(27, conn);
@@ -180,7 +182,6 @@ export class State {
         if (this.preset === "cmux") return this.key("p", conn);
       }
     } else if (this.step === "import" && this.picker.stage === "choose") {
-      if (ry === 6 && rx >= b.w - 23) return this.key("s", conn);
       if (ry === 6 && rx >= 3 && rx < 3 + 14 * catalog.available_sources.length)
         return this.key(49 + Math.floor((rx - 3) / 14), conn);
       const hit = this.picker.hit(pickerArea(b), x, y);
@@ -261,7 +262,10 @@ export class State {
         message,
         warm,
       );
-    put(w, b, 3, b.h - 3, footerHint(this), dim);
+    const skip = this.step === "import" && picker.stage === "choose" ? skipImportButton(b) : null;
+    const hint = footerHint(this);
+    put(w, b, 3, b.h - (skip && 5 + hint.length > skip.x - b.x ? 4 : 3), hint, dim);
+    if (skip) put(w, b, skip.x - b.x, skip.y - b.y, "[ S Skip import ]", text);
     let cta: string;
     switch (this.step as Step) {
       case "presets":
@@ -308,10 +312,12 @@ export class State {
       catalog.available_sources.forEach((source, i) => {
         put(w, b, 3 + i * 14, 6, `[ ${i + 1} ${source} ]`, source === picker.source ? bright : dim);
       });
-      put(w, b, sat(b.w, 23), 6, "[ S Skip import ]", dim);
     } else put(w, b, 3, 6, `${picker.progress.phase}  ${picker.progress.completed}/${picker.progress.total}`, text);
     picker.draw(w, pickerArea(b), true);
   }
+}
+function skipImportButton(b: Rect): Rect {
+  return new Rect(b.x + b.w - 46, b.y + b.h - 3, 17, 1);
 }
 /** Where the import picker draws: from the notes down to the message row. */
 function pickerArea(b: Rect): Rect {
