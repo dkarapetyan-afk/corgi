@@ -24,7 +24,7 @@ export class Model {
     if (aliases[id])
       return new Model({
         id: Text.ascii(reported),
-        name: new Text(aliases[id] + (million ? " (1M context)" : "")),
+        name: new Text(aliases[id] + (million ? " (1M)" : "")),
       });
     id = id.slice(id.lastIndexOf("/") + 1);
     id = id.replace(/^(?:[a-z-]+\.)?anthropic\.(?=claude-)/, "");
@@ -66,7 +66,7 @@ export class Model {
                 family.slice(1) +
                 ` ${major}` +
                 (Number(minor ?? 0) ? `.${Number(minor)}` : "") +
-                (million && !native ? " (1M context)" : ""),
+                (million && !native ? " (1M)" : ""),
             ),
             window: million || native ? 1000000n : 200000n,
           });

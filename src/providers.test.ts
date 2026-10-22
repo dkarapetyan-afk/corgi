@@ -184,7 +184,7 @@ test("models canonicalize Bedrock, Vertex, aliases, and native million windows",
     ["claude-opus-5-5", "claude-opus-5-5", "Opus 5.5", 1000000n],
     ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5-20251001", "Haiku 4.5", 200000n],
     ["claude-3-5-sonnet-v2@20241022", "claude-3-5-sonnet-20241022", "Sonnet 3.5", 200000n],
-    ["sonnet[1m]", "sonnet[1m]", "Sonnet (1M context)", 0n],
+    ["sonnet[1m]", "sonnet[1m]", "Sonnet (1M)", 0n],
     ["gpt-6.1-sol", "gpt-6.1-sol", "GPT-6.1 Sol", 0n],
   ] as const) {
     const m = Model.resolve(id);

@@ -146,7 +146,7 @@ export function resolution(value: any = {}): Resolution {
 }
 const headings = ["Agent", "YOLO", "Model", "Account", "Plan", "Usage (used) · resets in"];
 // Reserve metadata and two usage windows before their readings arrive.
-const column_widths = [28, 6, 18, 28, 10, 50];
+const column_widths = [28, 6, 18, 28, 12, 50];
 type Hint = { key: string; label: string };
 const manage_label = " Manage agents ";
 const now = () => Math.floor(Date.now() / 1000);

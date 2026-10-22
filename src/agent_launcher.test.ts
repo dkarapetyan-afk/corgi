@@ -258,7 +258,7 @@ test("custom picker cells preserve account scope and permission state", () => {
   expect(m.usageCell("custom0").fallback).toBe("—");
   m.commands[1].set("claude --model sonnet[1m]");
   m.commands[1].semantics = analyze(m.commands[1].text(), "/tmp");
-  expect(m.customCells(1)[2]).toBe("Sonnet (1M context)");
+  expect(m.customCells(1)[2]).toBe("Sonnet (1M)");
 });
 
 test("the title names the worktree once, on a button that drops the checkouts and the new-worktree form", () => {
