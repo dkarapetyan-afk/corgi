@@ -44,17 +44,22 @@ for await (const line of createInterface({ input: process.stdin })) {
               },
       },
     });
-  } else if (method === "account/rateLimits/read")
+  } else if (method === "account/rateLimits/read") {
+    const path = process.env.CORGI_INFERENCE_TEST_CONTROL,
+      control = path ? JSON.parse(readFileSync(path, "utf8")) : {};
     emit({
       id: ident,
       result: {
-        rateLimits: {
-          primary: { usedPercent: 23, windowDurationMins: 300 },
-          secondary: { usedPercent: 61, windowDurationMins: 10080 },
-        },
+        rateLimits:
+          "rateLimits" in control
+            ? control.rateLimits
+            : {
+                primary: { usedPercent: 23, windowDurationMins: 300 },
+                secondary: { usedPercent: 61, windowDurationMins: 10080 },
+              },
       },
     });
-  else if (method === "thread/start") {
+  } else if (method === "thread/start") {
     if (value.params.config["mcp_servers.fixture.enabled"] !== false)
       throw new Error("fixture MCP server must be disabled");
     counter++;

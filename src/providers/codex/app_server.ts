@@ -4,7 +4,7 @@ import { field, str, Text } from "../common";
 import { cancelled, type Stopping } from "../../stopping";
 import * as errors from "../../errors";
 import { Rpc } from "./rpc";
-import { account as readAccount, limits } from "./account";
+import { account as readAccount, limits, monthlySpend } from "./account";
 // Without tools, memories, hooks, plugins, agents, project docs or web search.
 export const toolless = [
   "-c",
@@ -101,8 +101,12 @@ export async function account(server: AppServer, stopping?: Stopping) {
   if (str(value, "type") !== "chatgpt") return response;
   try {
     const reply = await server.request("account/rateLimits/read", {}, stopping),
-      result = field(reply, "result");
-    response.limits = limits(field(field(result, "rateLimitsByLimitId"), "codex") ?? field(result, "rateLimits"));
+      result = field(reply, "result"),
+      snapshot = field(field(result, "rateLimitsByLimitId"), "codex") ?? field(result, "rateLimits");
+    response.limits = limits(snapshot);
+    response.spend = monthlySpend(field(snapshot, "individualLimit"));
+    // Business workspaces on credits report a monthly limit without quota windows.
+    if (response.limits === "none" && response.spend !== null) response.limits = "metered";
     if (response.limits === "none") response.usage_error = new Text("no usage returned");
   } catch (error) {
     response.usage_error = new Text(errors.is(error, "Timeout") ? "request timed out" : "usage request failed");

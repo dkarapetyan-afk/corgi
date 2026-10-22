@@ -105,6 +105,15 @@ function fixture() {
     period_start: 1790812800,
     reset_at: 1793491200,
   };
+  preview.options.codex.limits = "metered";
+  preview.options.codex.spend = {
+    used_minor: 38820,
+    limit_minor: 25000000,
+    currency: null,
+    exponent: 2,
+    period_start: 1790812800,
+    reset_at: 1793491200,
+  };
   client.launch_preview = {
     cwd: "/tmp",
     preview,
@@ -126,7 +135,7 @@ function fixture() {
 test("the runtime wire matches protocol.version", () => {
   expect(protocol.version).toBe(2);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "deb06af8cb93d3048a0fd6e64502597127a5fea247c268e7d47d8f98de085f3e",
+    "191d31d09b1ec951c472f7dfeccd6ee6531a860cee882906f36ff36a948ca876",
   );
   const { server, client, dispose } = fixture();
   try {
@@ -135,6 +144,7 @@ test("the runtime wire matches protocol.version", () => {
     const preview = json.parse(json.stringify(client.launch_preview!.preview));
     validate(schemas.protocol, { launch_preview: preview });
     expect(restorePreview(preview).options.claude.spend).toEqual(client.launch_preview!.preview.options.claude.spend);
+    expect(restorePreview(preview).options.codex.spend).toEqual(client.launch_preview!.preview.options.codex.spend);
     delete preview.options.claude.spend;
     expect(restorePreview(preview).options.claude.spend).toBeNull();
     expect(snapshot.panes[0].agent.session).toBe("schema-session");
@@ -199,7 +209,7 @@ test("saved handoff format matches its version", async () => {
   expect(handoff_version).toBe(5);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "da710d441974bd7968794f10f03d7658bfe1315f18688806135f50b8694930fb",
+    "b2b14bfedfd18e0ae93267468210db76ee53193377de97f3763fc64d5ffea11f",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();

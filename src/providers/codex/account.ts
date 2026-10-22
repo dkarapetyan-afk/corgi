@@ -1,5 +1,6 @@
 import { field, str, Text } from "../common";
 import { Info, Window, used, windows } from "../../usage/account";
+import * as spend from "../../usage/spend";
 import { plan } from "./index";
 /** The account an app server's `account/read` reports. */
 export function account(value: any) {
@@ -26,4 +27,28 @@ function window(value: unknown) {
 /** The limits in an `account/rateLimits/read` reply's snapshot. */
 export function limits(value: unknown) {
   return windows([window(field(value, "primary")), window(field(value, "secondary"))]);
+}
+/** Hundredths of a credit, from the decimal string Codex reports. */
+function credits(value: unknown) {
+  return typeof value === "string" && /^\d+(\.\d+)?$/.test(value) ? Math.round(Number(value) * 100) : null;
+}
+/** A snapshot's `individualLimit`, which Codex's /status shows as its
+ * "Monthly credit limit". It reports the reset; the period is the month before. */
+export function monthlySpend(value: unknown): spend.Reading | null {
+  const used = credits(field(value, "used")),
+    limit = credits(field(value, "limit")),
+    reset = field(value, "resetsAt");
+  if (used === null || limit === null || !Number.isSafeInteger(reset)) return null;
+  // A reset on the 31st follows a period from the last day of a shorter month.
+  const end = new Date(reset * 1000),
+    last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 0)),
+    day = Math.min(end.getUTCDate(), last.getUTCDate());
+  return spend.restore({
+    used_minor: used,
+    limit_minor: limit,
+    currency: null,
+    exponent: 2,
+    period_start: Date.UTC(last.getUTCFullYear(), last.getUTCMonth(), day) / 1000 + (reset % 86400),
+    reset_at: reset,
+  });
 }

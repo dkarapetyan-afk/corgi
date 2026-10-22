@@ -21,6 +21,14 @@ test("monthly spend formats reported money without inventing a missing cap", () 
   expect(percent({ ...reading, used_minor: 125, limit_minor: 100 })).toBe(125);
   expect(amounts({ ...reading, currency: "JPY", exponent: 0, limit_minor: null })).toBe("¥59");
 });
+test("credits show whole, as Codex does, with a coin stack where money has its sign", () => {
+  const credits = { ...reading, currency: null, used_minor: 38820, limit_minor: 25000000 };
+  expect(amounts(credits)).toBe("⛁388 / ⛁250k");
+  expect(amounts({ ...credits, used_minor: 123456 })).toBe("⛁1.2k / ⛁250k");
+  expect(amounts({ ...credits, limit_minor: null })).toBe("⛁388");
+  expect(percent(credits)).toBeCloseTo(0.155);
+  expect(restore(credits)).toEqual(credits);
+});
 test("spend normalization rejects malformed readings and handles old previews", () => {
   expect(restore(undefined)).toBeNull();
   expect(restore(reading)).toEqual(reading);
@@ -29,7 +37,7 @@ test("spend normalization rejects malformed readings and handles old previews", 
     { used_minor: Infinity },
     { used_minor: 2 ** 53 },
     { limit_minor: "100" },
-    { currency: null },
+    { currency: undefined },
     { currency: "$" },
     { exponent: -1 },
     { reset_at: reading.period_start },

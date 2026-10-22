@@ -1019,13 +1019,13 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       this.assertNotIn("New agent", (await view.poll()).data);
     }
   }
-  async directoryPreview(name: string) {
+  async directoryPreview(name: string, provider: "codex" | "claude" = "claude") {
     const directory = join(this.temp.name, name);
     mkdirSync(directory, { recursive: true });
     const preview = async () =>
       (await this.rpc({ op: "agent.preview", protocol: 2, workspace: this.ws, cwd: directory })).preview;
     await this.until(async () => !(await preview()).pending, 12);
-    return (await preview()).options.claude;
+    return (await preview()).options[provider];
   }
   metadataRequests() {
     const path = join(this.env.CLAUDE_CONFIG_DIR!, "metadata-requests.jsonl");
@@ -1122,6 +1122,35 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await view.input("\x02A");
     await this.until(async () =>
       screen_text((await view.poll()).data, 150, 30).some(row => /1M\s+━+\s+\$0\.59 \/ \$10k/.test(row)),
+    );
+  }
+  async test_codex_monthly_credit_limit_shows_as_spend() {
+    const reset = Math.floor(Date.now() / 1000) + 10 * 86400;
+    writeFileSync(
+      this.env.CORGI_INFERENCE_TEST_CONTROL!,
+      JSON.stringify({
+        account: { type: "chatgpt", email: "codex@example.com", planType: "business" },
+        rateLimits: {
+          limitId: "codex",
+          primary: null,
+          secondary: null,
+          individualLimit: { limit: "250000", used: "388.2034", remainingPercent: 100, resetsAt: reset },
+        },
+      }),
+    );
+    const codex = await this.directoryPreview("codex-credits", "codex");
+    this.assertEqual(codex.plan, "Enterprise");
+    this.assertEqual(codex.limits, { metered: {} });
+    this.assertEqual(codex.usage_error, "");
+    this.assertEqual(
+      [codex.spend.used_minor, codex.spend.limit_minor, codex.spend.currency, codex.spend.reset_at],
+      [38820, 25000000, null, reset],
+    );
+    const view = await Viewer.create(this, 150, 30);
+    await view.input("\x02A");
+    await this.until(
+      async () => screen_text((await view.poll()).data, 150, 30).some(row => /1M\s+━+\s+⛁388 \/ ⛁250k/.test(row)),
+      12,
     );
   }
   async test_claude_account_switch_does_not_reuse_other_accounts_usage() {

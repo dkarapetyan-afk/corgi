@@ -527,6 +527,9 @@ test("account limits include monthly spend, optional caps and calendar reset", (
   expect(frame).toContain("━━━━━━");
   expect(frame).toContain("0.01%");
   expect(frame).toContain("↻ 1d");
+  a.option.spend = { ...a.option.spend, used_minor: 38820, limit_minor: 25000000, currency: null };
+  expect(draw()).toContain("mo ⛁388 / ⛁250k");
+  a.option.spend = { ...a.option.spend, used_minor: 59, limit_minor: 1000000, currency: "USD" };
   a.option.spend.limit_minor = null;
   expect(draw()).toContain("mo $0.59");
   expect(draw()).not.toContain("0.01%");
