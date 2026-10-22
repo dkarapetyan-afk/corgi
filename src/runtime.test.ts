@@ -449,3 +449,31 @@ test("reapStopped collects exited shells and forgets processes that are not ours
     r.destroy();
   }
 });
+test("idle shells come by workspace then tab, narrowed to a workspace or folder", () => {
+  const { r, w } = setup(),
+    other = new Workspace(2, "/tmp");
+  r.workspaces.items.push(other);
+  const [a, b, c, d] = [add(r, w), add(r, w), add(r, w), add(r, other)];
+  b.cwd = "/repo";
+  d.cwd = "/repo";
+  let checked = 0;
+  for (const p of [a, b, d])
+    p.idleShell = () => {
+      checked++;
+      return true;
+    };
+  w.model.moveTab(w.model.tabs[w.model.tabForPane(b.id)!].id, 0);
+  try {
+    expect([...r.idleShells()].map(p => p.id)).toEqual([b.id, a.id, d.id]);
+    expect([...r.idleShells({ workspace: 2 })].map(p => p.id)).toEqual([d.id]);
+    expect([...r.idleShells({ cwd: "/repo" })].map(p => p.id)).toEqual([b.id, d.id]);
+    checked = 0;
+    expect(r.idleShells({ cwd: "/repo" }).next().value?.id).toBe(b.id);
+    expect(checked).toBe(1);
+    expect([...r.idleShells({ workspace: 1, cwd: "/elsewhere" })]).toEqual([]);
+    // A shell that never started never waits.
+    expect(c.idleShell()).toBe(false);
+  } finally {
+    r.destroy();
+  }
+});

@@ -4,7 +4,7 @@ import * as dropdown from "./dropdown";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import type { Direction } from "./layout";
-import { Writer, displayWidth, sat } from "./text";
+import { Writer, displayWidth, sat, shortPath } from "./text";
 
 /** A resize menu row: the key it shows and the resize a click performs. */
 export interface Entry {
@@ -32,8 +32,10 @@ export type Item =
   | "zoom"
   | "fork"
   | "copy-details"
+  | "copy-path"
   | "mark-unread"
   | "review"
+  | "open-folder"
   | "close"
   | "fold"
   | "close-all";
@@ -130,8 +132,10 @@ export class TabMenu {
     if (this.agent) return agent_actions;
     if (this.worktree !== null)
       return [
-        row("fold", "f", this.folded ? "Unfold" : "Fold"),
         row("review", "e", "Review changes"),
+        row("open-folder", "o", "Open folder", { rule: true }),
+        row("copy-path", "c", "Copy full path"),
+        row("fold", "f", this.folded ? "Unfold" : "Fold", { rule: true }),
         row("close-all", "x", `Close all agents for ${this.title}`, { rule: true }),
       ];
     if (this.pane) return this.source !== null ? pane_actions : pane_actions.slice(1);
@@ -258,7 +262,12 @@ export class TabMenu {
         w.write(`\x1b[${line};${b.x + 1}H${border}│${row_style}`);
         w.splat(" ", inner);
         w.write(`\x1b[${line};${b.x + b.width}H${border}│\x1b[${line};${b.x + 2 + used}H${row_style}`);
-        drawDetail(w, detail, sat(inner, used + 1), highlighted ? "selected" : "surface", off, now);
+        const room = sat(inner, used + 1);
+        const shown: Detail =
+          entry.item === "copy-path" && detail.runs
+            ? { ...detail, runs: [[shortPath(detail.runs.map(([part]) => part).join(""), room), "faint"]] }
+            : detail;
+        drawDetail(w, shown, room, highlighted ? "selected" : "surface", off, now);
         line += 1;
       }
     });

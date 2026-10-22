@@ -319,14 +319,14 @@ export class Controller {
   private review_bytes: number[] = [];
   /** Wakes the viewer's loop when something changes without input, such as git answering. */
   wake: () => void = () => {};
-  /** The agent menu's diff line for each checkout, read ahead of the menu. */
+  /** The agent and worktree menus' diff line for each checkout, read ahead of them. */
   review_summaries = new summaries.Summaries();
   /** Each pane's turn as last seen, so one starting or ending marks its checkout. */
   private summary_turns = new Map<number, string>();
   /** The directories last read ahead; they're asked for again only when this changes. */
   private summary_wanted = "";
-  /** The agent row under the pointer, and since when. */
-  private summary_hover: { pane: number; since: number } | null = null;
+  /** The checkout of the agent row or worktree heading under the pointer, and since when. */
+  private summary_hover: { cwd: string; since: number } | null = null;
 
   constructor(connection: Transport) {
     this.connection = connection;
@@ -345,9 +345,9 @@ export class Controller {
     };
     this.review_summaries.changed = () => {
       const menu = this.tab_menu,
-        p = menu?.agent ? this.pane(menu.tab) : undefined;
-      if (!menu || !p) return;
-      menu.setDetail("review", this.review_summaries.get(this.reviewCwd(p)));
+        cwd = menu ? this.menuCheckout(menu) : null;
+      if (!menu || cwd === null) return;
+      menu.setDetail("review", this.review_summaries.get(cwd));
       this.dirty = true;
       this.wake();
     };
@@ -1118,8 +1118,15 @@ export class Controller {
     this.tab_menu = opened;
     this.dirty = true;
   }
-  /** Opens a worktree heading's menu. Close all runs only while the group
-   * lists an agent in a pane. */
+  /** The checkout a menu's Review changes reads: its agent's, or its worktree. */
+  private menuCheckout(menu: TabMenu): string | null {
+    if (menu.worktree !== null) return menu.worktree;
+    const p = menu.agent ? this.pane(menu.tab) : null;
+    return p ? this.reviewCwd(p) : null;
+  }
+  /** Opens a worktree heading's menu. Review changes says what it would
+   * show, as on an agent's; Close all runs only while the group lists an
+   * agent in a pane. */
   private openWorktreeMenu(entry: Entry, x: number, y: number): void {
     if (!("worktree" in entry.target)) return;
     this.closeMenu();
@@ -1135,6 +1142,11 @@ export class Controller {
       anchor_x: x,
       anchor_y: y,
     });
+    this.review_summaries.ask(selection.path);
+    opened.setDetail("review", this.review_summaries.get(selection.path));
+    const ws = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace);
+    const main = ws?.worktrees?.entries.find(e => e.primary)?.path ?? ws?.cwd ?? "";
+    opened.setDetail("copy-path", [[worktreeTooltip.displayPath(selection.path, main), "faint"]]);
     if (this.worktreePanes(selection).length === 0) opened.off.add("close-all");
     opened.highlightFirst();
     this.tab_menu = opened;
@@ -1193,6 +1205,12 @@ export class Controller {
           break;
         case "review":
           await this.reviewWorktree(selection);
+          break;
+        case "open-folder":
+          await this.openWorktreeFolder(selection);
+          break;
+        case "copy-path":
+          this.copyText(selection.path);
           break;
         default:
           break;
@@ -5158,6 +5176,26 @@ export class Controller {
     this.review.pinned = this.review.open;
     this.dirty = true;
   }
+  /** Focuses a shell waiting at its prompt in a worktree's folder, or opens
+   * a tab there. A daemon that can't say which shells wait opens a tab. */
+  private async openWorktreeFolder(selection: worktreeAgents.Selection): Promise<void> {
+    const idle = await call(this.connection, "pane.idle", {
+      workspace: selection.workspace,
+      cwd: selection.path,
+      first: true,
+    }).catch(() => null);
+    try {
+      const shell = idle?.panes[0];
+      if (shell && this.pane(shell.pane)) this.focusPane(shell.pane);
+      else {
+        if (this.current().id !== selection.workspace) this.switchWorkspace(selection.workspace);
+        await this.create(null, selection.path, null, "");
+      }
+    } catch (error) {
+      this.notice(` Couldn't open ${basename(selection.path)}: ${(error as Error).message}`);
+    }
+    this.dirty = true;
+  }
   /** Unfolds a worktree's group and scrolls to it, focusing its first agent if `focus`. */
   private revealWorktree(selection: worktreeAgents.Selection, focus: boolean): void {
     this.worktree_agents.folded.delete(worktreeAgents.key(selection));
@@ -5488,8 +5526,9 @@ export class Controller {
     if (this.sidebarView([]).panel > 0) this.giveKeyboard("review");
   }
   /** A pane, the focused one unless named, as the review panel shows it. */
-  /** Reads the agent menu's diff line ahead of the menu: for the focused agent,
-   * the agents beside it in the sidebar, and one under the pointer for a moment.
+  /** Reads the menus' diff line ahead of them: for the focused agent, the
+   * agents beside it in the sidebar, and the agent or worktree heading under
+   * the pointer for a moment.
    * A turn starting or ending marks its checkout to be read again. */
   private readAhead(entries: sidebar.Entry[]): void {
     const now = Date.now();
@@ -5514,21 +5553,29 @@ export class Controller {
         if (target && "pane" in target) panes.add(target.pane);
       }
     const pointer = this.pointer;
-    const hovered =
-      pointer && pointer.x > 0 ? sidebar.agentAt(this.sidebarView(entries), entries, pointer.x, pointer.y) : null;
-    const hover = hovered && "pane" in hovered.target ? hovered.target.pane : null;
-    if (hover !== (this.summary_hover?.pane ?? null))
-      this.summary_hover = hover === null ? null : { pane: hover, since: now };
-    // A pause first, so sweeping down the list doesn't read every row it passes.
-    if (this.summary_hover && now - this.summary_hover.since >= 100) panes.add(this.summary_hover.pane);
+    const hover = pointer && pointer.x > 0 ? this.checkoutAt(entries, pointer.x, pointer.y) : null;
+    if (hover !== (this.summary_hover?.cwd ?? null))
+      this.summary_hover = hover === null ? null : { cwd: hover, since: now };
     const cwds = [...panes].flatMap(id => {
       const p = this.pane(id);
       return p ? [this.reviewCwd(p)] : [];
     });
+    // A pause first, so sweeping down the list doesn't read every row it passes.
+    if (this.summary_hover && now - this.summary_hover.since >= 100) cwds.push(this.summary_hover.cwd);
     const wanted = cwds.join("\n");
     if (wanted === this.summary_wanted && !turned) return;
     this.summary_wanted = wanted;
     for (const cwd of cwds) this.review_summaries.want(cwd);
+  }
+  /** The checkout a menu opened on the sidebar row at `x`, `y` would
+   * review: an agent's, or a worktree heading's. */
+  private checkoutAt(entries: sidebar.Entry[], x: number, y: number): string | null {
+    const found = this.sidebarView(entries).hit(x, y),
+      e = found.tag === "entry" ? entries[found.entry] : undefined;
+    if (!e || e.exit !== null) return null;
+    if ("worktree" in e.target) return e.worktree?.ghost ? null : e.target.worktree;
+    const p = "pane" in e.target ? this.pane(e.target.pane) : null;
+    return p ? this.reviewCwd(p) : null;
   }
   /** The directory a pane's review reads: its agent's, else the pane's own,
    * or the checkout the agent list puts it under when that differs. */

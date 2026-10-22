@@ -64,6 +64,11 @@
       "path": "/tmp/corgi-1/paste/a.png"
     }
   },
+  "pane.idle": {
+    "workspace": 1,
+    "cwd": "/tmp",
+    "first": true
+  },
   "conversation.list": {},
   "conversation.acknowledge": {
     "conversation": 1,

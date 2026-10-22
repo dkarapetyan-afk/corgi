@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { realpathSync } from "node:fs";
-import { asksHelp, help, layout, list, parse, read, usage, words } from "./cli";
+import { asksHelp, help, idle, layout, list, parse, read, usage, words } from "./cli";
 
 test("help is asked for only before --", () => {
   expect(asksHelp(["move", "3", "--help"])).toBe(true);
@@ -21,6 +21,8 @@ test("usage finds the lines for the longest command a line names", () => {
 test("command lines are rejected before connecting", async () => {
   const cases: [string[], string?, number?][] = [
     [["pane", "split"]],
+    [["pane", "idle", "3"]],
+    [["pane", "idle", "--workspace", "0"]],
     [["pane", "split", "0", "--right"]],
     [["pane", "split", "x", "--right"], "InvalidCharacter"],
     [["pane", "split", "current", "--right"], "NoCallerPane"],
@@ -147,6 +149,11 @@ test("command lines parse to the request the daemon receives", async () => {
       ["workspace", "close", "2"],
       { action: "workspace.close", target: 2, command: { "workspace.close": { target: 2 } } },
     ],
+    [["pane", "idle"], { action: "pane.idle", idle: { workspace: 0, cwd: "", first: false } }],
+    [
+      ["pane", "idle", "--workspace", "2", "--cwd", "/tmp", "--first"],
+      { action: "pane.idle", idle: { workspace: 2, cwd: realpathSync("/tmp"), first: true } },
+    ],
   ];
   for (const [words, want, caller = 0] of cases)
     expect(await parse(words, caller)).toEqual({
@@ -155,6 +162,7 @@ test("command lines parse to the request the daemon receives", async () => {
       json: false,
       viewer: null,
       command: null,
+      idle: null,
       ...want,
     });
   expect(await parse(["pane", "read", "current", "--lines", "10", "--json"], 5)).toEqual({
@@ -164,6 +172,7 @@ test("command lines parse to the request the daemon receives", async () => {
     json: true,
     viewer: null,
     command: { "pane.read": { target: 5, lines: 10 } },
+    idle: null,
   });
 });
 test("a tab's layout names each split's sides", () => {
@@ -240,6 +249,18 @@ test("other replies say what changed", () => {
   expect(words({ ok: true, result: { ...result, closed_panes: [3, 4] } })).toBe("closed pane 3, 4\n");
   expect(words({ ok: true, result })).toBe("ok\n");
   expect(words({ ok: true, viewer: 1, queued: true })).toBe("queued for viewer 1\n");
+});
+test("pane idle lists each waiting shell with its folder", () => {
+  expect(
+    idle({
+      ok: true,
+      panes: [
+        { pane: 3, tab: 2, workspace: 1, cwd: "/repo" },
+        { pane: 9, tab: 5, workspace: 1, cwd: "/repo" },
+      ],
+    }),
+  ).toBe("pane 3 (tab 2, workspace 1) /repo\npane 9 (tab 5, workspace 1) /repo\n");
+  expect(idle({ ok: true, panes: [] })).toBe("no idle shells\n");
 });
 test("pane read says when earlier lines exist", () => {
   expect(read("a\nb\nc", 2)).toBe("[corgi: last 2 lines shown; --lines N reads more]\nb\nc\n");

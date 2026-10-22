@@ -36,18 +36,45 @@ test("menu keys pick the rows each menu shows", () => {
   expect(agent.itemFor(c("n"))).toBeNull();
 });
 
-test("a worktree group's menu folds first and keeps Close all below a rule", () => {
+test("a worktree group's menu opens on Review changes and keeps Close all below a rule", () => {
   const menu = new TabMenu({ tab: 1, anchor_x: 0, worktree: "/repo/.worktrees/one", title: "one" });
-  expect(menu.entries().map(entry => entry.label)).toEqual(["Fold", "Review changes", "Close all agents for one"]);
-  expect(menu.itemFor(c("f"))).toBe("fold");
+  expect(menu.entries().map(entry => entry.label)).toEqual([
+    "Review changes",
+    "Open folder",
+    "Copy full path",
+    "Fold",
+    "Close all agents for one",
+  ]);
   expect(menu.itemFor(c("e"))).toBe("review");
+  expect(menu.itemFor(c("o"))).toBe("open-folder");
+  expect(menu.itemFor(c("c"))).toBe("copy-path");
+  expect(menu.itemFor(c("f"))).toBe("fold");
   expect(menu.itemFor(c("x"))).toBe("close-all");
   menu.highlightFirst();
-  expect(menu.highlightedItem()).toBe("fold");
+  expect(menu.highlightedItem()).toBe("review");
   menu.folded = true;
-  expect(menu.entries()[0].label).toBe("Unfold");
+  expect(menu.entries()[3].label).toBe("Unfold");
   menu.off.add("close-all");
   expect(menu.itemFor(c("x"))).toBeNull();
+});
+
+test("Copy full path keeps the checkout name in a narrow preview and its second line is clickable", () => {
+  const menu = new TabMenu({ tab: 1, anchor_x: 0, worktree: "/repo/.worktrees/topic", title: "topic" });
+  menu.setDetail("copy-path", [["./.claude/worktrees/a-long-parent/topic", "faint"]]);
+  for (const width of [80, 32]) {
+    const w = new Writer(),
+      terminal = new Terminal(width, 24);
+    try {
+      menu.draw(w, width, 24);
+      terminal.feed(w.buffered());
+      const rows = terminal.text().split("\n"),
+        at = rows.findIndex(row => row.includes("Copy full path"));
+      expect(rows[at + 1]).toContain(width === 80 ? "./.claude/worktrees/a-long-parent/topic" : "./.claude/…/topic");
+      expect(menu.hit(width, 24, menu.bounds(width, 24).x + 3, at + 1)).toBe(2);
+    } finally {
+      terminal.destroy();
+    }
+  }
 });
 
 test("crossed-out rows take no key, click or highlight", () => {

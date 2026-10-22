@@ -164,12 +164,15 @@ corgi tab new --workspace 1 --name Tests --command 'bun test src'
 corgi pane split current --right
 corgi pane read 3 --lines 100
 corgi pane send 3 --stdin --enter < /path/to/prompt.txt
+corgi pane idle --cwd /path/to/project --first
 corgi focus 3 --viewer 1
 ```
 
 `pane send` types literal input; `--enter` submits it. `pane close` and
 `tab close` terminate their target processes without prompting. Layout changes
 do not focus a viewer; `focus` requires an explicit `--viewer` from `list`.
+`pane idle` lists the panes whose shell waits at its prompt, by workspace then
+tab; `--cwd` and `--workspace` narrow them and `--first` stops at one.
 Commands do not implicitly start a missing runtime.
 
 When a coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or one

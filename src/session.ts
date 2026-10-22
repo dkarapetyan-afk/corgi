@@ -1,5 +1,6 @@
 import * as protocol from "./protocol";
 import { Runtime, Launch } from "./runtime";
+import { Store } from "./workspace";
 import type { Create } from "./runtime";
 import { Model, Tab } from "./layout";
 import { label } from "./pane/label";
@@ -26,6 +27,20 @@ export function location(r: Runtime, pane: number): protocol.Result {
     tab: ws.model.tabs[ws.model.tabForPane(pane)!].id,
     workspace: ws.id,
   };
+}
+/** Where shells wait at their prompt: in `workspace` and `cwd` unless they're
+ * 0 and "", and only the first when asked. */
+export async function idle(r: Runtime, q: { workspace: number; cwd: string; first: boolean }) {
+  if (q.workspace) r.getWorkspace(q.workspace);
+  const shells = r.idleShells({
+      workspace: q.workspace || undefined,
+      cwd: q.cwd ? await Store.directory(q.cwd) : undefined,
+    }),
+    found = q.first ? shells.take(1).toArray() : [...shells];
+  return found.map(p => {
+    const { pane, tab, workspace } = location(r, p.id);
+    return { pane, tab, workspace, cwd: p.cwd };
+  });
 }
 function tabOwner(r: Runtime, id: number) {
   const ws = r.workspaces.items.find(w => w.model.tabIndex(id) !== null);

@@ -190,6 +190,31 @@ class AgentCli extends Runtime {
       "MissingField",
     );
   }
+  async test_idle_shells_wait_at_their_prompt() {
+    const path = join(this.temp.name, "idle"),
+      empty = join(this.temp.name, "empty");
+    mkdirSync(path);
+    mkdirSync(empty);
+    const folder = realpathSync(path),
+      idle = async (...args: any[]) =>
+        (await this.cli(["pane", "idle", ...args])).panes.map((p: any) => p.pane) as number[];
+    const one = (await this.cli(["tab", "new", "--workspace", 1, "--cwd", folder])).result,
+      two = (await this.cli(["tab", "new", "--workspace", 1, "--cwd", folder])).result;
+    // A pane that runs a command isn't a shell to reuse, even one that became a shell.
+    await this.cli(["tab", "new", "--workspace", 1, "--cwd", folder, "--command", "exec /bin/sh"]);
+    await this.until(async () => (await idle("--cwd", folder)).length === 2);
+    this.assertEqual(await idle("--cwd", folder), [one.pane, two.pane]);
+    this.assertEqual(await idle("--cwd", folder, "--workspace", 1, "--first"), [one.pane]);
+    await this.cli(["pane", "send", one.pane, "sleep 30", "--enter"]);
+    await this.until(async () => (await idle("--cwd", folder, "--first"))[0] === two.pane);
+    this.assertEqual(await idle("--cwd", folder), [two.pane]);
+    await this.cli(["pane", "keys", one.pane, "ctrl+c"]);
+    await this.until(async () => (await idle("--cwd", folder)).length === 2);
+    await this.cli(["pane", "send", two.pane, "cd ..", "--enter"]);
+    await this.until(async () => (await idle("--cwd", folder)).length === 1);
+    this.assertEqual(await idle("--cwd", realpathSync(empty)), []);
+    await this.cli(["pane", "idle", "--workspace", 99], { error: "NoWorkspace" });
+  }
   async test_command_options_launch_processes() {
     const one = (
       await this.cli(["tab", "new", "--workspace", 1, "--command", "printf 'TAB_COMMAND_OK\\n'; exec /bin/sh"])

@@ -7,7 +7,7 @@ import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
 const groups = new Set(["tab", "pane", "workspace", "current", "list", "focus", "--skill"]);
 const nested = new Set(["tab", "pane", "workspace"]);
-const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "left", "right", "up", "down"]);
+const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "first", "left", "right", "up", "down"]);
 const options = new Set([
   ...flags,
   "viewer",
@@ -42,6 +42,7 @@ const actions = new Set([
   "pane.read",
   "pane.send",
   "pane.keys",
+  "pane.idle",
   "workspace.new",
   "workspace.edit",
   "workspace.close",
@@ -161,7 +162,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
     target = 0;
-  if (!["list", "current", "tab.new", "workspace.new"].includes(action)) {
+  if (!["list", "current", "tab.new", "workspace.new", "pane.idle"].includes(action)) {
     if (start === words.length) throw Error("Usage");
     current = words[start] === "current";
     if (current && group === "workspace") throw Error("Usage");
@@ -179,7 +180,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
           ? id(args.required("viewer"))
           : null
         : null;
-  let command: Record<string, any> | null = null;
+  let command: Record<string, any> | null = null,
+    idle: { workspace: number; cwd: string; first: boolean } | null = null;
   const set = (op: string, payload: any) => {
     command = { [op]: payload };
   };
@@ -196,6 +198,13 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
         cwd: args.cwd(),
         command: args.option("command"),
       });
+      break;
+    case "pane.idle":
+      idle = {
+        workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
+        cwd: args.cwd(),
+        first: args.flag("first"),
+      };
       break;
     case "workspace.new":
       set("workspace.create", { name: args.next(), cwd: args.directory(args.option("cwd") ?? ".") });
@@ -279,7 +288,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (action === "current" && !caller) throw Error("NoCallerPane");
   const created = (command as Record<string, any> | null)?.["pane.create"];
   if (created?.workspace === 0 && !caller) throw Error("MissingWorkspace");
-  return { action, target, current, json, viewer, command };
+  return { action, target, current, json, viewer, command, idle };
 }
 /** A tab's split tree from the layout's node array, in words: `3 left of (4
  * above 5)`. */
@@ -328,7 +337,13 @@ function pane(p: any): string {
     activity = a.activity || a.recent_activity;
   return `${exited} ${a.provider} ${a.state}${attention}${quote(a.name)}${activity ? ` (${activity})` : ""}`;
 }
-/** A reply other than `list` and `pane read`, in words. */
+/** `pane idle`: each shell waiting at its prompt, with its folder. */
+export function idle(reply: any): string {
+  const panes: any[] = reply.panes ?? [];
+  if (!panes.length) return "no idle shells\n";
+  return panes.map(p => `pane ${p.pane} (tab ${p.tab}, workspace ${p.workspace}) ${p.cwd}\n`).join("");
+}
+/** A reply other than `list`, `pane idle` and `pane read`, in words. */
 export function words(reply: any): string {
   if ("queued" in reply) return `queued for viewer ${reply.viewer}\n`;
   const r = reply.result ?? {};
@@ -385,13 +400,18 @@ export async function run(path: string, args: string[], agent = false): Promise<
         ? await conn.call("session.list")
         : inv.action === "current"
           ? await conn.call("session.locate", { pane: caller })
-          : inv.action === "workspace.switch"
-            ? await conn.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
-            : await conn.call("focus", { pane: inv.target, viewer: inv.viewer });
+          : inv.action === "pane.idle"
+            ? await conn.call("pane.idle", inv.idle)
+            : inv.action === "workspace.switch"
+              ? await conn.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
+              : await conn.call("focus", { pane: inv.target, viewer: inv.viewer });
     if (inv.json) process.stdout.write(stringify(reply) + "\n");
     else if (reading && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
       process.stdout.write(read(reply.result.text, lines, agent));
-    else process.stdout.write(inv.action === "list" ? list(reply) : words(reply));
+    else
+      process.stdout.write(
+        inv.action === "list" ? list(reply) : inv.action === "pane.idle" ? idle(reply) : words(reply),
+      );
   } finally {
     conn.close();
   }

@@ -90,6 +90,8 @@ The comparison uses the local counterpart of `origin/HEAD`, then `main`,
 Enabled worktree briefs summarize commits and diffs while the overview is
 open. Press `r` to refresh them. Review changes with `e` or the worktree
 heading's menu; see [Review changes](reference.md#review-changes).
+The heading's menu also has Open folder, which focuses a shell already waiting
+at its prompt in the worktree or opens a tab there.
 
 ## Remove a worktree
 

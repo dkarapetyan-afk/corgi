@@ -153,6 +153,9 @@ $.requests|pane.paste.text?: string
 $.requests|pane.paste.image: optional
 $.requests|pane.paste.image?.mime: string
 $.requests|pane.paste.image?.path: string
+$.requests|pane.idle.workspace: u32
+$.requests|pane.idle.cwd: string
+$.requests|pane.idle.first: bool
 $.requests|conversation.list: {}
 $.requests|conversation.acknowledge.conversation: u32
 $.requests|conversation.acknowledge.through: u64
@@ -683,6 +686,10 @@ $.replies.viewer.search.match?.y: u16
 $.replies.viewer.search.match?.end_x: u16
 $.replies.viewer.search.match?.end_y: u16
 $.replies.pane.paste.pasted: bool
+$.replies.pane.idle.panes[].pane: u32
+$.replies.pane.idle.panes[].tab: u32
+$.replies.pane.idle.panes[].workspace: u32
+$.replies.pane.idle.panes[].cwd: string
 $.replies.inference.configure.saved: bool
 $.replies.inference.configure.inference.choice: enum auto codex claude off
 $.replies.inference.configure.inference.provider: optional

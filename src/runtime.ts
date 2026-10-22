@@ -280,6 +280,14 @@ export class Pane {
     t.stop();
     return true;
   }
+  /** A shell waiting at its prompt. Job-control shells (bash, zsh, fish and
+   * the rest) give the terminal to each job they run and take it back after,
+   * so the shell holds the foreground only while nothing runs in front. */
+  idleShell() {
+    const t = this.terminal;
+    if (t.exited || t.runs_command || t.pid <= 0 || this.ghost) return false;
+    return tcgetpgrp(t.fd) === t.pid;
+  }
   refreshCwd() {
     if (this.terminal.exited) return;
     const pgid = tcgetpgrp(this.terminal.fd);
@@ -389,6 +397,23 @@ export class Runtime {
   }
   pane(id: number) {
     return this.panes.find(p => p.id === id) ?? null;
+  }
+  /** Panes whose shell waits at its prompt, by workspace then tab; take the
+   * first and the rest go unchecked. `workspace` and `cwd` (a real path)
+   * narrow them. */
+  *idleShells(where: { workspace?: number; cwd?: string } = {}): Generator<Pane> {
+    for (const ws of this.workspaces.items) {
+      if (where.workspace !== undefined && ws.id !== where.workspace) continue;
+      for (const tab of ws.model.tabs.slice(0, ws.model.count))
+        for (const p of this.panes) {
+          if (!ws.model.contains(tab.root, p.id) || !p.idleShell()) continue;
+          if (where.cwd !== undefined) {
+            p.refreshCwd();
+            if (p.cwd !== where.cwd) continue;
+          }
+          yield p;
+        }
+    }
   }
   attachments(actor: any) {
     return (

@@ -64,6 +64,11 @@ New terminals inherit the caller/target cwd, falling back to the destination
 workspace folder; `--cwd` overrides it. `--command SHELL_COMMAND` launches a command
 in a new tab or split. Existing terminals keep their cwd.
 
+To reuse a terminal instead of opening another, `corgi pane idle --cwd DIR
+--first` prints a pane whose shell waits at its prompt in that folder, by
+workspace then tab; without `--first` it prints every one, and `--workspace`
+narrows them. A shell running a command, editor or agent is not idle.
+
 Layout changes do not focus a viewer. If the user asks to switch, discover the
 viewer ID, then use `corgi focus 31 --viewer 1`. Do not guess which viewer belongs
 to the user. Selection is preserved where its tab and pane still exist; removing

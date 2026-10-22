@@ -950,6 +950,86 @@ test("an agent's review reads the checkout the list puts it under", () => {
   expect(s.reviewTarget().cwd).toBe("/src/app-topic");
 });
 
+test("a worktree's menu shows its diff line and opens its folder in a waiting shell or a new tab", async () => {
+  const checkout = (path: string, branch: string, primary: boolean) => ({
+    path,
+    head: "4f1c2a9e0b",
+    branch: `refs/heads/${branch}`,
+    primary,
+    bare: false,
+    detached: false,
+    locked: null,
+    prunable: null,
+    available: true,
+    comparison: null,
+    changes: null,
+    stale: false,
+  });
+  const snapshot = folders("/src/app");
+  Object.assign(snapshot.panes[0], {
+    cwd: "/src/app-topic",
+    agent: { ...snapshot.panes[0].agent, provider: "codex", cwd: "/src/app-topic" },
+  });
+  Object.assign(snapshot.workspaces[0], {
+    worktrees: {
+      common_dir: "/src/app/.git",
+      base: { ref: "refs/heads/main", name: "main", head: "4f1c2a9e0b" },
+      entries: [checkout("/src/app", "main", true), checkout("/src/app-topic", "topic", false)],
+      agents: [{ target: { pane: 1 }, path: "/src/app-topic", source: "write", stale: false }],
+      stale: false,
+    },
+  });
+  const sent: [string, any][] = [];
+  let waiting: number[] = [];
+  const s: any = new Controller({
+    socket: "",
+    request: transport(async (op, fields) => {
+      sent.push([op, fields]);
+      if (op === "pane.idle")
+        return { panes: waiting.map(pane => ({ pane, tab: 1, workspace: 1, cwd: "/src/app-topic" })) };
+      if (op === "session.command") return { result: { pane: 1 } };
+      return snapshot;
+    }).request,
+  });
+  const changed = s.review_summaries.changed;
+  s.review_summaries = new summaries.Summaries(
+    async root => [[`${root} changed`, "faint"]],
+    async cwd => cwd,
+  );
+  s.review_summaries.changed = changed;
+  s.width = 120;
+  s.height = 40;
+  s.receiveSnapshot(snapshot);
+  const heading = s.sidebarEntries().find((e: sidebar.Entry) => "worktree" in e.target);
+  expect(heading.target).toEqual({ worktree: "/src/app-topic", workspace: 1 });
+  s.openWorktreeMenu(heading, 5, 5);
+  expect(s.tab_menu.highlightedItem()).toBe("review");
+  expect(s.tab_menu.details.get("review").runs).toBeNull();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(s.tab_menu.details.get("review").runs).toEqual([["/src/app-topic changed", "faint"]]);
+  expect(s.tab_menu.details.get("copy-path").runs).toEqual([["../app-topic", "faint"]]);
+  s.input_state.attached = true;
+  await s.input(Buffer.from("c"));
+  expect(s.tab_menu).toBeNull();
+  expect(s.clipboard).toBe("/src/app-topic");
+  expect(s.copy_feedback_until).toBeGreaterThan(0);
+  s.openWorktreeMenu(heading, 5, 5);
+  // No shell waits there, so it opens a tab in the folder.
+  await s.tabMenuAction("open-folder");
+  expect(sent.find(([op]) => op === "pane.idle")![1]).toEqual({ workspace: 1, cwd: "/src/app-topic", first: true });
+  expect(sent.find(([op]) => op === "session.command")![1].command["pane.create"]).toMatchObject({
+    workspace: 1,
+    cwd: "/src/app-topic",
+  });
+  // One that waits is focused instead.
+  sent.length = 0;
+  waiting = [1];
+  s.openWorktreeMenu(heading, 5, 5);
+  await s.tabMenuAction("open-folder");
+  expect(sent.some(([op]) => op === "session.command")).toBe(false);
+  expect(s.focused().id).toBe(1);
+});
+
 test("the agent menu's diff line is read ahead for the focused agent, its neighbours and a hovered row", async () => {
   const panes = [1, 2, 3, 4, 5],
     state = (completed: number) => ({

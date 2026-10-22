@@ -803,8 +803,10 @@ test("a worktree heading's right-click menu closes only the agents listed under 
   const { view, closed, row, heading } = paneWorktrees();
   await view.input(Buffer.from(`\x1b[<2;6;${row(heading)}M`));
   expect(view.tab_menu!.entries().map(e => e.label)).toEqual([
-    "Fold",
     "Review changes",
+    "Open folder",
+    "Copy full path",
+    "Fold",
     "Close all agents for topic-0",
   ]);
   await view.input(Buffer.from("x"));

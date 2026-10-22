@@ -19,6 +19,7 @@ Agent controls (--json prints the daemon's reply as JSON):
   corgi pane read ID|current [--lines N] [--json]
   corgi pane send ID|current TEXT|--stdin [--enter]
   corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.
+  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt
   corgi focus ID|current --viewer ID  select in exactly one viewer
   corgi --skill                      print bundled agent instructions
 

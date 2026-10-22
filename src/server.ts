@@ -488,6 +488,9 @@ export class Server {
       case "pane.paste":
         await viewer.paste(this, cl, request.payload);
         return;
+      case "pane.idle":
+        cl.reply(op, { panes: await session.idle(this.runtime, request.payload) });
+        return;
       case "action":
         await viewer.action(this, cl, request.payload);
         return;
