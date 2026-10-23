@@ -823,6 +823,33 @@ test("a workspace row opens that workspace; Esc leaves the sidebar as it was", a
   }
 });
 
+test("/ searches the focused agent list and Esc comes back to it; letters and the workspace list don't search", async () => {
+  const { s, sent } = steering();
+  try {
+    s.focusPane(1);
+    await s.input(bytes("\x02\x1b[D"));
+    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.frame()).toContain("↵ open  / search  Esc back");
+    await s.input(bytes("x"));
+    expect(s.agent_picker).toBeNull();
+    await s.input(bytes("\x1b[B"));
+    await s.input(bytes("/zz"));
+    expect(s.agent_picker.query.raw()).toBe("zz");
+    expect(s.sidebar_focus).toBeNull();
+    await s.key(27);
+    expect(s.agent_picker).toBeNull();
+    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 2 } });
+    await s.input(bytes("\x02\x1b[A"));
+    await s.input(bytes("/"));
+    expect(s.agent_picker).toBeNull();
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.frame()).not.toContain("/ search");
+    expect(sent).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("prefix w opens a folded sidebar's workspaces as a drawer over the panes, or focuses an open one", async () => {
   const update = spyOn(preferences, "update").mockImplementation(() => {});
   const { s, sent } = steering();

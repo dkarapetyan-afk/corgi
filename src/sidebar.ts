@@ -796,7 +796,14 @@ export class View {
           plain = new Style({ fg: "text", bg: "surface" }).sgr();
         w.write(shown.slice(0, a) + palette.selection + shown.slice(a, b) + plain + shown.slice(b));
       }
-    } else if (v.drawer === null) w.write(`\x1b[${v.middle() + 1};${v.width - 9}H` + button + ` New  ▾ ${panel}`);
+    } else if (v.drawer === null) {
+      w.write(`\x1b[${v.middle() + 1};${v.width - 9}H` + button + ` New  ▾ ${panel}`);
+      // The focused agent list shows where `/` opens its search.
+      if (v.focus === "agents") {
+        v.line(w, v.middle() + 1, "/", new Style({ fg: "strong", bg: "bg", bold: true }).sgr());
+        w.write(new Style({ fg: "faint", bg: "bg" }).sgr() + " search");
+      }
+    }
     if (v.drawer !== "agents") v.drawWorkspaces(w, workspaces);
     if (v.drawer === "workspaces") {
       w.write("\x1b[0m");

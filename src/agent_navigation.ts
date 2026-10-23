@@ -1,5 +1,6 @@
 import { isAgent, type Entry, type Target } from "./sidebar";
 import { Dialog } from "./name_dialog";
+import type * as sidebarFocus from "./sidebar_focus";
 export function sameTarget(a: Target | null, b: Target | null) {
   if (a === null || b === null) return a === b;
   return Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(k => (a as any)[k] === (b as any)[k]);
@@ -36,6 +37,8 @@ export class Picker {
   query = Dialog.init({ pane: 0 }, "");
   selected: Target | null = null;
   offset = 0;
+  /** The sidebar focus Esc returns to, when the search began in its agent list. */
+  back: sidebarFocus.State | null = null;
   constructor(public workspace: number) {}
   matches(entry: Entry) {
     const lower = (text: string) => text.replace(/[A-Z]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 32));

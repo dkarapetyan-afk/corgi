@@ -1207,6 +1207,8 @@ test("the agents drawer runs the agent list from the top, under its header alone
   expect(lines[1]).toContain("agents");
   expect(lines[29]).toBe("└" + "─".repeat(26) + "┘");
   expect(lines.join("\n")).toContain("agent13");
+  // A drawer doesn't search, so it shows no `/`.
+  expect(lines[2]).not.toContain("/ search");
   expect(lines.join("\n")).not.toContain("workspaces");
   expect(lines.join("\n")).not.toContain("Project");
 });
@@ -1224,6 +1226,8 @@ test("the focused list sits in a box in the focused pane's outline, sharing the 
   let lines = box(view);
   expect(lines[12]).toBe(" ".repeat(27) + "│");
   expect(lines[13]).toBe(edge("┌", "┤"));
+  // The row its search opens in shows its key.
+  expect(lines[15]).toBe("│ / search" + " ".repeat(17) + "│");
   expect(lines[21]).toBe("│" + " ".repeat(26) + "│");
   expect(lines[29]).toBe(edge("└", "┘"));
   expect([0, 12, 13, 29].map(y => view.outlines(y))).toEqual([false, false, true, true]);
@@ -1232,6 +1236,7 @@ test("the focused list sits in a box in the focused pane's outline, sharing the 
   expect(lines[1]).toBe(edge("┌", "┤"));
   expect(lines[13]).toBe(edge("└", "┤"));
   expect(lines[29]).toBe(" ".repeat(27) + "│");
+  expect(lines[15].trim()).toBe("│");
   expect([0, 12, 13, 29].map(y => view.outlines(y))).toEqual([false, true, true, false]);
   view.drawer = "workspaces";
   lines = box(view);

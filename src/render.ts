@@ -772,6 +772,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   } else {
     // A card that doesn't fit its pane says why in the status line instead.
     const unplaced = u.paste_card !== null && paste_at === null ? u.paste_card.body.text() : null;
+    const search = u.sidebar_focus === "agents" && u.sidebar_drawer === null ? "/ search  " : "";
     const text =
       hovered_uri ??
       unplaced ??
@@ -780,7 +781,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         : u.copy_mode
           ? "SCROLL  j/k move  y copy viewport  q exit"
           : u.sidebar_focus
-            ? "SIDEBAR  ↑↓ move  ↵ open  Esc back"
+            ? `SIDEBAR  ↑↓ move  ↵ open  ${search}Esc back`
             : "");
     // Beside the sidebar while it has focus, clear of its box's bottom edge.
     cover(writeChip(w, text, width, height, u.pointer, u.sidebar_focus ? side.width : 0));

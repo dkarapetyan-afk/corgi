@@ -43,7 +43,8 @@ application captures the mouse. Drag workspace or agent rows to reorder them.
 Workspace and agent order is shared; rearranging agents does not move panes.
 
 Use **prefix w** to choose a workspace, **prefix a** to choose an agent, and
-**prefix g** to search agents in the Corgi preset. Arrow focus crosses between
+**prefix g** to search agents in the Corgi preset; in the focused agent list,
+`/` searches and Esc returns to the list. Arrow focus crosses between
 the sidebar, panes and review panel. **prefix b** hides or shows the sidebar.
 [Workspace activity and worktrees](workspaces.md) explains its indicators.
 

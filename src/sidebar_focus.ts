@@ -39,6 +39,11 @@ export class State {
   section(): Section {
     return this.drawer ?? ("workspace" in this.cursor ? "workspaces" : "agents");
   }
+  /** Whether `/` searches from here: the agent list, but not as a drawer,
+   * since searching opens the whole sidebar. */
+  searches(): boolean {
+    return this.drawer === null && this.section() === "agents";
+  }
   private list(workspaces: number[], entries: Entry[]): Cursor[] {
     if (this.section() === "workspaces") return workspaces.map(id => ({ workspace: id }));
     return entries.filter(stops).map(e => ({ entry: e.target }));

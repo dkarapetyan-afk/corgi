@@ -584,12 +584,11 @@ export class Controller {
     const place = new LayoutView(owner.model, selection).placements(area).find(place => place.id === id);
     return place ? { pane: p, rect: place.rect, area } : null;
   }
-  /** Typing in the focused sidebar searches its agents. */
-  private searchSidebar(byte: number): void {
+  /** `/` in the focused agent list searches it; Esc comes back to the list. */
+  private searchSidebar(): void {
+    const focus = this.sidebar_focus!;
     this.openAgentPicker();
-    if (!this.agent_picker) return;
-    this.agent_picker.query.key(byte);
-    this.pickerEntries();
+    if (this.agent_picker) this.agent_picker.back = focus;
   }
   /** The list while the sidebar has focus, its cursor the one focused row. */
   private focusEntries(): Entry[] {
@@ -3592,9 +3591,15 @@ export class Controller {
     }
     if (this.agent_picker) {
       switch (byte) {
-        case 27:
+        case 27: {
+          const back = this.agent_picker.back;
           this.closeMenu();
+          if (back) {
+            this.giveKeyboard({ sidebar: back });
+            this.revealCursor(this.sidebarEntries());
+          }
           break;
+        }
         case 13:
           this.acceptAgentPicker();
           break;
@@ -3620,10 +3625,11 @@ export class Controller {
         case 13:
           await this.openSidebarRow(false);
           break;
+        case 47:
+          if (this.sidebar_focus.searches()) this.searchSidebar();
+          break;
         default:
           if (byte === keymap.prefixByte(this.prefs.prefix)) this.beginPrefix();
-          // A drawer stays one list; searching would open the whole sidebar.
-          else if (byte > 32 && byte < 127 && !this.sidebar_focus.drawer) this.searchSidebar(byte);
       }
       this.dirty = true;
       return;
