@@ -3,6 +3,7 @@ import {
   Process,
   Work,
   Snapshot,
+  Tracker,
   fromJSON,
   Alarm,
   delta,
@@ -16,6 +17,8 @@ import {
   type Reading,
   type Root,
 } from "./resources";
+import * as gpu from "./gpu";
+import * as native from "./resource_os";
 import * as json from "../json";
 test("resource snapshots restore concrete integers after JSON transport", () => {
   const snapshot = new Snapshot(),
@@ -27,8 +30,37 @@ test("resource snapshots restore concrete integers after JSON transport", () => 
   process.memory = 256n;
   process.written = 1n;
   work.processes.push(process);
-  work.history.push({ at: 10, samples: 1, cpu: 0, memory: 512n, io: 0n, processes: [] });
-  work.history.push({ at: 11, samples: 3, cpu: 0, memory: 512n, io: 0n, processes: [process] });
+  work.history.push({ at: 10, samples: 1, cpu: 0, memory: 512n, io: 0n, gpus: [], processes: [] });
+  work.history.push({
+    at: 11,
+    samples: 3,
+    cpu: 0,
+    memory: 512n,
+    io: 0n,
+    gpus: [
+      { index: 0, util: 50, memory: 1n },
+      { index: 3, util: null, memory: 9007199254740993n },
+    ],
+    processes: [
+      Object.assign(new Process(7, 9007199254740993n, "train"), {
+        gpu: 50,
+        gpu_devices: [{ index: 0, util: 50, memory: 1n }],
+      }),
+    ],
+  });
+  Object.assign(work, {
+    gpu: 150,
+    gpu_memory: 1n,
+    gpu_shown: true,
+    gpu_devices: [
+      { index: 0, util: 50, memory: 1n },
+      { index: 3, util: 100, memory: null },
+    ],
+    gpu_attribution: "list",
+  });
+  process.gpu_memory = 1n;
+  snapshot.gpus.push({ index: 0, name: "GPU", util: null, used: 2n, total: 9007199254740993n });
+  snapshot.gpu_memory_kind = "VRAM";
   snapshot.workspaces.push(work);
   const bytes = json.stringify(snapshot),
     restored = fromJSON(json.parse(bytes));
@@ -36,6 +68,8 @@ test("resource snapshots restore concrete integers after JSON transport", () => 
   expect(restored.workspace(1).processes[0].start).toBe(9007199254740993n);
   expect(restored.workspace(1).read).toBe(0n);
   expect(restored.workspace(1).written).toBeNull();
+  expect(restored.workspace(1).processes[0].gpu).toBeNull();
+  expect(restored.gpus[0].total).toBe(9007199254740993n);
   expect(json.stringify(restored)).toBe(bytes);
   expect(fromJSON(null)).toEqual(new Snapshot());
 });
@@ -138,20 +172,93 @@ test("bounded process details retain leaders for every resource", () => {
   for (const pid of [100, 1, 51]) expect(selected.some(p => p.pid === pid)).toBe(true);
 });
 
+test("workspace GPU figures come from the source and stay shown through a pause", () => {
+  let util = 40;
+  const source: gpu.Source = {
+      vendor: "nvidia",
+      memory_kind: "VRAM",
+      read: () =>
+        [0, 1].map(index => ({
+          vendor: "nvidia" as const,
+          index,
+          name: "GPU",
+          minor: index,
+          mig: false,
+          util: util >> index,
+          used: 2n << 30n,
+          total: 48n << 30n,
+          processes: util ? [{ pid: process.pid, memory: (2n << 30n) << BigInt(index) }] : [],
+          samples: util ? [{ pid: process.pid, util: util >> index }] : [],
+        })),
+      close() {},
+    },
+    sampler = new gpu.Sampler(() => source),
+    tracker = new Tracker();
+  // This test process holds no device file; vouch for it as a CUDA client.
+  sampler.read();
+  sampler.held.set(process.pid, native.counters(process.pid)!.start);
+  Object.assign(tracker, {
+    gpu: sampler,
+    workspaces: [1, 2],
+    roots: [{ key: 0, pid: process.pid, start: null, workspace: 1, agent_pid: 0, provider: null }],
+  });
+  tracker.sample(1000);
+  let view = tracker.pending.view;
+  const work = view.workspace(1);
+  expect([work.gpu, work.gpu_memory, work.gpu_shown]).toEqual([60, 6n << 30n, true]);
+  expect([work.gpu_devices, work.gpu_attribution]).toEqual([
+    [
+      { index: 0, util: 40, memory: 2n << 30n },
+      { index: 1, util: 20, memory: 4n << 30n },
+    ],
+    "process",
+  ]);
+  expect(work.processes.find(p => p.pid === process.pid)?.gpu).toBe(60);
+  expect(work.history.at(-1)?.gpus).toEqual(work.gpu_devices);
+  expect(view.workspace(2)).toMatchObject({ gpu: 0, gpu_memory: 0n, gpu_shown: false });
+  expect(view.gpus.map(g => g.index)).toEqual([0, 1]);
+  expect(view.gpu_memory_kind).toBe("VRAM");
+  util = 0;
+  for (const at of [2000, 1000 + gpu.hold_ms]) {
+    tracker.batch = tracker.pending;
+    tracker.current = tracker.pending.view;
+    tracker.sample(at);
+    view = tracker.pending.view;
+    expect(view.workspace(1)).toMatchObject({ gpu: 0, gpu_memory: 0n, gpu_shown: at < 1000 + gpu.hold_ms });
+  }
+  // The reading at 2000 joined the first bucket: GPU use averaged, memory at its peak.
+  expect(view.workspace(1).history.map(p => p.samples)).toEqual([2, 1]);
+  expect(view.workspace(1).history[0].gpus[0]).toEqual({ index: 0, util: 20, memory: 2n << 30n });
+});
+
 test("history keeps a point per bucket: rates averaged, memory at its peak", () => {
-  const point = (at: number, cpu: number, memory: bigint, io: bigint): Point => ({
+  const point = (at: number, cpu: number, memory: bigint, io: bigint, gpus: Point["gpus"] = []): Point => ({
     at,
     samples: 1,
     cpu,
     memory,
     io,
+    gpus,
     processes: [],
   });
   let history: Point[] = [];
-  history = record(history, point(0, 10, 100n, 10n));
-  history = record(history, point(1000, 30, 50n, 20n));
+  history = record(history, point(0, 10, 100n, 10n, [{ index: 0, util: 90, memory: 5n }]));
+  history = record(history, point(1000, 30, 50n, 20n, [{ index: 1, util: 30, memory: 1n }]));
   history = record(history, point(history_bucket_ms - 1, 20, 70n, 30n));
-  expect(history).toEqual([{ at: 0, samples: 3, cpu: 20, memory: 100n, io: 20n, processes: [] }]);
+  expect(history).toEqual([
+    {
+      at: 0,
+      samples: 3,
+      cpu: 20,
+      memory: 100n,
+      io: 20n,
+      gpus: [
+        { index: 0, util: 30, memory: 5n },
+        { index: 1, util: 10, memory: 1n },
+      ],
+      processes: [],
+    },
+  ]);
   history = record(history, point(history_bucket_ms, 0, 0n, 0n));
   expect(history.map(p => p.at)).toEqual([0, history_bucket_ms]);
   for (let at = 2; at <= history_capacity + 1; at++)
@@ -159,13 +266,20 @@ test("history keeps a point per bucket: rates averaged, memory at its peak", () 
   expect(history).toHaveLength(history_capacity);
 });
 
-test("history points keep the processes leading each figure", () => {
+test("history points keep the processes leading each figure and each device", () => {
   const proc = (pid: number, fields: Partial<Process>) =>
     Object.assign(new Process(pid, BigInt(pid), `p${pid}`), fields);
-  // Six busy on CPU, one writing, and one idle that leads nothing.
-  const cpu = Array.from({ length: 6 }, (_, i) => proc(i + 1, { cpu: 10 + i }));
-  const kept = standouts([...cpu, proc(100, { read: 0n, written: 5n }), proc(200, {})]).map(p => p.pid);
-  expect(kept).toEqual([2, 3, 4, 5, 6, 100]);
+  // Six busy on CPU, one on each device, and one idle that leads nothing.
+  const cpu = Array.from({ length: 6 }, (_, i) => proc(i + 1, { cpu: 10 + i, memory: 1n }));
+  const devices = [0, 1, 2].map(index =>
+    proc(100 + index, { gpu: 5, gpu_memory: 1n, gpu_devices: [{ index, util: 5, memory: 1n }] }),
+  );
+  const kept = standouts([...cpu, ...devices, proc(200, {})]).map(p => p.pid);
+  expect(kept).toContain(101);
+  expect(kept).toContain(102);
+  expect(kept).not.toContain(200);
+  // Memory ties keep the lowest PIDs, so the first CPU process stays by memory.
+  expect(kept.filter(pid => pid < 100)).toEqual([1, 2, 3, 4, 5, 6]);
   // A bucket averages each leader's rates over its readings and keeps its peak memory.
   const first: Point = {
       at: 0,
@@ -173,6 +287,7 @@ test("history points keep the processes leading each figure", () => {
       cpu: 0,
       memory: 0n,
       io: 0n,
+      gpus: [],
       processes: [proc(1, { cpu: 40, memory: 9n, read: 4n, written: 0n })],
     },
     second: Point = { ...first, at: 1000, processes: [proc(1, { cpu: 20, memory: 3n, read: 0n, written: 2n })] };

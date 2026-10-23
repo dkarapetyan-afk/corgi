@@ -1,4 +1,5 @@
 import * as native from "./resource_os";
+import * as gpu from "./gpu";
 import type { Provider } from "../providers";
 import type { Runtime } from "../runtime";
 import * as clock from "../clock";
@@ -9,7 +10,7 @@ export const history_capacity = 48,
   process_capacity = 64,
   /** Each history point covers this long. */
   history_bucket_ms = 5000;
-export type Sort = "cpu" | "memory" | "io";
+export type Sort = "cpu" | "memory" | "io" | "gpu" | "gpu_memory";
 const max64 = (1n << 64n) - 1n;
 const sat = (a: bigint, b: bigint) => (a + b > max64 ? max64 : a + b);
 export function cpuText(value: number | null) {
@@ -27,25 +28,41 @@ export function ioText(value: bigint | null) {
       ? (Number(value) / 1000000).toFixed(0) + "M/s"
       : (value / 1000n).toString() + "K/s";
 }
-/** Readings over one bucket: CPU and I/O averaged over its `samples`,
- * memory at its peak. */
+/** Readings over one bucket: CPU, I/O and GPU utilization averaged over its
+ * `samples`, memory at its peak. */
 export type Point = {
   at: number;
   samples: number;
   cpu: number | null;
   memory: bigint | null;
   io: bigint | null;
-  /** The processes that led each figure over the bucket. */
+  /** The workspace's figures on each device it used. */
+  gpus: gpu.Share[];
+  /** The processes that led each figure, and each device, over the bucket. */
   processes: Process[];
 };
-/** How many processes a history point keeps per figure. */
-export const point_leaders = 5;
+/** How many processes a history point keeps per figure, and per device. */
+export const point_leaders = 5,
+  device_leaders = 2;
 const mean = (old: number | null, next: number | null, n: number) =>
   old === null ? next : next === null ? old : old + (next - old) / n;
 const meanBig = (old: bigint | null, next: bigint | null, n: number) =>
   old === null ? next : next === null ? old : (old * BigInt(n - 1) + next) / BigInt(n);
 const peak = (old: bigint | null, next: bigint | null) =>
   old === null ? next : next === null ? old : old > next ? old : next;
+/** Shares over a bucket of `n` readings: a device missing from a reading was idle for it. */
+function mergeShares(old: gpu.Share[], next: gpu.Share[], n: number): gpu.Share[] {
+  const indices = [...new Set([...old, ...next].map(d => d.index))].sort((a, b) => a - b);
+  return indices.map(index => {
+    const was = old.find(d => d.index === index),
+      now = next.find(d => d.index === index);
+    return {
+      index,
+      util: mean(was ? was.util : 0, now ? now.util : 0, n),
+      memory: peak(was?.memory ?? null, now?.memory ?? null),
+    };
+  });
+}
 /** Processes over a bucket of `n` readings, as `record` treats the workspace;
  * one missing from a reading had nothing to lead with in it. */
 function mergeProcesses(old: Process[], next: Process[], n: number): Process[] {
@@ -61,10 +78,13 @@ function mergeProcesses(old: Process[], next: Process[], n: number): Process[] {
       memory: peak(was?.memory ?? null, now?.memory ?? null) ?? 0n,
       read: meanBig(was ? was.read : 0n, now ? now.read : 0n, n),
       written: meanBig(was ? was.written : 0n, now ? now.written : 0n, n),
+      gpu: was?.gpu == null && now?.gpu == null ? null : mean(was?.gpu ?? 0, now?.gpu ?? 0, n),
+      gpu_memory: peak(was?.gpu_memory ?? null, now?.gpu_memory ?? null),
+      gpu_devices: mergeShares(was?.gpu_devices ?? [], now?.gpu_devices ?? [], n),
     });
   });
 }
-/** The processes leading any figure. */
+/** The processes leading any figure, or any device's utilization or memory. */
 export function standouts(list: Process[]): Process[] {
   const keep = new Set<Process>(),
     lead = (value: (p: Process) => number | null | undefined, count: number) =>
@@ -73,7 +93,16 @@ export function standouts(list: Process[]): Process[] {
         .sort((a, b) => value(b)! - value(a)! || a.pid - b.pid)
         .slice(0, count)
         .forEach(p => keep.add(p));
-  for (const sort of ["cpu", "memory", "io"] as const) lead(p => Process.value(sort, p), point_leaders);
+  for (const sort of ["cpu", "memory", "io", "gpu", "gpu_memory"] as const)
+    lead(p => Process.value(sort, p), point_leaders);
+  for (const index of new Set(list.flatMap(p => p.gpu_devices.map(d => d.index)))) {
+    const on = (p: Process) => p.gpu_devices.find(d => d.index === index);
+    lead(p => on(p)?.util, device_leaders);
+    lead(p => {
+      const memory = on(p)?.memory;
+      return memory == null ? null : Number(memory);
+    }, device_leaders);
+  }
   return list.filter(p => keep.has(p));
 }
 /** `history` with `next` folded into its last point while both fall in one
@@ -91,6 +120,7 @@ export function record(history: Point[], next: Point): Point[] {
       cpu: mean(last.cpu, next.cpu, n),
       memory: peak(last.memory, next.memory),
       io: meanBig(last.io, next.io, n),
+      gpus: mergeShares(last.gpus, next.gpus, n),
       processes: standouts(mergeProcesses(last.processes, next.processes, n)),
     },
   ];
@@ -101,6 +131,11 @@ export class Process {
   memory = 0n;
   read: bigint | null = null;
   written: bigint | null = null;
+  /** Null for a process the GPU source doesn't list. */
+  gpu: number | null = null;
+  gpu_memory: bigint | null = null;
+  /** Its figures on each device it uses. */
+  gpu_devices: gpu.Share[] = [];
   constructor(
     public pid: number,
     public start: bigint,
@@ -119,6 +154,10 @@ export class Process {
         return Number(p.memory);
       case "io":
         return p.read !== null && p.written !== null ? Number(sat(p.read, p.written)) : -1;
+      case "gpu":
+        return p.gpu ?? -1;
+      case "gpu_memory":
+        return p.gpu_memory === null ? -1 : Number(p.gpu_memory);
     }
   }
 }
@@ -131,6 +170,15 @@ export class Work {
   read: bigint | null = null;
   written: bigint | null = null;
   cpu_pressure = false;
+  /** Null without a GPU source. */
+  gpu: number | null = null;
+  gpu_memory: bigint | null = null;
+  /** Whether the workspace has used a GPU lately; only then do its figures show. */
+  gpu_shown = false;
+  /** Its figures on each device it uses, by index. */
+  gpu_devices: gpu.Share[] = [];
+  /** The least exact way any of its devices was read. */
+  gpu_attribution: gpu.Attribution | null = null;
   processes: Process[] = [];
   history: Point[] = [];
   constructor(public id: number) {}
@@ -139,6 +187,8 @@ export class Work {
     if (p.cpu !== null) this.cpu = (this.cpu ?? 0) + p.cpu;
     if (p.read !== null) this.read = sat(this.read ?? 0n, p.read);
     if (p.written !== null) this.written = sat(this.written ?? 0n, p.written);
+    if (p.gpu !== null) this.gpu = (this.gpu ?? 0) + p.gpu;
+    if (p.gpu_memory !== null) this.gpu_memory = sat(this.gpu_memory ?? 0n, p.gpu_memory);
   }
 }
 export class Snapshot {
@@ -149,6 +199,8 @@ export class Snapshot {
   cores = 1;
   memory_pressure: native.MemoryPressure = "unknown";
   memory_kind = process.platform === "linux" ? "RSS" : "footprint";
+  gpus: gpu.Gpu[] = [];
+  gpu_memory_kind = "";
   workspaces: Work[] = [];
   workspace(id: number) {
     return this.workspaces.find(w => w.id === id) ?? new Work(id);
@@ -164,6 +216,7 @@ export class Snapshot {
 export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
   if (!value) return new Snapshot();
   const nullable = (n: number | bigint | null | undefined) => (n === null || n === undefined ? null : BigInt(n));
+  const share = (s: Wire<gpu.Share>) => ({ index: s.index, util: s.util ?? null, memory: nullable(s.memory) });
   const restoreProcess = (p: Wire<Process>) =>
     Object.assign(new Process(p.pid, BigInt(p.start), p.name), {
       provider: p.provider ?? null,
@@ -171,12 +224,20 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
       memory: BigInt(p.memory ?? 0),
       read: nullable(p.read),
       written: nullable(p.written),
+      gpu: p.gpu ?? null,
+      gpu_memory: nullable(p.gpu_memory),
+      gpu_devices: (p.gpu_devices ?? []).map(share),
     });
   const restoreWork = (w: Wire<Work>) =>
     Object.assign(new Work(w.id), w, {
       memory: nullable(w.memory),
       read: nullable(w.read),
       written: nullable(w.written),
+      gpu: w.gpu ?? null,
+      gpu_memory: nullable(w.gpu_memory),
+      gpu_shown: w.gpu_shown ?? false,
+      gpu_devices: (w.gpu_devices ?? []).map(share),
+      gpu_attribution: w.gpu_attribution ?? null,
       processes: (w.processes ?? []).map(restoreProcess),
       history: (w.history ?? []).map(point => ({
         at: point.at,
@@ -184,11 +245,20 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
         cpu: point.cpu ?? null,
         memory: nullable(point.memory),
         io: nullable(point.io),
+        gpus: (point.gpus ?? []).map(share),
         processes: (point.processes ?? []).map(restoreProcess),
       })),
     });
   return Object.assign(new Snapshot(), value, {
     host_memory: BigInt(value.host_memory ?? 0),
+    gpus: (value.gpus ?? []).map(g => ({
+      index: g.index,
+      name: g.name,
+      util: g.util ?? null,
+      used: nullable(g.used),
+      total: nullable(g.total),
+    })),
+    gpu_memory_kind: value.gpu_memory_kind ?? "",
     workspaces: (value.workspaces ?? []).map(restoreWork),
   });
 }
@@ -281,10 +351,14 @@ export function delta(old: Reading | null | undefined, next: Reading) {
 }
 export function leaders(list: Process[]) {
   if (list.length <= process_capacity) return list;
-  const out: Process[] = [];
-  for (const sort of ["cpu", "memory", "io"] as const) {
+  const out: Process[] = [],
+    sorts: Sort[] = list.some(p => p.gpu_memory !== null || p.gpu !== null)
+      ? ["cpu", "memory", "io", "gpu", "gpu_memory"]
+      : ["cpu", "memory", "io"];
+  for (const sort of sorts) {
     list.sort((a, b) => (Process.less(sort, a, b) ? -1 : Process.less(sort, b, a) ? 1 : 0));
-    for (const p of list.slice(0, Math.floor(process_capacity / 3))) if (!out.some(x => x.pid === p.pid)) out.push(p);
+    for (const p of list.slice(0, Math.floor(process_capacity / sorts.length)))
+      if (!out.some(x => x.pid === p.pid)) out.push(p);
   }
   return out;
 }
@@ -292,7 +366,7 @@ export type Batch = {
   view: Snapshot;
   readings: Reading[];
   host: native.Host;
-  health: { id: number; cpu: Alarm }[];
+  health: { id: number; cpu: Alarm; gpu: gpu.Hold }[];
 };
 const batch = (): Batch => ({
   view: new Snapshot(),
@@ -326,7 +400,11 @@ export function restoreBatch(value: Batch): Batch {
   return {
     ...value,
     view: restoreSnapshot(value.view),
-    health: value.health.map(h => ({ id: h.id, cpu: Object.assign(new Alarm(), h.cpu) })),
+    health: value.health.map(h => ({
+      id: h.id,
+      cpu: Object.assign(new Alarm(), h.cpu),
+      gpu: Object.assign(new gpu.Hold(), h.gpu),
+    })),
   };
 }
 export class Tracker {
@@ -342,6 +420,8 @@ export class Tracker {
   next_refresh = 0;
   last_started = 0;
   interval_ms = 2000;
+  /** GPU readings; set in the Worker, where blocking calls are safe. */
+  gpu: gpu.Sampler | null = null;
   private worker: (Worker & { unref(): void }) | null = null;
   private complete: (() => void) | null = null;
   private failure = new Failure();
@@ -473,6 +553,8 @@ export class Tracker {
       if (!this.done) return false;
       this.thread = null;
     } else if (!this.current.sampled_at && !this.batch.readings.length) return false;
+    // Holding NVML open keeps the driver initialized.
+    this.worker?.postMessage({ release: true });
     this.current = new Snapshot();
     this.batch = batch();
     this.pending = batch();
@@ -516,6 +598,7 @@ export class Tracker {
           this.batch.health.find(h => h.id === id) ?? {
             id,
             cpu: new Alarm(),
+            gpu: new gpu.Hold(),
           },
       );
     for (const identity of inventory.items) {
@@ -544,9 +627,10 @@ export class Tracker {
         { memory: value.memory },
       );
       if (identity.pid === root.agent_pid) proc.provider = root.provider;
-      work.add(proc);
       work.processes.push(proc);
     }
+    const graphics = this.sampleGpu(works);
+    for (const work of works) for (const proc of work.processes) work.add(proc);
     works.forEach((work, i) => {
       for (const root of roots)
         if (
@@ -557,6 +641,11 @@ export class Tracker {
       if (!work.count && !work.partial) {
         work.cpu = 0;
         work.memory = work.read = work.written = 0n;
+      }
+      if (graphics) {
+        work.gpu ??= 0;
+        work.gpu_memory ??= 0n;
+        work.gpu_shown = health[i].gpu.update(work.gpu_memory > 0n || work.gpu > 0, now);
       }
       const share = (work.cpu ?? 0) / Math.max(1, host.cores),
         high = !work.partial && host_cpu !== null && host_cpu >= 90 && share >= 25,
@@ -569,6 +658,7 @@ export class Tracker {
         cpu: work.cpu,
         memory: work.memory,
         io: work.read !== null && work.written !== null ? sat(work.read, work.written) : null,
+        gpus: work.gpu_devices.map(d => ({ ...d })),
         processes: standouts(work.processes),
       });
     });
@@ -580,11 +670,54 @@ export class Tracker {
         host_memory: host.memory,
         cores: host.cores,
         memory_pressure: host.pressure,
+        gpus: graphics ? gpu.gpus(graphics.devices) : [],
+        gpu_memory_kind: graphics?.source.memory_kind ?? "",
         workspaces: works,
       }),
       readings,
       host,
       health,
     };
+  }
+  /** Fills in each workspace process's GPU usage; null without a GPU source. */
+  private sampleGpu(works: Work[]) {
+    const graphics = this.gpu?.read() ?? null;
+    if (!graphics) return null;
+    const held = this.gpu!.held,
+      owned = new Map(works.flatMap(w => w.processes.map(p => [p.pid, { work: w, proc: p }] as const))),
+      files = new Map<number, number[] | null>(),
+      opened = (pid: number) => {
+        if (!files.has(pid)) files.set(pid, native.nvidiaFiles(pid));
+        return files.get(pid)!;
+      };
+    for (const [pid, start] of held) if (owned.get(pid)?.proc.start !== start) held.delete(pid);
+    const { usage, modes } = gpu.attribute(graphics.devices, {
+      ours: new Set(owned.keys()),
+      exists: native.exists,
+      holds: pid => {
+        if (held.has(pid)) return true;
+        if (!opened(pid)?.length) return false;
+        held.set(pid, owned.get(pid)!.proc.start);
+        return true;
+      },
+      holders: device =>
+        device.minor === null ? [] : [...owned.keys()].filter(pid => opened(pid)?.includes(device.minor!)),
+    });
+    const rank: gpu.Attribution[] = ["process", "list", "device"];
+    for (const [pid, u] of usage) {
+      const { work, proc } = owned.get(pid)!;
+      proc.gpu = u.util;
+      proc.gpu_memory = u.memory;
+      proc.gpu_devices = u.devices;
+      for (const share of u.devices) {
+        const total = gpu.find(work.gpu_devices, share.index);
+        if (share.util !== null) total.util = (total.util ?? 0) + share.util;
+        if (share.memory !== null) total.memory = sat(total.memory ?? 0n, share.memory);
+        const mode = modes[graphics.devices.findIndex(d => d.index === share.index)];
+        if (work.gpu_attribution === null || rank.indexOf(mode) > rank.indexOf(work.gpu_attribution))
+          work.gpu_attribution = mode;
+      }
+    }
+    return graphics;
   }
 }

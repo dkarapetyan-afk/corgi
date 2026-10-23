@@ -643,6 +643,7 @@ export class Controller {
     view = view.withPanel(this.reviewWidth(view.width));
     // Workspace rows, and so paging, depend on whether readings are shown.
     view.resources = this.prefs.resources;
+    view.gpus = resourceTooltip.gpuCount(this.runtime.resources) > 0;
     view.drawer = this.sidebar_focus?.drawer ?? null;
     view = view.withWorkspaces(this.runtime.workspaces.items.length, this.workspace_offset).withEntries(entries);
     view.scope_label = this.scopeLabel();
@@ -5663,7 +5664,13 @@ export class Controller {
   }
   private resourceRect(): Rect | null {
     if (this.resourceDetail() === null) return null;
-    return resourceTooltip.geometry(this.width, this.height, this.sidebarView([]).width, this.resource_card.anchor);
+    return resourceTooltip.geometry(
+      this.width,
+      this.height,
+      this.sidebarView([]).width,
+      this.resource_card.anchor,
+      resourceTooltip.gpuCount(this.runtime.resources),
+    );
   }
   private resourceBridgeContains(rect: Rect, x: number, y: number): boolean {
     const side = this.sidebarView([]).width;
@@ -5924,7 +5931,11 @@ export class Controller {
     if (detail !== null) {
       const rect = this.resourceRect();
       const freeze = this.pointer !== null && rect !== null && rect.contains(this.pointer.x, this.pointer.y);
-      this.resource_card.update(sidebar.resourcesFor(this.runtime.resources, detail) as any, freeze);
+      this.resource_card.update(
+        sidebar.resourcesFor(this.runtime.resources, detail) as any,
+        freeze,
+        resourceTooltip.gpuCount(this.runtime.resources),
+      );
     }
     const card = this.paste_card;
     const focused = this.focused();

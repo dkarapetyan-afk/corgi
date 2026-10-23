@@ -286,10 +286,22 @@ export interface Work {
   read: bigint | null;
   written: bigint | null;
   cpu_pressure: boolean;
+  gpu: number | null;
+  gpu_shown: boolean;
   [key: string]: unknown;
 }
 export function work(fields: Partial<Work> & { id: number }): Work {
-  return { known: false, cpu: null, memory: null, read: null, written: null, cpu_pressure: false, ...fields };
+  return {
+    known: false,
+    cpu: null,
+    memory: null,
+    read: null,
+    written: null,
+    cpu_pressure: false,
+    gpu: null,
+    gpu_shown: false,
+    ...fields,
+  };
 }
 /** The workspace's readings in a resources snapshot, or none. */
 export function resourcesFor(snapshot: any, id: number): Work {
@@ -400,6 +412,8 @@ export class View {
   workspace_count = 0;
   workspace_offset = 0;
   resources: { enabled: boolean } = { enabled: true };
+  /** Whether the host has GPUs: rows keep a GPU reading's place, used or not. */
+  gpus = false;
   resource_hover: number | null = null;
   /** Decorative corgis only; contextual compaction keeps its animation. */
   corgi_intensity = 50;
@@ -1366,22 +1380,28 @@ export function resourceAt(v: View, workspaces: WorkspaceEntry[], x: number, y: 
   if (i >= v.workspaceCapacity() || i + v.workspace_offset >= workspaces.length) return null;
   const ws = workspaces[i + v.workspace_offset];
   if (!resourceCardFits(v)) return null;
-  for (let reading = 0; reading < 2; reading++) if (shownReading(v.resources, ws.resources, reading)) return ws;
+  for (let reading = 0; reading < 3; reading++) if (shownReading(v.resources, ws.resources, reading)) return ws;
   return null;
 }
 function resourceCardFits(v: View): boolean {
   return resourceTooltip.geometry(v.cols, v.rows, v.sidebarWidth(), 0) !== null;
 }
-/** Whether the row shows CPU (0) or memory (1). Disk I/O is only in the hover card. */
+/** Whether the row shows CPU (0), memory (1) or GPU (2), the last only while
+ * the workspace uses one; on a host with GPUs its place stays either way.
+ * Disk I/O is only in the hover card. */
 function shownReading(prefs: { enabled: boolean }, work: Work, reading: number): boolean {
-  const available = reading === 0 ? work.cpu !== null : work.memory !== null;
+  const available =
+    reading === 0 ? work.cpu !== null : reading === 1 ? work.memory !== null : work.gpu_shown && work.gpu !== null;
   return prefs.enabled && available;
 }
 /** `tinted` rows sit on the selected background, which takes muted or brighter. */
 export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, tinted: boolean): void {
   const width = sat(v.width, 3);
   const prefs = v.resources;
-  const details = resourceCardFits(v) && width >= 2 && (shownReading(prefs, work, 0) || shownReading(prefs, work, 1));
+  const details =
+    resourceCardFits(v) &&
+    width >= 2 &&
+    (shownReading(prefs, work, 0) || shownReading(prefs, work, 1) || shownReading(prefs, work, 2));
   const hover = details && hovered;
   const normal = hover ? "\x1b[22m" + fg("text") : tinted ? "\x1b[22m" + fg("muted") : "\x1b[22m" + fg("faint");
   if (hover) w.write(selected_bg);
@@ -1390,13 +1410,28 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
   const names = [
     ["CPU", "C"],
     ["Memory", "Mem", "M"],
+    ["GPU", "G"],
   ];
-  values.forEach((value, i) => {
+  if (v.gpus) values.push(cpuText(work.gpu));
+  const rooms = values.map(
+    (_, i) => Math.floor((readings_width * (i + 1)) / values.length) - Math.floor((readings_width * i) / values.length),
+  );
+  // The longest label that leaves room for a five-character value
+  // (1234%, 12.3G) and, before the last, a one-column gap.
+  const labels = values.map((_, i) => {
     const choices = names[i];
-    const room = i === 1 ? readings_width - Math.floor(readings_width / 2) : Math.floor(readings_width / 2);
-    // The longest label that leaves room for a five-character value
-    // (1234%, 12.3G) and, after CPU, a one-column gap.
-    const label = choices.find(name => room >= name.length + 1 + 5 + (i === 0 ? 1 : 0)) ?? choices[choices.length - 1];
+    return (
+      choices.find(name => rooms[i] >= name.length + 1 + 5 + (i === values.length - 1 ? 0 : 1)) ??
+      choices[choices.length - 1]
+    );
+  });
+  // Three readings shorten together rather than mixing "C" and "GPU".
+  if (values.length === 3 && labels.some((label, i) => label === names[i].at(-1)))
+    labels.forEach((_, i) => (labels[i] = names[i].at(-1)!));
+  values.forEach((value, i) => {
+    const last = i === values.length - 1;
+    const room = rooms[i];
+    const label = labels[i];
     if (value.length === 0 || !shownReading(prefs, work, i)) {
       w.splat(" ", room);
       return;
@@ -1406,8 +1441,8 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
     w.write(label);
     if (room >= 7) w.write(" ");
     const used = label.length + (room >= 7 ? 1 : 0);
-    writeClipped(w, value, sat(room, used) - (i === 0 ? 1 : 0));
-    const printed = used + Math.min(displayWidth(value), sat(room, used) - (i === 0 ? 1 : 0));
+    writeClipped(w, value, sat(room, used) - (last ? 0 : 1));
+    const printed = used + Math.min(displayWidth(value), sat(room, used) - (last ? 0 : 1));
     w.splat(" ", sat(room, printed));
   });
   if (details) {

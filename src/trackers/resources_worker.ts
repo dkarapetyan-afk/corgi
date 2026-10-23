@@ -1,12 +1,19 @@
 import { Tracker, restoreBatch, restoreSnapshot, type SampleRequest, type SampleResult } from "./resources";
+import * as gpu from "./gpu";
+import * as nvidia from "./gpu_nvidia";
+
+// Outlives each request: it keeps the driver open and remembers what it read.
+const graphics = new gpu.Sampler(nvidia.open);
 
 // Only immutable scan inputs cross the boundary; the daemon validates ownership
 // again before publishing a completed sample.
-self.onmessage = (event: MessageEvent<SampleRequest>) => {
+self.onmessage = (event: MessageEvent<SampleRequest | { release: true }>) => {
+  if ("release" in event.data) return graphics.close();
   try {
     const request = event.data;
     const tracker = new Tracker();
     Object.assign(tracker, request, {
+      gpu: graphics,
       batch: restoreBatch(request.batch),
       current: restoreSnapshot(request.current),
     });

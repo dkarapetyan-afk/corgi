@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseStat, counters, inventory, host } from "./resource_os";
+import { parseStat, counters, inventory, host, nvidiaFiles, exists } from "./resource_os";
 test("linux stat handles spaces and closing parentheses in process names", () => {
   const fields = Array(22).fill("0");
   fields[0] = "S";
@@ -24,4 +24,16 @@ test("native counters can sample this process", () => {
 });
 test("the inventory names each process", () => {
   expect(inventory().items.find(p => p.pid === process.pid)?.name).toBe("bun");
+});
+// Only Linux lists a process's open files under /proc; elsewhere the answer is null.
+test.skipIf(process.platform !== "linux")("a process without GPU device files holds none open", () => {
+  // Not this process: a resources Worker in the same test run may hold NVML open.
+  const child = Bun.spawn(["sleep", "5"]);
+  try {
+    expect(nvidiaFiles(child.pid)).toEqual([]);
+  } finally {
+    child.kill();
+  }
+  expect(nvidiaFiles(0x7ffffff0)).toBeNull();
+  expect(exists(process.pid)).toBe(true);
 });

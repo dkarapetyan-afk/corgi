@@ -444,6 +444,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     .withWidth(u.prefs.sidebar_width)
     .withPanel(u.review_width);
   side.resources = u.prefs.resources;
+  side.gpus = resourceTooltip.gpuCount(u.resources) > 0;
   side.drawer = u.sidebar_drawer;
   side.focus = u.sidebar_focus;
   side = side.withWorkspaces(u.workspaces.length, u.workspace_offset).withEntries(entries);
@@ -502,7 +503,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     !u.link_tooltip || u.agent_launcher !== null || u.corgi_setup !== null || u.pointer === null
       ? null
       : u.resource_card
-        ? resourceTooltip.geometry(width, height, side.width, u.resource_card.anchor)
+        ? resourceTooltip.geometry(width, height, side.width, u.resource_card.anchor, u.resource_card.gpus)
         : null;
   // The card hides links beneath it. Workspace rows it covers still take
   // presses, so they keep their own pointer.
@@ -516,7 +517,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     if (on_link_card) {
       link_pointer = linkTooltip.copyAt(link_rect!, pointer.x, pointer.y);
     } else if (on_card) {
-      link_pointer = resourceTooltip.sortAt(card_rect!, pointer.x, pointer.y) !== null;
+      link_pointer = resourceTooltip.sortAt(card_rect!, pointer.x, pointer.y, u.resource_card!.gpus) !== null;
     } else if (u.scope_menu !== null) {
       link_pointer =
         side.hit(pointer.x, pointer.y).tag === "agent_scope" ||

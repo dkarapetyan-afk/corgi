@@ -16,3 +16,9 @@ export function counters(_pid: number): Counters | null {
 export function host(): Host {
   return { busy: 0n, total: 0n, cores: 1, memory: 0n, pressure: "unknown" };
 }
+export function exists(_pid: number): boolean {
+  return false;
+}
+export function nvidiaFiles(_pid: number): number[] | null {
+  return null;
+}

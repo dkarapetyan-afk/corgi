@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { systemCall, sysconf } from "../native_bridge";
 import { processTree } from "../os";
@@ -165,4 +165,26 @@ export function host(): Host {
     } catch {}
   }
   return out;
+}
+/** Whether a PID names a process here; one from another PID namespace doesn't. */
+export function exists(pid: number): boolean {
+  return process.platform !== "linux" || existsSync(`/proc/${pid}`);
+}
+/** The minor numbers of the `/dev/nvidia<N>` files a process holds open, or
+ * null when its descriptors can't be read. */
+export function nvidiaFiles(pid: number): number[] | null {
+  if (process.platform !== "linux") return null;
+  let fds: string[];
+  try {
+    fds = readdirSync(`/proc/${pid}/fd`);
+  } catch {
+    return null;
+  }
+  const minors: number[] = [];
+  for (const fd of fds)
+    try {
+      const m = /^\/dev\/nvidia(\d+)$/.exec(readlinkSync(`/proc/${pid}/fd/${fd}`));
+      if (m && !minors.includes(Number(m[1]))) minors.push(Number(m[1]));
+    } catch {}
+  return minors;
 }

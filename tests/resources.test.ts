@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { PALETTE, Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
 import { registerCase, shellJoin, sleep } from "./support";
+// On a host with GPUs the row keeps a third place, so its labels shorten.
+const reading = /\bC(PU)? .*\bM(em)? /;
 
 // The hovered resource row: its background, then its readings' style.
 const hover = `\x1b[48;2;${PALETTE.selected}m\x1b[22m`;
@@ -97,7 +99,7 @@ class Resources extends Runtime {
       const resourceRow = frame.slice(resourceStart, frame.indexOf("\x1b[6;1H", resourceStart));
       this.assertIn(`\x1b[4m\x1b[58:2::${PALETTE.line.replaceAll(";", ":")}m`, resourceRow);
       this.assertIn("\x1b[24;59m", resourceRow);
-      this.assertRegex(screen_text(frame, cols, 40)[4], /CPU .*Mem/);
+      this.assertRegex(screen_text(frame, cols, 40)[4], reading);
       // Disk throughput stays in the hover card.
       this.assertNotIn("↕", screen_text(frame, cols, 40)[4]);
       this.assertEqual(screen_text(frame, cols, 40)[4][25], "›");
@@ -194,7 +196,7 @@ class Resources extends Runtime {
     const rows = screen_text(viewer.state.data, 120, 40);
     // Two rows per workspace: the second workspace's name follows the first's status.
     this.assertIn("second", rows[4]);
-    for (const row of rows.slice(0, 12)) this.assertFalse(/CPU .*Mem/.test(row), row);
+    for (const row of rows.slice(0, 12)) this.assertFalse(reading.test(row), row);
     await viewer.input("\x1b[<0;5;6M");
     await viewer.input("\x1b[<0;5;6m");
     this.assertEqual(viewer.state.workspace, second);
@@ -280,8 +282,8 @@ class Resources extends Runtime {
     const second = await Viewer.create(this, 120, 40);
     let frame = (await viewer.poll()).data;
     const rows = screen_text(frame, 120, 40);
-    this.assertRegex(rows[4], /CPU .*Mem/);
-    this.assertRegex(rows[7], /CPU .*Mem/);
+    this.assertRegex(rows[4], reading);
+    this.assertRegex(rows[7], reading);
     await viewer.input("\x1b[<35;5;5M");
     this.assertNotIn("TOP PROCESSES", viewer.state.data);
     await viewer.advance(0.6);

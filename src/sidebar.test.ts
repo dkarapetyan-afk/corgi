@@ -1280,3 +1280,27 @@ test("a worktree's group runs while rows are its checkout's", () => {
   expect(groupEnd(entries, 0)).toBe(3);
   expect(groupEnd(entries, 3)).toBe(4);
 });
+
+test("on a host with GPUs every resource row keeps a GPU place, used or not", () => {
+  const view = Object.assign(View.init(100, 30, true, 0, 0).withWorkspaces(1, 0), { gpus: true }),
+    calm = { ...hot, cpu_pressure: false },
+    plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""),
+    row = (fields: Partial<typeof hot>, v: View = view) => {
+      const w = new Writer();
+      drawResources(w, work({ ...calm, ...fields }), v, false, false);
+      return plain(w.s);
+    };
+  const idle = row({ gpu: 0 }),
+    busy = row({ gpu: 150, gpu_shown: true });
+  expect(idle).not.toMatch(/ G \d/);
+  expect(busy).toContain("G 150%");
+  // CPU and memory sit in the same columns either way.
+  expect(idle.indexOf("M 3.0G")).toBe(busy.indexOf("M 3.0G"));
+  expect(idle.length).toBe(busy.length);
+  // Without GPUs the row keeps its two halves.
+  expect(row({ gpu: 150, gpu_shown: true }, Object.assign(view.clone(), { gpus: false }))).toContain("Memory 3.0G");
+  const wide = row({ gpu: 150, gpu_shown: true }, view.withWidth(40));
+  expect(wide).toContain("CPU 182%");
+  expect(wide).toContain("Mem 3.0G");
+  expect(wide).toContain("GPU 150%");
+});
