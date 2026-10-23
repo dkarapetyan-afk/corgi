@@ -13,7 +13,7 @@ curl -fsSL https://corgi.computer/install.sh | bash
 ## First session
 
 1. Run `corgi` in your project directory and choose a shortcut preset.
-2. Click **New** in the agent list to start Claude Code, Codex or [OpenCode](docs/opencode.md).
+2. Click **New** in the agent list to start Claude Code, Codex, Pi or OpenCode.
 3. Click an agent or pane to focus it; open the shortcut menu with your prefix,
    then `?` (the default prefix is Ctrl+B).
 4. Choose **Detach** in the shortcut menu to leave processes running.
@@ -29,31 +29,35 @@ curl -fsSL https://corgi.computer/install.sh | bash -s uninstall
 
 ## Agents
 
-Run `claude` or `codex` in any pane. Corgi notices them and adds its hooks to
-their settings. Codex asks you to trust the hooks once, in `/hooks`.
+Run `claude`, `codex`, `pi` or `opencode` in any pane. Corgi notices them and
+adds its hooks to their settings; Pi gets an extension, and OpenCode needs
+nothing. Codex asks you to trust the hooks once, in `/hooks`.
 
-|                                      | Claude Code | Codex |
-| ------------------------------------ | :---------: | :---: |
-| Status: ▶ working ● needs you ● done |      ✓      |   ✓   |
-| Activity summaries                   |      ✓      |   ✓   |
-| Subagents                            |      ✓      |   ✓   |
-| Context, tokens and rate limits      |      ✓      |   ✓   |
-| Rename and fork                      |      ✓      |   ✓   |
-| Resume after a crash or reboot       |      ✓      |   ✓   |
-| Several accounts at once             |      ✓      |   ✓   |
+|                                      | Claude Code | Codex | Pi  | OpenCode |
+| ------------------------------------ | :---------: | :---: | :-: | :------: |
+| Status: ▶ working ● needs you ● done |      ✓      |   ✓   |  ✓  |    ✓     |
+| Activity summaries                   |      ✓      |   ✓   |  ✓  |    ✓     |
+| Subagents                            |      ✓      |   ✓   |     |    ✓     |
+| Context, tokens and rate limits      |      ✓      |   ✓   |  ✓  |    ✓     |
+| Rename and fork                      |      ✓      |   ✓   |  ✓  |    ✓     |
+| Resume after a crash or reboot       |      ✓      |   ✓   |  ✓  |    ✓     |
+| Multi accounts                       |      ✓      |   ✓   |  ✓  |          |
+
+Pi and OpenCode show rate limits for ChatGPT sign-ins only.
 
 For a second account, pick the agent under **Add account** in the launcher's
 Manage agents, or run `corgi account add`: it walks you through the agent's own
 sign-in, over SSH too, and names the account for who signed in;
 `corgi account add claude work --dir ~/.claude-work` uses a folder you have,
 and Omarchy's accounts show up on their own. Each account gets its own
-launcher row and usage.
+launcher row and usage. OpenCode keeps the login you made in OpenCode.
 
 In **Manage agents**, select an added agent and press **Enter** to edit its
 name, extra flags and environment variables. Launch settings are shared across
 workspaces for that account and apply to new launches, not running agents.
 Flags accept quoted arguments; environment values are literal, without shell
-expansion.
+expansion. **Space** hides an agent from the current workspace's launcher;
+`corgi launcher hide AGENT` does the same from a shell.
 
 ## Scripting
 
