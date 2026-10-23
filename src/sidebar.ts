@@ -1914,7 +1914,7 @@ export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], 
     return;
   }
 }
-function drawGitError(w: Writer, message: string, cols: number, rows: number, px: number, py: number): void {
+function drawGitError(w: Writer, message: string, cols: number, rows: number, px: number, py: number): Rect {
   const width = Math.min(76, cols);
   const room = width - 4;
   const lines: string[] = [];
@@ -1951,6 +1951,7 @@ function drawGitError(w: Writer, message: string, cols: number, rows: number, px
   w.write(`\x1b[${y + 2};${x + 3}H\x1b[1mPush failed\x1b[22m`);
   lines.forEach((line, i) => w.write(`\x1b[${y + 3 + i};${x + 3}H${line}`));
   w.write("\x1b[0m\x1b8");
+  return new Rect(x, y, width, height);
 }
 export function drawGitTooltip(
   w: Writer,
@@ -1959,8 +1960,8 @@ export function drawGitTooltip(
   rows: number,
   px: number,
   py: number,
-): void {
-  if (cols < 24 || rows < 8) return;
+): Rect | null {
+  if (cols < 24 || rows < 8) return null;
   if (ws.git_push.phase === "failed") return drawGitError(w, ws.git_push.message, cols, rows, px, py);
   const width = Math.min(76, cols);
   const count = Math.min(ws.git_commits.length, Math.floor((rows - 6) / 2));
@@ -2002,6 +2003,7 @@ export function drawGitTooltip(
     writeEllipsis(w, footer, width - 4);
   }
   w.write("\x1b[0m\x1b8");
+  return new Rect(x, y, width, height);
 }
 /** Time taken to the second, as "45s", "1m 32s" or "1h 5m". */
 export function elapsed(ms: number): string {

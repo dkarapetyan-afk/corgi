@@ -42,12 +42,15 @@ Keep application policy in TypeScript and the native boundary small.
 
 Pane surfaces carry Kitty image placements; `viewer.image` transfers decoded
 pixels in bounded chunks. [pane_images.ts](src/pane_images.ts) gives each viewer
-its own image ids, clips pictures to their panes and frees hidden images. This
-supports static RGB/RGBA and PNG images sent directly or by local file. Unicode
-placeholder placements, animation, Sixel and iTerm2 image commands are not
-forwarded. The host must support Kitty graphics and report its cell pixel size.
-The added surface fields and cell-size hint are optional, so wire versions and
-saved formats are unchanged; older viewers continue to receive text.
+its own image ids, clips pictures to their panes and frees images that leave
+the screen. Pictures sit above text, so `render.frame` places them last, cut
+around the cards and menus drawn over them, and only while their pane isn't
+dimmed. This supports static RGB/RGBA and PNG images sent directly or by local
+file. Unicode placeholder placements, animation, Sixel and iTerm2 image
+commands are not forwarded. The host must support Kitty graphics and report its
+cell pixel size. The added surface fields and cell-size hint are optional, so
+wire versions and saved formats are unchanged; older viewers continue to
+receive text. `./go.ts --sandbox images` shows a picture to open cards over.
 
 The binary bundles two native shared libraries: `corgi_term` owns Ghostty
 terminal emulation, rendering, frame diffs and input encoding; `corgi_system`

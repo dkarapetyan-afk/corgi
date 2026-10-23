@@ -368,19 +368,24 @@ function noOverlay(u: Ui): boolean {
 function badgeCovered(u: Ui, side: SidebarView, width: number, height: number): boolean {
   // The agents drawer has no title row for the badge.
   if (u.sidebar_drawer === "agents") return true;
-  const boxes: Rect[] = [];
+  const boxes = menuBoxes(u, width, height);
   if (u.agent_search) boxes.push(new Rect(0, side.middle() + 1, side.width, 1));
+  if (u.dialog) {
+    const d = NameView.init(width, height, u.dialog);
+    boxes.push(new Rect(d.x, d.y, d.width, d.height));
+  }
+  return boxes.some(corgiBadge.overlaps);
+}
+/** The open menus that can reach past the sidebar. */
+function menuBoxes(u: Ui, width: number, height: number): Rect[] {
+  const boxes: Rect[] = [];
   if (u.menu) boxes.push(new Rect(u.menu.x, u.menu.y, u.menu.width, u.menu.rows + 3));
   if (u.tab_menu) {
     const b = u.tab_menu.bounds(width, height);
     boxes.push(new Rect(b.x, b.y, b.width, u.tab_menu.lines() + 2 * b.padding));
   }
   if (u.port_menu) boxes.push(sidebar.PortMenu.bounds(width, height));
-  if (u.dialog) {
-    const d = NameView.init(width, height, u.dialog);
-    boxes.push(new Rect(d.x, d.y, d.width, d.height));
-  }
-  return boxes.some(corgiBadge.overlaps);
+  return boxes;
 }
 /** The host's name for the pointing hand. iTerm2 takes X11 cursor names. */
 export function handShape(iterm2: boolean): string {
@@ -389,9 +394,16 @@ export function handShape(iterm2: boolean): string {
 /** Draw one row of text over the window's bottom-left corner, from column
  * `left`, like a browser's link preview. Panes keep the row otherwise. It
  * moves to the bottom-right corner when the pointer is where it would go. */
-function writeChip(w: Writer, raw: string, width: number, height: number, pointer: Pointer | null, left = 0): void {
+function writeChip(
+  w: Writer,
+  raw: string,
+  width: number,
+  height: number,
+  pointer: Pointer | null,
+  left = 0,
+): Rect | null {
   const text = raw.replace(/^ +/, "");
-  if (width - left < 4 || height === 0 || text.length === 0) return;
+  if (width - left < 4 || height === 0 || text.length === 0) return null;
   const clipped = new Writer();
   writeEllipsis(clipped, text, width - left - 2);
   const body = clipped.buffered();
@@ -399,6 +411,7 @@ function writeChip(w: Writer, raw: string, width: number, height: number, pointe
   const covered = pointer !== null && pointer.y === height - 1 && pointer.x >= left && pointer.x < left + chip_width;
   const x = covered ? width - chip_width : left;
   w.write(`\x1b[${height};${x + 1}H\x1b]8;;\x1b\\${chip} ${body} \x1b[0m`);
+  return new Rect(x, height - 1, chip_width, 1);
 }
 /** A bar over the pane area's bottom row while the prefix waits for its key.
  * A narrow bar drops "send prefix", then "cancel". */
@@ -497,6 +510,12 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   let hovered_uri: string | null = null;
   let link_pointer = false;
   let resize_hover: Axis | null = null;
+  // Pane images go in last, cut around the boxes drawn over them.
+  const pictured: { pane: Pane; rect: Rect; hidden: boolean }[] = [];
+  const covered: Rect[] = [];
+  const cover = (box: Rect | null) => {
+    if (box) covered.push(box);
+  };
   const link_rect = u.link_card ? linkTooltip.geometry(width, height, u.link_card.link, u.link_card.thumbnail) : null;
   const on_link_card = u.pointer !== null && link_rect !== null && link_rect.contains(u.pointer.x, u.pointer.y);
   const card_rect =
@@ -646,26 +665,15 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         Date.now() - p.restoring_since,
       );
     }
-    if (
-      u.supports_kitty_graphics &&
-      u.cell_pixels &&
-      u.images &&
-      noOverlay(u) &&
-      !dim &&
-      !u.link_card &&
-      !u.resource_card &&
-      !u.paste_card &&
-      !u.dragged_agent &&
-      !u.dragged_workspace &&
-      !u.copy_mode &&
-      p.restoring.length === 0
-    ) {
-      w.write(u.images.draw(p.terminal.images, r, u.cell_pixels, (id, offset) => p.terminal.image(id, offset)));
-    }
+    // Kitty can't dim an image, so dimmed and covered panes keep their
+    // images uploaded but don't place them.
+    const hidden =
+      dim || dragging || u.copy_mode || u.signin_draw !== null || u.signin_exit !== null || p.restoring.length > 0;
+    if (u.supports_kitty_graphics) pictured.push({ pane: p, rect: r, hidden });
   }
   drawDividers(w, view, area, !u.sidebar_focus);
   // Under the sidebar, which covers what a drawer hides.
-  if (u.ghost) drawGhost(w, u.ghost, side.drawer !== null ? side.width : u.ghost.area.x);
+  if (u.ghost) cover(drawGhost(w, u.ghost, side.drawer !== null ? side.width : u.ghost.area.x));
   // The host may leave its last mouse report at the window edge.
   if (u.pointer && u.pointer.x > 0 && !dragging && !on_card && noOverlay(u))
     side.hovered = sidebar.agentIndexAt(side, entries, u.pointer.x, u.pointer.y);
@@ -681,8 +689,14 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   }
   const paste_at = u.paste_card ? placeCard(view, panes, area, u.paste_card, u) : null;
   if (paste_at && u.pointer && pasteCard.linkAt(u.paste_card!, paste_at, u.pointer.x, u.pointer.y)) link_pointer = true;
-  if (u.prefix) drawPrefixBar(w, area, u.prefs.preset, u.prefs.prefix);
-  else {
+  if (paste_at) {
+    cover(new Rect(paste_at.x, paste_at.y, paste_at.w, paste_at.h));
+    if (paste_at.arrow) cover(new Rect(paste_at.arrow.x, paste_at.arrow.y, 1, 1));
+  }
+  if (u.prefix) {
+    drawPrefixBar(w, area, u.prefs.preset, u.prefs.prefix);
+    if (area.h > 0) cover(new Rect(area.x, area.y + area.h - 1, area.w, 1));
+  } else {
     // A card that doesn't fit its pane says why in the status line instead.
     const unplaced = u.paste_card !== null && paste_at === null ? u.paste_card.body.text() : null;
     const text =
@@ -696,7 +710,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
             ? "SIDEBAR  ↑↓ move  ↵ open  Esc back"
             : "");
     // Beside the sidebar while it has focus, clear of its box's bottom edge.
-    writeChip(w, text, width, height, u.pointer, u.sidebar_focus ? side.width : 0);
+    cover(writeChip(w, text, width, height, u.pointer, u.sidebar_focus ? side.width : 0));
   }
   // The prefix bar covers the area's last row.
   const cursor_rows = area.y + area.h - (u.prefix && area.h > 0 ? 1 : 0);
@@ -728,8 +742,9 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
       );
       if (rect) {
         worktreeTooltip.draw(w, rect, ws.name, ws.cwd, ws.worktrees, u.worktree_card, badge, now);
+        cover(rect);
         if (u.pointer && worktreeTooltip.sortAt(rect, u.pointer.x, u.pointer.y) !== null) link_pointer = true;
-      } else writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer);
+      } else cover(writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer));
     }
   } else if (u.link_tooltip && !u.link_card && u.agent_launcher === null && u.corgi_setup === null && u.pointer) {
     const pointer = u.pointer;
@@ -737,9 +752,10 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
       if (card_rect) {
         const name = u.workspaces.find(ws => ws.id === u.resource_card!.workspace)?.name ?? "workspace";
         resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card, pointer);
+        cover(card_rect);
       }
     } else if (corgiBadge.hit(u.corgi_badge, side.width, pointer.x, pointer.y)) {
-      subagentTooltip.drawOverview(
+      const box = subagentTooltip.drawOverview(
         w,
         u.conversations,
         u.system_usage,
@@ -751,16 +767,19 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         width,
         height,
       );
+      cover(box);
     } else {
       const git = sidebar.gitActionWorkspace(side, u.workspaces, u.git_hover, pointer.x, pointer.y);
-      if (git) sidebar.drawGitTooltip(w, git, width, height, pointer.x, pointer.y);
+      if (git) cover(sidebar.drawGitTooltip(w, git, width, height, pointer.x, pointer.y));
       else {
         const agent = sidebar.agentAt(side, u.agents, pointer.x, pointer.y);
-        if (agent) subagentTooltip.draw(w, u.conversations, agent, width, height, pointer.x, pointer.y, u.accounts);
+        if (agent)
+          cover(subagentTooltip.draw(w, u.conversations, agent, width, height, pointer.x, pointer.y, u.accounts));
       }
     }
   }
   if (u.copy_feedback && width >= 27 && height >= 5) {
+    cover(new Rect(width - 27, 1, 27, 3));
     const toast_x = width - 26;
     w.write("\x1b7" + new Style({ fg: "line", bg: "bg" }).sgr());
     w.write(`\x1b[2;${toast_x}H╭─────────────────────────╮`);
@@ -774,6 +793,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     w.write(`\x1b[4;${toast_x}H╰─────────────────────────╯`);
     w.write("\x1b[0m\x1b8");
   }
+  covered.push(...menuBoxes(u, width, height));
   if (u.menu) u.menu.draw(w);
   if (u.tab_menu) u.tab_menu.draw(w, width, height);
   if (u.port_menu) {
@@ -791,10 +811,13 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     }
     NameView.init(width, height, dialog).draw(dialog, w, number);
   }
-  if (u.scope_menu) u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope);
+  if (u.scope_menu) {
+    u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope);
+    cover(ScopeMenu.bounds(side, width, height));
+  }
   if (u.agent_launcher) u.agent_launcher.draw(w, width, height, side);
   if (u.corgi_setup) u.corgi_setup.draw(w, u.inference, u.prefs, width, height);
-  signinExit.draw(w, u.added_feedback, width, height, u.signin_exit);
+  cover(signinExit.draw(w, u.added_feedback, width, height, u.signin_exit));
   // A sign-in takes the whole screen, its cursor included.
   if (u.signin_draw) {
     hovered_uri = u.signin_draw(w, on_link_card ? null : u.pointer)?.uri ?? null;
@@ -806,6 +829,14 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     w.write("\x1b[?25l");
     linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, u.pointer.x, u.pointer.y));
     if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
+    cover(link_rect);
+  }
+  if (u.images && u.cell_pixels) {
+    const { images, cell_pixels } = u;
+    for (const { pane, rect, hidden } of pictured) {
+      const read = (id: string, offset: number) => pane.terminal.image(id, offset);
+      w.write(images.draw(pane.terminal.images, rect, cell_pixels, read, hidden ? [rect] : covered));
+    }
   }
   if (dragging) w.write("\x1b[?25l");
   // Include the shape in each complete frame so reconnects and overlay changes
@@ -982,10 +1013,10 @@ function dividerGlyph(up: boolean, down: boolean, left: boolean, right: boolean,
 /** The bottom half of the pane area as entering `g`'s agent would show it,
  * dimmed under a dashed edge naming it from column `left`, past a drawer.
  * Every cell sits where entering leaves it, so entering only reveals the rest. */
-export function drawGhost(w: Writer, g: Ghost, left = g.area.x): void {
+export function drawGhost(w: Writer, g: Ghost, left = g.area.x): Rect | null {
   const { pane, rect, area } = g;
   const cut = area.y + Math.floor(area.h / 2);
-  if (cut === area.y || area.w === 0) return;
+  if (cut === area.y || area.w === 0) return null;
   w.write("\x1b[0m" + ghost_band);
   for (let y = cut; y < area.y + area.h; y++) {
     w.write(`\x1b[${y + 1};${area.x + 1}H`);
@@ -1002,6 +1033,8 @@ export function drawGhost(w: Writer, g: Ghost, left = g.area.x): void {
   const name = label.buffered();
   w.write(`\x1b[0m\x1b[${cut};${left + 1}H${ghost_edge}┄┄ ${name} `);
   w.write("┄".repeat(sat(room, 4 + displayWidth(name))) + "\x1b[0m");
+  // The dashed edge sits on the row above the band.
+  return new Rect(area.x, cut - 1, area.w, area.y + area.h - cut + 1);
 }
 /** `rows` from viewport row `from` on: each row opens with its own cursor move and style. */
 function rowsFrom(rows: string, rect: Rect, from: number): string {

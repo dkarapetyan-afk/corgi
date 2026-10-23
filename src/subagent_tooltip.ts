@@ -18,6 +18,7 @@ import * as releaseLabel from "./release_label";
 import { type Agent, type Pane, agent as agentValue, providerName } from "./mirror";
 import { type Entry, type Subagents, contextColor } from "./sidebar";
 import { Writer, byteSlice, directoryLabel, displayWidth, ellipsis, writeEllipsis, sat } from "./text";
+import { Rect } from "./layout";
 
 let base: string;
 palette.derived(() => {
@@ -800,8 +801,8 @@ export function drawOverview(
   accounts: Accounts,
   cols: number,
   rows: number,
-): void {
-  if (cols < 40 || rows < 13) return;
+): Rect | null {
+  if (cols < 40 || rows < 13) return null;
   const total = cloneUsage(system_usage);
   let ranked: Ranked[] = [
     {
@@ -858,7 +859,8 @@ export function drawOverview(
   const reference_label = reference !== null ? `≈${reference.label}` : "";
   if (cols >= Accounts.min_cols && accounts.any()) {
     const overview: Overview = { total, reference, reference_label, system_working, release };
-    if (drawAccounts(w, ranked, shown, overview, accounts, cols, rows)) return;
+    const box = drawAccounts(w, ranked, shown, overview, accounts, cols, rows);
+    if (box) return box;
   }
   const width = Math.min(88, cols);
   const x = Math.min(1, cols - width);
@@ -874,6 +876,7 @@ export function drawOverview(
   rows_shown.forEach((ranked_row, i) => overviewAgent(card, heading + 1 + i, ranked_row, reference, system_working));
   overviewFooter(card, y + height - 2, ranked.length - shown, release);
   w.write("\x1b[0m\x1b8");
+  return new Rect(x, y, width, height);
 }
 function cloneUsage(value: UsageView): UsageView {
   return new UsageView({ ...value, tokens: new Tokens({ ...value.tokens }) });
@@ -977,7 +980,7 @@ function drawAccounts(
   accounts: Accounts,
   cols: number,
   rows: number,
-): boolean {
+): Rect | null {
   const now = accounts.now !== 0 ? accounts.now : Math.floor(Date.now() / 1000);
   let shown = most;
   let rows_shown: Ranked[];
@@ -989,7 +992,7 @@ function drawAccounts(
     height = 6;
     for (const section of sections) height += section.height();
     if (height + 3 <= rows) break;
-    if (shown === 1) return false;
+    if (shown === 1) return null;
     shown -= 1;
   }
   const width = 122;
@@ -1047,7 +1050,7 @@ function drawAccounts(
   w.write(`\x1b[${row + 1};${divider + 1}H${base}${Tone.ansi("border")}│`);
   overviewFooter(table, row, ranked.length - shown, overview.release);
   w.write("\x1b[0m\x1b8");
-  return true;
+  return new Rect(x, y, width, height);
 }
 /** One window's readings from a preview's `history`. */
 function spark(history: unknown, index: number): limit_history.Spark {
@@ -1198,8 +1201,8 @@ export function draw(
   px: number,
   py: number,
   accounts: Accounts = new Accounts(),
-): void {
-  if (cols < 40 || rows < 13) return;
+): Rect | null {
+  if (cols < 40 || rows < 13) return null;
   const parent = entry.conversation;
   // A detected agent can have a visible row before it has a session binding.
   // Keep that row inspectable, with unknown usage until telemetry arrives.
@@ -1342,4 +1345,5 @@ export function draw(
           : "Live usage";
   if (model.children > 0 || child_footer) card.line(footer_row, footer, "", "faint", "faint");
   w.write("\x1b[0m\x1b8");
+  return new Rect(x, y, width, height);
 }

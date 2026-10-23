@@ -2,6 +2,7 @@ import * as palette from "./palette";
 import { Grid } from "./cell_grid";
 import type { Surface } from "./pane/surface";
 import { Writer, codepointWidth, displayWidth, clipped, ellipsis, clamp } from "./text";
+import { Rect } from "./layout";
 
 export const pull_ms = 700;
 const unfold_ms = 240,
@@ -85,9 +86,16 @@ export class State {
   }
 }
 
-/** The sign-in narrows into the check's cell; its label unfolds from there. */
-export function draw(w: Writer, account: string, width: number, height: number, exit: State | null = null): void {
-  if (!account || width < 20 || height < 5) return;
+/** The sign-in narrows into the check's cell; its label unfolds from there.
+ * Returns what it covers: the screen while it narrows, then the toast. */
+export function draw(
+  w: Writer,
+  account: string,
+  width: number,
+  height: number,
+  exit: State | null = null,
+): Rect | null {
+  if (!account || width < 20 || height < 5) return null;
   const label = ellipsis(`Added ${account}`, width - 10),
     full = displayWidth(label) + 6,
     x = Math.floor((width - full) / 2),
@@ -101,7 +109,7 @@ export function draw(w: Writer, account: string, width: number, height: number, 
   if (moving && p === 0) {
     moving.source.write(w, 0, 0, background);
     w.write("\x1b[0m\x1b8");
-    return;
+    return new Rect(0, 0, width, height);
   }
   if (moving && p < 1) {
     const bands = new Map<number, { sy: number; left: number; right: number; horizontal: number }>();
@@ -162,4 +170,5 @@ export function draw(w: Writer, account: string, width: number, height: number, 
     row.write(w, x, 1, new palette.Style({ bg: "surface" }).sgr());
   }
   w.write("\x1b[0m\x1b8");
+  return moving && p < 1 ? new Rect(0, 0, width, height) : new Rect(x, 1, full, 3);
 }

@@ -1,6 +1,6 @@
 import type { Image, ImagePlacement } from "./pane/surface";
 import type { Cell } from "./fork_motion";
-import type { Rect } from "./layout";
+import { Rect } from "./layout";
 
 type Read = (id: string, offset: number) => Promise<string | null>;
 interface Asset {
@@ -47,7 +47,8 @@ export class Images {
     }
     return hide;
   }
-  draw(placements: ImagePlacement[], rect: Rect, cell: Cell, read: Read): string {
+  /** Places the images in `rect`, cut around the `covered` cells Corgi draws over them. */
+  draw(placements: ImagePlacement[], rect: Rect, cell: Cell, read: Read, covered: readonly Rect[] = []): string {
     let out = "";
     for (const p of placements) {
       const crop = clip(p, rect, cell);
@@ -84,9 +85,20 @@ export class Images {
       }
       drawing.used = true;
       if (!drawing.sent) continue;
-      const col = rect.x + Math.floor(crop.x / cell.width),
-        row = rect.y + Math.floor(crop.y / cell.height);
-      out += `\x1b7\x1b[${row + 1};${col + 1}H\x1b_Ga=p,i=${drawing.id},p=${++this.placement},X=${crop.x % cell.width},Y=${crop.y % cell.height},z=${p.z},C=1,q=2\x1b\\\x1b8`;
+      const whole = new Rect(rect.x * cell.width + crop.x, rect.y * cell.height + crop.y, crop.width, crop.height);
+      let pieces = [whole];
+      for (const box of covered) {
+        const hole = new Rect(box.x * cell.width, box.y * cell.height, box.w * cell.width, box.h * cell.height);
+        pieces = pieces.flatMap(piece => cut(piece, hole));
+      }
+      for (const piece of pieces) {
+        const col = Math.floor(piece.x / cell.width),
+          row = Math.floor(piece.y / cell.height);
+        // A piece shows its part of the upload at its own size.
+        const source =
+          piece === whole ? "" : `x=${piece.x - whole.x},y=${piece.y - whole.y},w=${piece.w},h=${piece.h},`;
+        out += `\x1b7\x1b[${row + 1};${col + 1}H\x1b_Ga=p,i=${drawing.id},p=${++this.placement},${source}X=${piece.x % cell.width},Y=${piece.y % cell.height},z=${p.z},C=1,q=2\x1b\\\x1b8`;
+      }
     }
     return out;
   }
@@ -148,6 +160,21 @@ function clip(p: ImagePlacement, rect: Rect, cell: Cell): Crop | null {
   const height = Math.min(full_height - top, rect.h * cell.height - Math.max(0, y));
   if (width <= 0 || height <= 0 || width * height > 16_000_000) return null;
   return { x: Math.max(0, x), y: Math.max(0, y), width, height, left, top, full_width, full_height };
+}
+
+/** `r` without `hole`: the strips above and below it, then those beside it. */
+function cut(r: Rect, hole: Rect): Rect[] {
+  const top = Math.max(r.y, hole.y),
+    bottom = Math.min(r.y + r.h, hole.y + hole.h);
+  const left = Math.max(r.x, hole.x),
+    right = Math.min(r.x + r.w, hole.x + hole.w);
+  if (top >= bottom || left >= right) return [r];
+  return [
+    new Rect(r.x, r.y, r.w, top - r.y),
+    new Rect(r.x, bottom, r.w, r.y + r.h - bottom),
+    new Rect(r.x, top, left - r.x, bottom - top),
+    new Rect(right, top, r.x + r.w - right, bottom - top),
+  ].filter(piece => piece.w > 0 && piece.h > 0);
 }
 
 /** Resample the visible source rectangle into exact host pixels. Sending it at

@@ -219,3 +219,50 @@ test("a discarded transfer cannot resurrect an image and mirror selection holds 
     t.destroy();
   }
 });
+
+test("images are cut around covered cells and stay uploaded while covered", async () => {
+  const t = Terminal.create(20, 5),
+    host = Terminal.create(40, 15);
+  const images = new Images(() => {}),
+    rect = new Rect(2, 1, 10, 5),
+    cell = { width: 8, height: 16 };
+  try {
+    t.feed(command("a=T,f=24,s=1,v=1,i=72,c=6,r=4,C=1,q=2", "/wAA"));
+    let calls = 0;
+    const load = async (id: string, offset: number) => {
+      calls++;
+      return read(t)(id, offset);
+    };
+    const frame = (covered: Rect[]) => {
+      const hide = images.begin();
+      const draw = images.draw(pictures(t), rect, cell, load, covered);
+      const writes = images.end();
+      host.feed(hide + draw + writes);
+      return writes;
+    };
+    const placed = () =>
+      pictures(host)
+        .map(p => [p.x, p.y, p.source_x, p.source_y, p.source_width, p.source_height])
+        .sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    frame([]);
+    await images.settled();
+    frame([]);
+    // A card in the middle leaves the strips above and below it and the cells beside it.
+    expect(frame([new Rect(4, 2, 2, 1), new Rect(30, 10, 5, 5)])).toBe("");
+    expect(placed()).toEqual([
+      [2, 1, 0, 0, 48, 16],
+      [2, 2, 0, 16, 16, 16],
+      [6, 2, 32, 16, 16, 16],
+      [2, 3, 0, 32, 48, 32],
+    ]);
+    // Covering all of it places nothing but keeps the upload.
+    expect(frame([rect])).toBe("");
+    expect(pictures(host)).toEqual([]);
+    expect(frame([])).toBe("");
+    expect(placed()).toEqual([[2, 1, 0, 0, 48, 64]]);
+    expect(calls).toBe(1);
+  } finally {
+    t.destroy();
+    host.destroy();
+  }
+});
