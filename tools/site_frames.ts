@@ -1053,8 +1053,8 @@ function overviewFrames() {
       ],
     },
     history: [
-      [3, 7, 10, 14, 17, 20, null, null, null, null, null],
-      [5, 11, 17, 24, 30, 36, null, null, null, null, null],
+      [3, 6, 8, 11, 14, 17, 20, null, null, null, null, null, null, null],
+      [5, 9, 14, 19, 24, 29, 35, null, null, null, null, null, null, null],
     ],
   });
   const frames: Cell[][][] = [];

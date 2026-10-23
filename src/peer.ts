@@ -6,6 +6,8 @@ import type { Subscription } from "./launch_service";
 export class Client {
   viewer_id = 0;
   active_seq = 0;
+  /** When the viewer last had input from its user, in ms. */
+  input_at = 0;
   next_control = 1n;
   last_control = 0n;
   view_workspace = 0;

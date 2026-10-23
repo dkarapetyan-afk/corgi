@@ -1,9 +1,9 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Option, Worker } from "./preview";
-import { Info } from "../usage/account";
+import { Option, Worker, active_every, idle_every } from "./preview";
+import { Info, Window } from "../usage/account";
 import { Text } from "../providers";
 import * as accounts from "../accounts";
 
@@ -130,6 +130,112 @@ test("account edits update a pending list and a failed reader doesn't block comp
     expect(result.accounts.map(a => [a.name, a.option.pending])).toEqual([["added", false]]);
   } finally {
     hold.resolve(new Info());
+    await worker.stop();
+  }
+});
+
+/** Folders `names` signed in to one Claude account. */
+function sameLogin(names: string[]) {
+  listed(names);
+  for (const name of names) {
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(
+      join(root, name, ".claude.json"),
+      JSON.stringify({ oauthAccount: { emailAddress: "me@work.dev", accountUuid: "user", organizationUuid: "org" } }),
+    );
+  }
+}
+const reading = (used: number) =>
+  Object.assign(new Info(), {
+    signed_in: true,
+    account: new Text("me@work.dev"),
+    usage_fetched_at: 1000,
+    limits: { windows: [null, new Window({ minutes: 10080, used, reset_at: 10080 * 60 })] },
+  });
+
+test("folders signed in to one account share a read, through the folder that worked last", async () => {
+  sameLogin(["stale", "fresh"]);
+  const worker = new Worker(),
+    stale = realpathSync(join(root, "stale")),
+    calls: [string, number][] = [];
+  worker.launcher = async (provider, account = "") => ({
+    account: async (_quit, max_age) => {
+      if (provider !== "claude" || !account) return new Info();
+      calls.push([account === stale ? "stale" : "fresh", max_age]);
+      // The first folder's login wasn't renewed.
+      if (account === stale)
+        return Object.assign(new Info(), {
+          signed_in: true,
+          account: new Text("me@work.dev"),
+          usage_error: new Text("usage unavailable for this login"),
+        });
+      return reading(40);
+    },
+    model: async () => ({ model: "", source: "test" }),
+    close() {},
+  });
+  try {
+    worker.preview("/project");
+    await worker.pump();
+    expect(calls).toEqual([
+      ["stale", idle_every - 15],
+      ["fresh", idle_every - 15],
+    ]);
+    // Both folders show the reading, the broken one too.
+    for (const a of worker.preview("/project").accounts) {
+      expect(a.option.usage_error.text()).toBe("");
+      expect(a.option.limits).toMatchObject({ windows: [null, { used: 40 }] });
+    }
+    // The next read starts with the folder that worked; the other only checks its sign-in.
+    calls.length = 0;
+    worker.preview("/project", true);
+    await worker.pump();
+    expect(calls).toEqual([
+      ["fresh", idle_every - 15],
+      ["stale", Infinity],
+    ]);
+    // Asking for usage fetches it whatever its age.
+    calls.length = 0;
+    worker.trackUsage("/project");
+    await worker.pump();
+    expect(calls[0]).toEqual(["fresh", 0]);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("accounts are read on the daemon's schedule with no one subscribed", async () => {
+  const worker = new Worker();
+  let reads = 0;
+  worker.launcher = async provider => ({
+    account: async () => {
+      if (provider === "claude") reads++;
+      return reading(10 + reads);
+    },
+    model: async () => ({ model: "", source: "test" }),
+    close() {},
+  });
+  try {
+    setSystemTime(new Date(1_000_000_000));
+    worker.sample(idle_every);
+    await worker.pump();
+    expect(reads).toBe(1);
+    // A subscriber's job shows the next reading without running again.
+    worker.preview("/project");
+    await worker.pump();
+    expect(reads).toBe(1);
+    setSystemTime(new Date(1_000_000_000 + 60_000));
+    worker.sample(idle_every);
+    await worker.pump();
+    expect(reads).toBe(1);
+    // Someone uses a viewer: readings older than the active interval are due.
+    setSystemTime(new Date(1_000_000_000 + (active_every + 20) * 1000));
+    worker.sample(active_every);
+    await worker.pump();
+    expect(reads).toBe(2);
+    expect(worker.preview("/project").options.claude.limits).toMatchObject({ windows: [null, { used: 12 }] });
+  } finally {
+    setSystemTime();
     await worker.stop();
   }
 });

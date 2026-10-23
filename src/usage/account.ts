@@ -1,7 +1,9 @@
 import { Text } from "../agents";
 import type { Reading } from "./spend";
 export { Text };
-export const usage_max_age = 600;
+/** Seconds a reading shows before it reads as stale: two idle reads apart,
+ * so one failed read doesn't flag it. */
+export const usage_max_age = 1200;
 export type Limits = "none" | "metered" | "rate_limited" | { windows: [Window | null, Window | null] };
 export function serializeLimits(value: Limits) {
   return typeof value === "string" ? { [value]: {} } : value;

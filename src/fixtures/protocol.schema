@@ -891,8 +891,11 @@ $.launch_preview.options.codex.spend?.reset_at: i64
 $.launch_preview.options.codex.usage_fetched_at: i64
 $.launch_preview.options.codex.usage_error: custom bounded_text.BoundedText(160)
 $.launch_preview.options.codex.usage_needs_consent: bool
-$.launch_preview.options.codex.history[2][11]: optional
-$.launch_preview.options.codex.history[2][11]?: u8
+$.launch_preview.options.codex.history[2][14]: optional
+$.launch_preview.options.codex.history[2][14]?: u8
+$.launch_preview.options.codex.spend_history[14].minor: optional
+$.launch_preview.options.codex.spend_history[14].minor?: f64
+$.launch_preview.options.codex.spend_history[14].earlier: bool
 $.launch_preview.options.claude.pending: optional
 $.launch_preview.options.claude.pending?: bool
 $.launch_preview.options.claude.signed_in: optional
@@ -924,8 +927,11 @@ $.launch_preview.options.claude.spend?.reset_at: i64
 $.launch_preview.options.claude.usage_fetched_at: i64
 $.launch_preview.options.claude.usage_error: custom bounded_text.BoundedText(160)
 $.launch_preview.options.claude.usage_needs_consent: bool
-$.launch_preview.options.claude.history[2][11]: optional
-$.launch_preview.options.claude.history[2][11]?: u8
+$.launch_preview.options.claude.history[2][14]: optional
+$.launch_preview.options.claude.history[2][14]?: u8
+$.launch_preview.options.claude.spend_history[14].minor: optional
+$.launch_preview.options.claude.spend_history[14].minor?: f64
+$.launch_preview.options.claude.spend_history[14].earlier: bool
 $.launch_preview.installed.codex: bool
 $.launch_preview.installed.claude: bool
 $.launch_history.epoch: u64

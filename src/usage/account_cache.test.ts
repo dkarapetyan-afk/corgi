@@ -46,14 +46,13 @@ test("locked account cache restores metadata and discards obsolete fetch state",
     c.state.info.account = new Text("user");
     c.state.info.spend = monthly;
     c.state.info.usage_fetched_at = 1700000000;
-    c.state.next_usage = 1700000100;
-    Object.assign(c.state, { next_profile: 1700000200, rate_limited: true });
+    Object.assign(c.state, { next_usage: 1700000100, next_profile: 1700000200, rate_limited: true });
     c.save();
     c.close();
     const next = await Cache.open("claude", "user");
-    expect(next.state.next_usage).toBe(1700000100);
     expect(next.state.info.account.text()).toBe("user");
     expect(next.state.info.spend).toEqual(monthly);
+    expect(next.state).not.toHaveProperty("next_usage");
     expect(next.state).not.toHaveProperty("next_profile");
     expect(next.state).not.toHaveProperty("rate_limited");
     expect(next.state.display(1700000000).usage_error.text()).toBe("");
@@ -74,7 +73,7 @@ test("spend survives a failed refresh without becoming fresh and clears on disab
   expect(state.info.usage_fetched_at).toBe(1000);
   expect(state.display(1600).usage_error.text()).toBe("failed");
   state.update(fresh, 1700);
-  expect(state.display(2300).usage_error.text()).toBe("last success 10m+ ago");
+  expect(state.display(2900).usage_error.text()).toBe("last success 20m+ ago");
   state.update(Object.assign(new Info(), { signed_in: true, limits: "metered" }), 1800);
   expect(state.info.spend).toBeNull();
   state.update(fresh, 1900);
@@ -82,7 +81,7 @@ test("spend survives a failed refresh without becoming fresh and clears on disab
   expect(state.info.spend).toBeNull();
 });
 
-test("usage age follows successful fetches and expires at ten minutes", () => {
+test("usage age follows successful fetches and expires at twenty minutes", () => {
   const state = new State(),
     fresh = new Info();
   fresh.signed_in = true;
@@ -90,19 +89,18 @@ test("usage age follows successful fetches and expires at ten minutes", () => {
     windows: [null, new Window({ minutes: 10080, used: 48, reset_at: 90000 })],
   };
   state.update(fresh, 1000);
-  state.next_usage = 2000;
   state.update(Object.assign(new Info(), { signed_in: true }), 1500);
-  const recent = state.display(1599);
+  const recent = state.display(2199);
   expect(typeof recent.limits === "object" && recent.limits.windows[1]?.used).toBe(48);
-  expect(expired(recent.usage_fetched_at, 1599)).toBe(false);
-  const old = state.display(1600);
+  expect(expired(recent.usage_fetched_at, 2199)).toBe(false);
+  const old = state.display(2200);
   expect(typeof old.limits).toBe("object");
-  expect(expired(old.usage_fetched_at, 1600)).toBe(true);
+  expect(expired(old.usage_fetched_at, 2200)).toBe(true);
   expect(state.info.usage_fetched_at).toBe(1000);
-  state.update(fresh, 1601);
-  expect(expired(state.display(1601).usage_fetched_at, 1601)).toBe(false);
+  state.update(fresh, 2201);
+  expect(expired(state.display(2201).usage_fetched_at, 2201)).toBe(false);
   state.info.usage_fetched_at = 0;
-  expect(state.display(1601).usage_error.text()).toBe("fetch time unknown");
+  expect(state.display(2201).usage_error.text()).toBe("fetch time unknown");
 });
 test("usage failures preserve recent readings and give stale readings a reason", () => {
   const state = new State(),
@@ -117,7 +115,7 @@ test("usage failures preserve recent readings and give stale readings a reason",
   expect(state.display(1600).usage_error.text()).toBe("account read failed");
   state.update(fresh, 1601);
   expect(state.info.usage_error.len).toBe(0);
-  expect(state.display(2201).usage_error.text()).toBe("last success 10m+ ago");
+  expect(state.display(2801).usage_error.text()).toBe("last success 20m+ ago");
   const empty = new State();
   empty.failed("account read failed");
   expect(empty.display(1000).limits).toBe("none");

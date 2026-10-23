@@ -188,6 +188,19 @@ readings can remain visible after a failed refresh. Once too old, they show
 **—**, as does missing usage; an unsupported usage query does not itself
 make the provider unusable.
 
+The daemon reads usage on its own, with or without a viewer open: every 2½
+minutes while someone has used a viewer in the last five minutes, and every
+10 minutes otherwise. A reading counts as stale after 20 minutes. Folders
+signed in to the same account share one reading, taken through the folder
+that worked last; when its login stops working, the next folder takes over.
+
+In the usage card, each limit's spark runs from the window's start to its
+reset. A monthly spend limit's spark shows the last four weeks instead, in
+two-day cells: each bar is the spend in its days, scaled to the busiest, and
+days before the month began are dimmer. A slot no reading covers is a faint
+stipple rather than a guess; for spend, that's any day Corgi didn't read
+along with the day before.
+
 Explicit accounts or profiles in saved commands get separate previews.
 A cached public identity is a hint, not proof that its credentials still work.
 Corgi's account cache stores metadata, not credentials; provider tools retain

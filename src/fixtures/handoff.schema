@@ -218,8 +218,11 @@ $.clients[].launch_preview?.preview.options.codex.spend?.reset_at: i64
 $.clients[].launch_preview?.preview.options.codex.usage_fetched_at: i64
 $.clients[].launch_preview?.preview.options.codex.usage_error: custom bounded_text.BoundedText(160)
 $.clients[].launch_preview?.preview.options.codex.usage_needs_consent: bool
-$.clients[].launch_preview?.preview.options.codex.history[2][11]: optional
-$.clients[].launch_preview?.preview.options.codex.history[2][11]?: u8
+$.clients[].launch_preview?.preview.options.codex.history[2][14]: optional
+$.clients[].launch_preview?.preview.options.codex.history[2][14]?: u8
+$.clients[].launch_preview?.preview.options.codex.spend_history[14].minor: optional
+$.clients[].launch_preview?.preview.options.codex.spend_history[14].minor?: f64
+$.clients[].launch_preview?.preview.options.codex.spend_history[14].earlier: bool
 $.clients[].launch_preview?.preview.options.claude.pending: optional
 $.clients[].launch_preview?.preview.options.claude.pending?: bool
 $.clients[].launch_preview?.preview.options.claude.signed_in: optional
@@ -251,8 +254,11 @@ $.clients[].launch_preview?.preview.options.claude.spend?.reset_at: i64
 $.clients[].launch_preview?.preview.options.claude.usage_fetched_at: i64
 $.clients[].launch_preview?.preview.options.claude.usage_error: custom bounded_text.BoundedText(160)
 $.clients[].launch_preview?.preview.options.claude.usage_needs_consent: bool
-$.clients[].launch_preview?.preview.options.claude.history[2][11]: optional
-$.clients[].launch_preview?.preview.options.claude.history[2][11]?: u8
+$.clients[].launch_preview?.preview.options.claude.history[2][14]: optional
+$.clients[].launch_preview?.preview.options.claude.history[2][14]?: u8
+$.clients[].launch_preview?.preview.options.claude.spend_history[14].minor: optional
+$.clients[].launch_preview?.preview.options.claude.spend_history[14].minor?: f64
+$.clients[].launch_preview?.preview.options.claude.spend_history[14].earlier: bool
 $.clients[].launch_preview?.preview.installed.codex: bool
 $.clients[].launch_preview?.preview.installed.claude: bool
 $.clients[].launch_preview?.checked: i64

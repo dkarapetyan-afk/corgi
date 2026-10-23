@@ -398,6 +398,7 @@ export class Server {
     else tracked = this.runtime.resources.stop() || tracked;
     if (tracked) this.runtime.refreshed();
     this.flushBell(now);
+    launch.sample(this);
     for (const c of this.clients) launch.publish(this, c);
     if (this.savedDurable !== this.runtime.durable) {
       if (!this.durableAt) this.durableAt = now;

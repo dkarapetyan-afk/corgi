@@ -4,7 +4,7 @@ import { Failure } from "../../failure";
 import { getLogger } from "../../log";
 import { Quit, run } from "../../subprocess";
 import { Info, Text, Window, used, windows } from "../../usage/account";
-import { Cache, interval, cooldown } from "../../usage/account_cache";
+import { Cache, cooldown } from "../../usage/account_cache";
 import { cached } from "../command_line";
 import { field, str } from "../common";
 import * as codexPlan from "../codex/plan";
@@ -36,11 +36,13 @@ export function applyUsage(info: Info, value: unknown) {
 export class Client {
   private quit = new Quit();
   private failure = new Failure();
+  /** When this folder may try again after its usage read failed. */
+  private retry_at = 0;
   constructor(readonly account = "") {}
   close() {
     this.quit.signal();
   }
-  async preview(quit: Quit) {
+  async preview(quit: Quit, max_age = 0) {
     const root = directory(this.account),
       c = credential(root),
       who = identity(root),
@@ -56,14 +58,14 @@ export class Client {
     quit.abortSignal.addEventListener("abort", abort, { once: true });
     this.quit.abortSignal.addEventListener("abort", abort, { once: true });
     try {
-      const cache = await Cache.open("pi", JSON.stringify([root, provider, c.value]), stopping);
+      // Folders signed in to one account share its reading.
+      const cache = await Cache.open("pi", JSON.stringify([who?.id ?? root, provider]), stopping);
       try {
         const now = Math.floor(Date.now() / 1000);
         cache.state.info.account = info.account;
         if (!cache.state.info.plan.len) cache.state.info.plan = info.plan;
-        if (now < cache.state.next_usage) return cache.state.display(now);
-        cache.state.next_usage = now + interval;
-        cache.save();
+        if (max_age > 0 && (now < this.retry_at || now - cache.state.info.usage_fetched_at < max_age))
+          return cache.state.display(now);
         try {
           const executable = await discovery.resolve("pi", "/tmp"),
             output = await run([executable, "auth", "print-bearer-token", "--provider", provider], {
@@ -89,7 +91,7 @@ export class Client {
           if (this.failure.clear()) log.info("Usage read recovered", { account: this.account });
         } catch {
           cache.state.failed("usage request failed");
-          cache.state.next_usage = now + cooldown;
+          this.retry_at = now + cooldown;
           if (!stopping.aborted && this.failure.changed("UsageUnavailable"))
             log.warn("Usage read failed", { account: this.account });
         }

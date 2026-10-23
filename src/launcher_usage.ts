@@ -3,6 +3,7 @@
 import { fg } from "./palette";
 import { Writer, displayWidth, writeEllipsis, asciiText, truncatedText, sat } from "./text";
 import * as spend from "./usage/spend";
+import { expired } from "./usage/account";
 
 const text_capacity = 160;
 /** "  6%" through "100%". */
@@ -45,11 +46,7 @@ function resetCountdown(at: number, now: number): string {
   }
   return `${minutes}m`;
 }
-export const usage_max_age = 10 * 60;
-/** Whether a reading fetched at `fetched_at` is too old to show. */
-export function expired(fetched_at: number, now: number): boolean {
-  return fetched_at <= 0 || now - fetched_at >= usage_max_age;
-}
+export { expired };
 
 interface CellWindow {
   label: string;
@@ -69,7 +66,7 @@ function byLength([a, b]: [LimitWindow | null, LimitWindow | null]): [LimitWindo
   return short(only) ? [null, only] : [only, null];
 }
 /** "<1%" once a month has begun, so it never reads as untouched. */
-function percentFigure(used: number): string {
+export function percentFigure(used: number): string {
   return used > 0 && used < 1 ? "<1%" : `${Math.floor(used)}%`;
 }
 export class Cell {

@@ -1,12 +1,10 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyUsage } from "./account";
 import { open } from "./launcher";
-import { credential } from "./accounts";
 import { Info } from "../../usage/account";
-import { Cache } from "../../usage/account_cache";
 import { Quit } from "../../subprocess";
 
 const usage = {
@@ -63,21 +61,11 @@ function auth(provider = "openai-codex", type = "oauth", email = "user@example.c
     }),
   );
 }
-async function expire() {
-  const c = credential(account)!;
-  const cache = await Cache.open("pi", JSON.stringify([account, c.provider, c.value]));
-  try {
-    cache.state.next_usage = 0;
-    cache.save();
-  } finally {
-    cache.close();
-  }
-}
 
 test("Pi shows ChatGPT usage and its reset windows without a cached suffix", async () => {
   const launcher = open(account);
   try {
-    const info = await launcher.account(new Quit());
+    const info = await launcher.account(new Quit(), 60);
     expect(info.account.text()).toBe("user@example.com");
     expect(info.plan.text()).toBe("Pro 200");
     expect(info.signed_in).toBe(true);
@@ -99,7 +87,7 @@ test("Pi shows ChatGPT usage and its reset windows without a cached suffix", asy
     expect(url).toBe("https://chatgpt.com/backend-api/wham/usage");
     expect(options?.headers).toEqual({ Authorization: "Bearer fresh-secret-token", "ChatGPT-Account-Id": "workspace" });
     expect(options?.redirect).toBe("error");
-    await launcher.account(new Quit());
+    await launcher.account(new Quit(), 60);
     expect(request).toHaveBeenCalledTimes(1);
     const cached = readdirSync(join(root, "corgi/account-previews"));
     expect(cached).toHaveLength(1);
@@ -120,7 +108,7 @@ test.each([
   request.mockResolvedValue(Response.json({ ...usage, plan_type: plan }));
   const launcher = open(account);
   try {
-    expect((await launcher.account(new Quit())).plan.text()).toBe(label);
+    expect((await launcher.account(new Quit(), 60)).plan.text()).toBe(label);
   } finally {
     launcher.close();
   }
@@ -130,7 +118,7 @@ test.each(["anthropic", "custom"])("Pi keeps %s identity without inventing quota
   auth(provider);
   const launcher = open(account);
   try {
-    const info = await launcher.account(new Quit());
+    const info = await launcher.account(new Quit(), 60);
     expect(info.account.text()).toBe("user@example.com");
     expect(info.plan.text()).toBe("OAuth");
     expect(info.limits).toBe("none");
@@ -145,7 +133,7 @@ test("Pi API keys do not query subscription quota", async () => {
   auth("openai-codex", "api_key");
   const launcher = open(account);
   try {
-    const info = await launcher.account(new Quit());
+    const info = await launcher.account(new Quit(), 60);
     expect(info.account.text()).toBe("openai-codex API key");
     expect(info.plan.text()).toBe("API key");
     expect(info.signed_in).toBeNull();
@@ -159,7 +147,7 @@ test("Pi does not borrow another provider's account or quota", async () => {
   writeFileSync(join(account, "settings.json"), JSON.stringify({ defaultProvider: "custom" }));
   const launcher = open(account);
   try {
-    const info = await launcher.account(new Quit());
+    const info = await launcher.account(new Quit(), 60);
     expect(info.account.text()).toBe("custom");
     expect(info.plan.text()).toBe("");
     expect(info.limits).toBe("none");
@@ -170,28 +158,34 @@ test("Pi does not borrow another provider's account or quota", async () => {
 });
 
 test("a failed Pi usage refresh retains the last reading without making it fresh", async () => {
-  const launcher = open(account);
+  const launcher = open(account),
+    again = open(account);
   try {
-    const first = await launcher.account(new Quit());
-    await expire();
+    const first = await launcher.account(new Quit(), 60);
     request.mockResolvedValue(Response.json({}, { status: 429 }));
-    const failed = await launcher.account(new Quit());
+    const failed = await launcher.account(new Quit(), 0);
     expect(failed.limits).toEqual(first.limits);
     expect(failed.usage_fetched_at).toBe(first.usage_fetched_at);
     expect(failed.usage_error.text()).toBe("usage request failed");
-    await launcher.account(new Quit());
+    // Once the reading is old, the folder that failed waits; another signed
+    // in to the account may try.
+    setSystemTime(new Date(Date.now() + 120_000));
+    await launcher.account(new Quit(), 60);
     expect(request).toHaveBeenCalledTimes(2);
-    await expire();
     request.mockResolvedValue(Response.json(usage));
-    expect((await launcher.account(new Quit())).usage_error.text()).toBe("");
+    expect((await again.account(new Quit(), 60)).usage_error.text()).toBe("");
+    expect((await launcher.account(new Quit(), 60)).usage_error.text()).toBe("");
+    expect(request).toHaveBeenCalledTimes(3);
     auth("openai-codex", "oauth", "other@example.com");
     request.mockResolvedValue(Response.json({}, { status: 401 }));
-    const other = await launcher.account(new Quit());
+    const other = await again.account(new Quit(), 60);
     expect(other.account.text()).toBe("other@example.com");
     expect(other.signed_in).toBeNull();
     expect(other.limits).toBe("none");
   } finally {
+    setSystemTime();
     launcher.close();
+    again.close();
   }
 });
 
@@ -210,7 +204,7 @@ test.each(["cancel", "close"])("Pi usage requests stop on %s", async mode => {
       })) as typeof fetch,
   );
   try {
-    const pending = launcher.account(quit);
+    const pending = launcher.account(quit, 60);
     await started;
     if (mode === "cancel") quit.signal();
     else launcher.close();

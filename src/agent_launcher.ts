@@ -15,6 +15,7 @@ import { Slide } from "./card_transition";
 import { milliTimestamp } from "./clock";
 import { restoreLimits, type Limits } from "./usage/account";
 import * as spend from "./usage/spend";
+import * as limitHistory from "./usage/limits";
 import { Cell, Grid, expired } from "./launcher_usage";
 import * as launcherResume from "./launcher_resume";
 import { writeKey } from "./launcher_resume";
@@ -53,6 +54,7 @@ export interface Option {
   usage_error: string;
   usage_needs_consent: boolean;
   history: unknown;
+  spend_history: limitHistory.SpendCell[];
 }
 export function option(value: any = {}): Option {
   return {
@@ -69,6 +71,7 @@ export function option(value: any = {}): Option {
     usage_error: value.usage_error ?? "",
     usage_needs_consent: value.usage_needs_consent === true,
     history: value.history ?? null,
+    spend_history: limitHistory.spendCells(value.spend_history),
   };
 }
 /** The model's name, or its id when it has none. */

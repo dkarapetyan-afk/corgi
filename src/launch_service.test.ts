@@ -2,8 +2,8 @@ import { afterAll, beforeAll, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { service, publish, request, stop } from "./launch_service";
-import { Preview, Worker as PreviewWorker } from "./launch/preview";
+import { service, publish, request, sample, stop } from "./launch_service";
+import { Preview, Worker as PreviewWorker, active_every, idle_every } from "./launch/preview";
 import { Text } from "./providers";
 import * as protocol from "./protocol";
 import * as accounts from "./accounts";
@@ -193,5 +193,21 @@ test("restored preview subscriptions restart their workers without a new request
   } finally {
     stop(server);
     PreviewWorker.prototype.pump = pump;
+  }
+});
+test("accounts are read often while someone uses a viewer and rarely otherwise", () => {
+  const server: any = { clients: [] },
+    asked: number[] = [];
+  service(server).launch_previews.sample = every => void asked.push(every);
+  try {
+    sample(server);
+    const viewer = { viewer: true, dead: false, input_at: Date.now() - 6 * 60 * 1000 };
+    server.clients.push(viewer);
+    sample(server);
+    viewer.input_at = Date.now() - 60 * 1000;
+    sample(server);
+    expect(asked).toEqual([idle_every, idle_every, active_every]);
+  } finally {
+    stop(server);
   }
 });

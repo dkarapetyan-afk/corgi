@@ -20,7 +20,7 @@ limit; it does not show the whole-organization cap. Monthly spend limits
 Corgi derives those calendar boundaries from the fetch time, rather than
 treating them as a rolling thirty-day quota or an invoice anniversary.
 
-The picker and usage panel stop displaying spend after ten minutes without a
+The picker and usage panel stop displaying spend after twenty minutes without a
 successful refresh or at the next calendar month. An absent `spend` field in
 an older preview or handoff defaults to null; no protocol version or saved-data
 migration is needed.

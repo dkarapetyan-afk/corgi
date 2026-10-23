@@ -71,7 +71,7 @@ test("Enterprise accounts show their monthly spend in the picker and manager", (
   o.spend!.reset_at = at;
   expect(m.usageCell(work).fallback).toBe("—");
   o.spend!.reset_at = at + 86400;
-  o.usage_fetched_at = at - 600;
+  o.usage_fetched_at = at - 1200;
   expect(m.usageCell(work).fallback).toBe("—");
 });
 
@@ -215,14 +215,14 @@ test("single-line limit groups survive narrow terminal rendering", () => {
   }
 });
 
-test("viewer expires a delivered usage reading after ten minutes", () => {
+test("viewer expires a delivered usage reading after twenty minutes", () => {
   const m = menu();
   m.preview.pending = false;
   const o = m.preview.options.codex;
   o.limits = { windows: [null, { minutes: 10080, used: 48, reset_at: null }] } as any;
-  o.usage_fetched_at = now() - 590;
+  o.usage_fetched_at = now() - 1190;
   expect(m.usageCell("codex").limited()).toBe(true);
-  o.usage_fetched_at = now() - 600;
+  o.usage_fetched_at = now() - 1200;
   expect(m.usageCell("codex").fallback).toBe("—");
   o.limits = "metered";
   expect(m.usageCell("codex").fallback).toBe("Metered");
@@ -615,7 +615,7 @@ test("Manage agents shows hidden accounts' own usage, keeps zero, and omits miss
   expect(text).toContain("0%");
   expect(text).toContain("82%");
   expect(text).not.toContain("no usage returned");
-  m.preview.accounts[0].option.usage_fetched_at = at - 600;
+  m.preview.accounts[0].option.usage_fetched_at = at - 1200;
   expect(m.manageModel().agents.find(a => a.account === "/accounts/work")!.usage.fallback).toBe("—");
 });
 

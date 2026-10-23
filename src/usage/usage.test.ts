@@ -126,7 +126,7 @@ test("readings fill their slot and leave unread slots as gaps", () => {
   const sparks = s.record([w, null], 9000);
   expect(sparks[0][0]).toBe(12);
   expect(sparks[0][1]).toBeNull();
-  expect(sparks[0][5]).toBe(40);
+  expect(sparks[0][7]).toBe(40);
   expect(sparks[1][0]).toBeNull();
 });
 test("checkpoints partition usage and coalesce repeated labels", () => {

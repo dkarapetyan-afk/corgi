@@ -61,6 +61,7 @@ export async function open(s: Server, cl: Client, q: Open) {
   cl.viewer = true;
   cl.viewer_id = s.next_viewer++;
   cl.active_seq = ++s.next_active;
+  cl.input_at = Date.now();
   cl.view_workspace = s.initialWorkspace().id;
   cl.protocol_version = wire_version;
   if (first) s.updateTheme(q.theme ?? null);
@@ -101,7 +102,10 @@ export async function sync(s: Server, cl: Client, q: Sync) {
     q.resource_detail !== null && s.runtime.workspaces.get(q.resource_detail) ? q.resource_detail : null;
   cl.worktree_detail =
     q.worktree_detail !== null && s.runtime.workspaces.get(q.worktree_detail) ? q.worktree_detail : null;
-  if (q.active) cl.active_seq = ++s.next_active;
+  if (q.active) {
+    cl.active_seq = ++s.next_active;
+    cl.input_at = Date.now();
+  }
   if (s.runtime.workspaces.index(q.workspace) !== null) cl.view_workspace = q.workspace;
   if (cl.watched) {
     s.visitWorkspace(cl.view_workspace);

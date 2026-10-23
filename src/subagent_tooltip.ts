@@ -7,7 +7,7 @@ import { View as ContextView } from "./usage/context_window";
 import * as prices from "./usage/prices";
 import { Window, expired, resetCountdown } from "./usage/account";
 import * as spend from "./usage/spend";
-import { writeBar } from "./launcher_usage";
+import { percentFigure } from "./launcher_usage";
 import * as limit_history from "./usage/limits";
 import { Group as BackgroundGroup, type Group as BackgroundGroupName } from "./activity/background_tasks";
 import { max_actors as max } from "./conversations";
@@ -969,6 +969,8 @@ function byAccount(rows_shown: readonly Ranked[], accounts: Accounts, now: numbe
   // Array.prototype.sort is stable, as std.sort.insertion is.
   return kept.sort((lhs, rhs) => rhs.urgency(now) - lhs.urgency(now));
 }
+/** The limits pane: a label, the spark, the percent and the reset. */
+const pane_width = 3 + limit_history.cells + 15;
 /** The overview with a limits pane: the Top agents table is unchanged on the
  * left, and each account's rule crosses both panes so its limits sit level
  * with its agents. Returns false when the rows do not fit the terminal. */
@@ -999,18 +1001,18 @@ function drawAccounts(
   const x = Math.min(1, cols - width);
   const y = 2;
   // The pane divider's column, and the pane's offset within the card.
-  const divider = x + 87;
-  const pane = 87;
+  const divider = x + 84;
+  const pane = 84;
   w.write("\x1b7\x1b]8;;\x1b\\");
   overviewBox(w, x, y, width, height);
   w.write(`\x1b[${y + height};${divider + 1}H${base}${Tone.ansi("border")}┴`);
   const full = new Card(w, x, width);
-  const table = new Card(w, x, 88);
+  const table = new Card(w, x, 85);
   overviewTotal(full, y + 1, overview.total);
   const heading = y + 3;
   table.overviewRow(heading, "Top agents", "Model", null, overview.reference_label, "title");
   full.cell(heading, pane, 6, "Limits", "title", false);
-  full.cell(heading, pane + 9, 20, "↻ resets in", "faint", true);
+  full.cell(heading, pane + 12, 20, "↻ resets in", "faint", true);
   let row = heading + 1;
   sections.forEach((section, i) => {
     accountRule(full, row, section, divider, i === 0);
@@ -1043,7 +1045,7 @@ function drawAccounts(
         spendLine(full, at, pane, value, spend_line, now);
         continue;
       }
-      if (line === 0) full.cell(at, pane, 29, limitsMessage(value), "muted", false);
+      if (line === 0) full.cell(at, pane, pane_width, limitsMessage(value), "muted", false);
     }
     row += 1 + body;
   });
@@ -1094,32 +1096,38 @@ function limitsMessage(value: Option): string {
   if (value.signed_in === false) return "Not signed in";
   return "Reading…";
 }
+/** The month's spend: a spark of the last four weeks in two-day cells, the
+ * percent of the limit and the reset, then the amounts beneath. */
 function spendLine(card: Card, row: number, pane: number, value: Option, line: number, now: number) {
-  const reading = value.spend!;
-  const fresh = !expired(value.usage_fetched_at, now) && spend.current(reading, now);
-  if (!fresh) {
-    if (line === 0) card.cell(row, pane, 29, "mo · stale", "muted", false);
+  const reading = value.spend!,
+    current = spend.current(reading, now),
+    fresh = !expired(value.usage_fetched_at, now) && current;
+  if (line === 1) {
+    if (current) card.cell(row, pane + 3, pane_width - 3, spend.amounts(reading), fresh ? "title" : "muted", false);
     return;
   }
-  if (line === 0) {
-    card.cell(row, pane, 29, `mo ${spend.amounts(reading)}`, "title", false);
-    return;
-  }
+  card.cell(row, pane, 2, "mo", "muted", false);
+  spendSpark(card, row, pane + 3, value.spend_history, fresh);
   const percent = spend.percent(reading);
-  if (percent !== null) {
-    const tone = percent >= 100 ? "hot" : percent >= 80 ? "warm" : "live";
-    card.cell(row, pane, 0, "", "muted", false);
-    writeBar(card.w, percent, 6, Tone.ansi(tone), Tone.ansi("faint"));
-    card.cell(
-      row,
-      pane + 7,
-      10,
-      `${Number(percent.toFixed(2))}%`,
-      percent >= 100 ? "hot" : percent >= 80 ? "warm" : "muted",
-      false,
-    );
+  if (current && percent !== null) {
+    const figure: Tone = !fresh ? "muted" : percent >= 100 ? "hot" : percent >= 80 ? "warm" : "title";
+    card.cell(row, pane + 18, 4, percentFigure(percent), figure, true);
   }
-  card.cell(row, pane + 18, 11, `↻ ${resetCountdown(reading.reset_at, now)}`, "faint", true);
+  const status_text = !fresh ? "stale" : `↻ ${resetCountdown(reading.reset_at, now)}`;
+  card.cell(row, pane + 23, 9, status_text, "faint", false);
+}
+/** Spend over the last four weeks, scaled to the busiest cell: it reads how
+ * fast the money goes, which a limit far above it can't show. Cells before
+ * the month began are dimmer, stale readings gray, and days Corgi didn't
+ * read faintly stippled. */
+export function spendSpark(card: Card, row: number, at: number, cells: limit_history.SpendCell[], fresh: boolean) {
+  const top = Math.max(0, ...cells.map(cell => cell.minor ?? 0));
+  cells.forEach((cell, i) => {
+    if (cell.minor === null) return sparkCell(card, row, at + i, "⢕", unread_ink);
+    const height = top > 0 && cell.minor > 0 ? Math.max(1, Math.round((cell.minor * 8) / top)) : 0;
+    const ink = !fresh || height === 0 ? Tone.ansi("faint") : cell.earlier ? earlier_ink : shallow_inks[height - 1];
+    sparkCell(card, row, at + i, blocks[Math.max(1, height) - 1], ink);
+  });
 }
 const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 function eighths(used: number): number {
@@ -1131,9 +1139,7 @@ function block(used: number): string {
 /** One window across the pane: its label, a spark from the window's start to
  * its reset, the percent used, and the time until the reset. The spark sits on
  * a panel that shows each bar's full height, so low usage doesn't read as a
- * progress bar. Time left is stippled, and a slot with no reading is a
- * gray bar at the last reading's level (usage only rises within a window), or
- * the floor before the first reading. */
+ * progress bar. Time left is stippled, and a slot with no reading fainter. */
 export function limitLine(
   card: Card,
   row: number,
@@ -1145,7 +1151,6 @@ export function limitLine(
 ) {
   card.cell(row, pane, 2, window.label(), "muted", false);
   const elapsed = elapsedCells(window, now);
-  let last: number | null = null;
   for (let i = 0; i < limit_history.cells; i++) {
     const at = pane + 3 + i;
     if (i >= elapsed) {
@@ -1155,16 +1160,15 @@ export function limitLine(
     // The current slot shows the latest reading even before it is recorded.
     const reading = readings[i] ?? (fresh && i + 1 === elapsed ? window.used : null);
     if (reading === null) {
-      sparkCell(card, row, at, last !== null ? block(last) : "▁", Tone.ansi("faint"));
+      sparkCell(card, row, at, "⢕", unread_ink);
       continue;
     }
-    last = reading;
     sparkCell(card, row, at, block(reading), fresh ? barInk(reading) : Tone.ansi("faint"));
   }
   const figure: Tone = !fresh ? "muted" : window.used >= 100 ? "hot" : window.used >= 80 ? "warm" : "title";
-  card.cell(row, pane + 15, 4, `${window.used}%`, figure, true);
+  card.cell(row, pane + 18, 4, `${window.used}%`, figure, true);
   const status_text = !fresh ? "stale" : `↻ ${window.countdown(now) ?? "unknown"}`;
-  card.cell(row, pane + 20, 9, status_text, "faint", false);
+  card.cell(row, pane + 23, 9, status_text, "faint", false);
 }
 function sparkCell(card: Card, row: number, offset: number, glyph: string, ink: string) {
   card.w.write(`\x1b[${row + 1};${card.x + 4 + offset}H${base}${palette.bg("surface")}${ink}${glyph}`);
@@ -1177,10 +1181,16 @@ export function barInk(used: number): string {
   return shallow_inks[eighths(used) - 1];
 }
 export let shallow_inks: string[];
+/** Spend cells from before the month began. */
+let earlier_ink: string;
+/** The stipple over a slot no reading covers, fainter than time left. */
+export let unread_ink: string;
 palette.derived(() => {
   shallow_inks = [75, 45, 15, 0, 0, 0, 0, 0].map(percent =>
     palette.fgRgb(palette.mix(palette.colors.accent, palette.colors.faint, percent)),
   );
+  earlier_ink = palette.fgRgb(palette.mix(palette.colors.accent, palette.colors.faint, 60));
+  unread_ink = palette.fgRgb(palette.mix(palette.colors.line, palette.colors.surface, 50));
 });
 /** Spark cells that cover time already passed in the window. */
 export function elapsedCells(window: Window, now: number): number {

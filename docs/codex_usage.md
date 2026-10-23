@@ -19,7 +19,7 @@ quota windows, so such an account counts as metered and the picker shows the
 monthly bar in place of the 5h and 7d ones. An account that also reports
 quota windows keeps them in the picker; the usage panel shows both.
 
-The picker and usage panel stop displaying spend after ten minutes without a
+The picker and usage panel stop displaying spend after twenty minutes without a
 successful refresh or once the reset passes. A Codex reading stores `null` as
 its currency; older Corgis drop it on restore, and no protocol version or
 saved-data migration is needed.

@@ -37,7 +37,7 @@ export function open(account: string): Launcher {
   const env = account ? { ...process.env, [vocabulary.config_env]: account } : process.env,
     client = new Client(env);
   return {
-    account: quit => client.preview(quit, quit),
+    account: (quit, max_age) => client.preview(quit, quit, max_age),
     async model(cwd) {
       const chosen = settingsModel(cwd, env);
       if (chosen.model || !client.default_model.len) return chosen;

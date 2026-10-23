@@ -7,7 +7,7 @@ import { Info, Window, used, windows } from "../../usage/account";
 import { getLogger } from "../../log";
 import { Failure } from "../../failure";
 import { Control, cancelled } from "./control";
-import { Cache, interval, cooldown } from "../../usage/account_cache";
+import { Cache, cooldown } from "../../usage/account_cache";
 import * as errors from "../../errors";
 import * as spend from "../../usage/spend";
 const log = getLogger("claude.account");
@@ -98,6 +98,11 @@ export class Client {
   private usage_failure = new Failure();
   session: Control | null = null;
   identity: string | null = null;
+  /** Who signed in, without the folder: folders signed in to one account
+   * share its usage reading. */
+  login: string | null = null;
+  /** When this folder may try again after its usage read failed. */
+  retry_at = 0;
   account = new Info();
   next_auth = 0;
   /** The model Claude Code runs when none is configured, as its picker
@@ -108,9 +113,9 @@ export class Client {
     this.session?.close();
     this.session = null;
   }
-  async preview(stopping?: any, quit?: Quit) {
+  async preview(stopping?: any, quit?: Quit, max_age = 0) {
     try {
-      return await this.read(stopping, quit);
+      return await this.read(stopping, quit, max_age);
     } catch (e) {
       this.account.usage_error = new Text(
         ["TimedOut", "Timeout"].includes((e as Error).message) ? "request timed out" : "Claude account unavailable",
@@ -118,7 +123,7 @@ export class Client {
       return this.account;
     }
   }
-  async read(stopping?: any, quit?: Quit) {
+  async read(stopping?: any, quit?: Quit, max_age = 0) {
     const now = Math.floor(Date.now() / 1000);
     if (cancelled(stopping) || quit?.aborted) throw Error("Cancelled");
     const executable = await this.resolve();
@@ -128,14 +133,14 @@ export class Client {
       const { account, d } = await this.auth(executable, quit);
       if (account.signed_in === true && account.limits !== "metered" && !d.email)
         account.usage_error = new Text("usage account unavailable");
-      const identity = JSON.stringify({
-        executable,
-        root: claude.configDir(this.env),
-        email: d.email ?? "",
-        organization: d.orgId ?? "",
-        method: d.authMethod ?? "",
-        provider: d.apiProvider ?? "",
-      });
+      const login = JSON.stringify({
+          email: d.email ?? "",
+          organization: d.orgId ?? "",
+          method: d.authMethod ?? "",
+          provider: d.apiProvider ?? "",
+        }),
+        identity = JSON.stringify([executable, claude.configDir(this.env), login]);
+      this.login = login;
       if (this.identity !== identity) {
         this.close();
         this.identity = identity;
@@ -156,14 +161,13 @@ export class Client {
       this.close();
       return this.account;
     }
-    const cache = await Cache.open("claude-cli", this.identity!, stopping);
+    const cache = await Cache.open("claude-cli", this.login!, stopping);
     try {
       cache.state.info.signed_in = this.account.signed_in;
       cache.state.info.account = this.account.account;
       if (this.account.plan.len) cache.state.info.plan = this.account.plan;
-      if (now < cache.state.next_usage) return cache.state.display(now);
-      cache.state.next_usage = now + interval;
-      cache.save();
+      if (max_age > 0 && (now < this.retry_at || now - cache.state.info.usage_fetched_at < max_age))
+        return cache.state.display(now);
       const fresh = Object.assign(new Info(), this.account),
         started = Date.now();
       try {
@@ -174,7 +178,7 @@ export class Client {
       } catch (e) {
         this.close();
         fresh.usage_error = new Text(usageFailure(e));
-        cache.state.next_usage = now + cooldown;
+        this.retry_at = now + cooldown;
         if (!errors.is(e, "Cancelled") && this.usage_failure.changed(e))
           log.warn("Usage read failed", { account: this.config, ms: Date.now() - started, err: e });
       }

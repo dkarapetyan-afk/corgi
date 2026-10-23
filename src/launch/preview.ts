@@ -3,10 +3,26 @@ import { Provider, adapter, byProvider, Text } from "../providers";
 import type { Launcher } from "../providers/adapter";
 import { Model } from "../providers/model";
 import { Info, serializeLimits } from "../usage/account";
-import { none, update as updateLimitHistory } from "../usage/limits";
+import * as limitHistory from "../usage/limits";
 import * as discovery from "../discovery";
 import * as accounts from "../accounts";
 export { Text };
+/** Seconds between account reads while someone uses a viewer, and otherwise. */
+export const active_every = 150,
+  idle_every = 600;
+/** How often the worker looks for an account due a read, in ms. */
+const check_ms = 15000;
+/** What a row shows of its account's read. */
+const account_fields = [
+  "signed_in",
+  "account",
+  "plan",
+  "limits",
+  "spend",
+  "usage_fetched_at",
+  "usage_error",
+  "usage_needs_consent",
+] as const;
 export class Option {
   pending = true;
   signed_in: boolean | null = null;
@@ -20,7 +36,8 @@ export class Option {
   usage_fetched_at = 0;
   usage_error = new Text();
   usage_needs_consent = false;
-  history = none();
+  history = limitHistory.none();
+  spend_history = limitHistory.noSpend();
   toJSON() {
     return { ...this, limits: serializeLimits(this.limits) };
   }
@@ -47,6 +64,34 @@ export type Account = { provider: Provider; account: string; name: string; manag
 export function installed() {
   return byProvider(p => discovery.installed(p));
 }
+type Row = { provider: Provider; account: string };
+/** The folders of one provider signed in to one account. */
+type Group = { provider: Provider; id: string; folders: string[] };
+/** An account, which several folders may be signed in to. Its usage is read
+ * through one of them, the one that worked last; the rest only read their
+ * sign-in. */
+class Login {
+  /** When this worker last read it, in ms. */
+  read_at = 0;
+  /** Someone asked for its usage: the next read fetches it, whatever its age. */
+  forced = false;
+  reading: Promise<void> | null = null;
+  /** The folder whose read worked last. */
+  source: string | null = null;
+  /** Each folder's own last read. */
+  infos = new Map<string, Info>();
+  history = limitHistory.none();
+  spend = limitHistory.noSpend();
+}
+/** A fresh usage reading, which other folders of its account can show. */
+function usable(info: Info) {
+  return info.signed_in === true && info.usage_fetched_at > 0 && !info.usage_error.len;
+}
+/** Who signed in to `account`, or the folder itself when that's unknown. */
+function loginOf(provider: Provider, account: string) {
+  const id = accounts.identity(provider, account)?.id;
+  return id ? `login:${id}` : `folder:${account}`;
+}
 export class Worker {
   quit = Quit.init();
   stopping = false;
@@ -63,6 +108,12 @@ export class Worker {
   }[] = [];
   /** Each account's launcher, opened on first use. */
   launchers = new Map<string, Promise<Launcher | null>>();
+  /** Accounts by provider and who signed in. */
+  logins = new Map<string, Login>();
+  /** Seconds between account reads, which the daemon sets from its viewers. */
+  every = idle_every;
+  private checked = 0;
+  private sampling = false;
   static start() {
     return new Worker();
   }
@@ -84,9 +135,25 @@ export class Worker {
   trackUsage(cwd: string) {
     return this.request(cwd, true);
   }
+  /** Reads the accounts due a read, whether or not anyone is subscribed.
+   * The daemon calls it every tick, `every` set by how its viewers are used. */
+  sample(every: number) {
+    this.every = every;
+    const now = Date.now();
+    if (now - this.checked < check_ms) return;
+    this.checked = now;
+    this.sampling = true;
+    void this.pump();
+  }
   request(cwd: string, access: boolean, refresh = false) {
     if (Buffer.byteLength(cwd) > 4096) return new Preview();
     const now = Date.now();
+    // A new subscriber reads sign-in again; asking for usage fetches it too.
+    if (refresh || access)
+      for (const login of this.logins.values()) {
+        login.read_at = 0;
+        login.forced ||= access;
+      }
     let job = this.jobs.find(j => j.cwd === cwd);
     if (job) {
       job.used = now;
@@ -167,8 +234,14 @@ export class Worker {
     this.running = true;
     try {
       for (;;) {
+        if (this.stopping) break;
+        if (this.sampling) {
+          this.sampling = false;
+          await this.round();
+          continue;
+        }
         const job = this.jobs.find(job => job.queued);
-        if (!job || this.stopping) break;
+        if (!job) break;
         await this.run(job);
       }
     } finally {
@@ -188,15 +261,14 @@ export class Worker {
         void launcher.then(l => l?.close());
         this.launchers.delete(key);
       }
-    const rows = [
-      ...Provider.all.filter(p => job.preview.installed[p]).map(provider => ({ provider, account: "" })),
-      ...job.preview.accounts,
-    ];
+    const rows = this.rows(job.preview),
+      groups = this.groups(rows);
     await Promise.all(
       rows.map(async ({ provider, account }) => {
         let option: Option;
         try {
-          option = (await this.option(provider, account, job.cwd)) ?? new Option();
+          const group = groups.find(g => g.provider === provider && g.folders.includes(account))!;
+          option = (await this.option(provider, account, job.cwd, group)) ?? new Option();
         } catch {
           option = new Option();
           option.usage_error = new Text("account read failed");
@@ -223,29 +295,108 @@ export class Worker {
       job.updated = Date.now();
     }
   }
-  /** What `account` of `p` would start with in `cwd`. */
-  private async option(p: Provider, account: string, cwd: string): Promise<Option | null> {
-    const out = new Option(),
-      launcher = await this.launcher(p, account);
-    if (!launcher) return null;
-    try {
-      const info = await launcher.account(this.quit);
-      for (const key of [
-        "signed_in",
-        "account",
-        "plan",
-        "limits",
-        "spend",
-        "usage_fetched_at",
-        "usage_error",
-        "usage_needs_consent",
-      ] as const)
-        (out as any)[key] = info[key];
-      out.history = await updateLimitHistory(p, info, this.stopping);
-    } catch {
-      out.usage_error = new Text("account read failed");
+  private rows(preview: Preview): Row[] {
+    return [
+      ...Provider.all.filter(p => preview.installed[p]).map(provider => ({ provider, account: "" })),
+      ...preview.accounts,
+    ];
+  }
+  private groups(rows: Row[]): Group[] {
+    const groups: Group[] = [];
+    for (const { provider, account } of rows) {
+      const id = loginOf(provider, account),
+        group = groups.find(g => g.provider === provider && g.id === id);
+      if (group) group.folders.push(account);
+      else groups.push({ provider, id, folders: [account] });
     }
+    return groups;
+  }
+  /** Reads the accounts due a read, then shows what they read in every
+   * folder's preview, so subscribers needn't wait for their next refresh. */
+  private async round() {
+    const before = new Map([...this.logins].map(([key, login]) => [key, login.read_at]));
+    await Promise.all(this.groups(this.rows(this.list(new Preview()))).map(group => this.read(group)));
+    if (this.stopping || [...this.logins].every(([key, login]) => before.get(key) === login.read_at)) return;
+    for (const job of this.jobs)
+      job.preview = Object.assign(new Preview(), job.preview, {
+        options: byProvider(p => this.shown(p, "", job.preview.options[p])),
+        accounts: job.preview.accounts.map(a => ({ ...a, option: this.shown(a.provider, a.account, a.option) })),
+      });
+  }
+  /** Reads an account once `every` seconds have passed: its folders in turn,
+   * the one that worked last first, until one reads its usage. Those after
+   * it read only their sign-in, and show the reading they share. */
+  private read({ provider, id, folders }: Group): Promise<void> {
+    const key = provider + "\0" + id;
+    let login = this.logins.get(key);
+    if (!login) this.logins.set(key, (login = new Login()));
+    if (login.reading) return login.reading;
+    if (Date.now() - login.read_at < this.every * 1000 && folders.every(f => login.infos.has(f)))
+      return Promise.resolve();
+    const order = login.source !== null && folders.includes(login.source) ? [login.source] : [];
+    for (const folder of folders) if (folder !== login.source) order.push(folder);
+    const reading = (async () => {
+      // A reading another Corgi fetched this interval will do.
+      let max_age = login.forced ? 0 : Math.max(0, this.every - check_ms / 1000),
+        found: Info | null = null;
+      login.forced = false;
+      for (const folder of order) {
+        let info = new Info();
+        try {
+          const launcher = await this.launcher(provider, folder);
+          if (launcher) info = await launcher.account(this.quit, max_age);
+        } catch {
+          info.usage_error = new Text("account read failed");
+        }
+        if (this.stopping) return;
+        login.infos.set(folder, info);
+        if (found === null && usable(info)) {
+          found = info;
+          login.source = folder;
+          max_age = Infinity;
+        }
+      }
+      const shown = found ?? [...login.infos.values()].find(info => info.usage_fetched_at > 0);
+      if (shown) {
+        const history = await limitHistory.update(provider, id, shown, this.stopping);
+        login.history = history.sparks;
+        login.spend = history.spend;
+      }
+      login.read_at = Date.now();
+    })().finally(() => (login.reading = null));
+    login.reading = reading;
+    return reading;
+  }
+  /** `base` with what `account`'s folder read, or when that has no fresh
+   * usage, the reading another folder signed in to the same account got. */
+  private shown(provider: Provider, account: string, base: Option): Option {
+    const login = this.logins.get(provider + "\0" + loginOf(provider, account)),
+      own = login?.infos.get(account);
+    if (!login || !own) return base;
+    const source = login.source !== null ? login.infos.get(login.source) : undefined,
+      borrowed =
+        !usable(own) &&
+        source !== undefined &&
+        usable(source) &&
+        own.signed_in === true &&
+        own.account.text() === source.account.text(),
+      out = Object.assign(new Option(), base);
+    for (const key of account_fields) (out as any)[key] = own[key];
+    if (borrowed)
+      for (const key of ["limits", "spend", "usage_fetched_at", "usage_error"] as const)
+        (out as any)[key] = source[key];
+    if (borrowed && source.plan.len) out.plan = source.plan;
+    out.history = login.history;
+    out.spend_history = login.spend;
+    return out;
+  }
+  /** What `account` of `p` would start with in `cwd`. */
+  private async option(p: Provider, account: string, cwd: string, group: Group): Promise<Option | null> {
+    const launcher = await this.launcher(p, account);
+    if (!launcher) return null;
+    await this.read(group);
     if (this.stopping) return null;
+    const out = this.shown(p, account, new Option());
     const chosen = await launcher.model(cwd, this.quit);
     if (chosen.model) out.setModel(chosen.model, chosen.source, chosen.model_name);
     else out.source = new Text(chosen.source);

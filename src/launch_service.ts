@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { Worker as CommandWorker } from "./launch/command";
-import { Worker as PreviewWorker, Preview, Option } from "./launch/preview";
+import { Worker as PreviewWorker, Preview, Option, active_every, idle_every } from "./launch/preview";
 import { byProvider } from "./providers";
 import { Worker as HistoryWorker } from "./launch/history";
 import { stringify } from "./json";
@@ -82,6 +82,15 @@ export async function request(server: Server, client: Client, request: Request) 
     } satisfies Subscription;
     client.queue({ type: "agent.preview", cwd, preview });
   } else client.queue({ ok: true, preview });
+}
+/** Input this recent in any viewer reads accounts every `active_every`. */
+const active_ms = 5 * 60 * 1000;
+/** Lets the preview worker read accounts on its own schedule, often while
+ * someone uses a viewer and rarely when no one does or none is attached. */
+export function sample(server: Server) {
+  const now = Date.now(),
+    active = server.clients.some(c => c.viewer && !c.dead && now - c.input_at < active_ms);
+  service(server).launch_previews.sample(active ? active_every : idle_every);
 }
 export function publish(server: Server, client: Client) {
   const subscription = client.launch_preview;

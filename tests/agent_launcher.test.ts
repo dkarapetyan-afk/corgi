@@ -1,5 +1,5 @@
 /** Real viewer launch controls and read-only agent previews. */
-import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerCase, writeExecutable, shellJoin, quote, sleep, EXE, ROOT, JsonSocket } from "./support";
 import { Runtime, screen_text } from "./runtime";
@@ -1074,18 +1074,11 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const path = join(this.env.CLAUDE_CONFIG_DIR!, "metadata-requests.jsonl");
     return existsSync(path) ? lines(path).map(line => JSON.parse(line)) : [];
   }
-  metadataCache() {
-    const dir = join(this.env.XDG_STATE_HOME!, "corgi/account-previews");
-    return join(
-      dir,
-      readdirSync(dir).find(name => name.startsWith("claude-cli-") && name.endsWith(".json"))!,
-    );
-  }
-  expireMetadataUsage() {
-    const path = this.metadataCache(),
-      state = json(path);
-    state.next_usage = 0;
-    writeFileSync(path, JSON.stringify(state));
+  /** Asks for usage, which the next read fetches whatever its age. */
+  async askUsage() {
+    const directory = join(this.temp.name, "asked");
+    mkdirSync(directory, { recursive: true });
+    await this.rpc({ op: "agent.track_usage", protocol: 2, workspace: this.ws, cwd: directory });
   }
   async test_claude_control_usage_reuses_process_and_cache_without_credentials() {
     // A stale credential file must not override Claude's own auth status.
@@ -1101,7 +1094,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     for (let i = 0; i < 5; i++) await this.directoryPreview("shared" + i);
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "get_usage").length, 1);
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "auth").length, 1);
-    this.expireMetadataUsage();
+    await this.askUsage();
     await this.directoryPreview("refresh");
     const requests = this.metadataRequests().filter(r => r.kind === "get_usage");
     this.assertEqual(requests.length, 2);
@@ -1113,7 +1106,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   }
   async test_claude_usage_failure_keeps_account_and_stale_measurement() {
     const first = await this.directoryPreview("first");
-    this.expireMetadataUsage();
+    await this.askUsage();
     writeFileSync(join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"), JSON.stringify({ mode: "unsupported" }));
     const failed = await this.directoryPreview("unsupported");
     this.assertTrue(failed.signed_in);
@@ -1127,7 +1120,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await view.input("\x02A");
     await this.until(async () => (await view.poll()).data.includes("Claude Code"));
     writeFileSync(join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"), "{}");
-    this.expireMetadataUsage();
+    await this.askUsage();
     const recovered = await this.directoryPreview("recovered");
     this.assertEqual(recovered.usage_error, "");
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "start").length, 2);

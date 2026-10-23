@@ -237,7 +237,7 @@ to `~/.local/state/corgi`:
 | `workspaces.json` | Saved workspace configuration |
 | `settings.json` | Runtime settings, including shell and inference choices |
 | `recovery/` | Saved layout, terminal output and agent recovery context |
-| `account-previews/`, `limit-history/` | Cached account/usage metadata and rate-limit history |
+| `account-previews/`, `limit-history/` | Each account's latest usage reading, and its limit and spend history |
 | `accounts.json`, `accounts/` | Provider accounts besides the default, and the folders Corgi made for them; shared by every environment. A new one waits in a private `corgi-account-*` folder in the temporary directory until it's signed in |
 
 An explicit `CORGI_SOCKET` selects another runtime; its workspace/settings

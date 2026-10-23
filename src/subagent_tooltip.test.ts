@@ -10,9 +10,11 @@ import {
   drawOverview,
   fresh_window,
   limitLine,
+  spendSpark,
   presentChildren,
   runningFor,
   shallow_inks,
+  unread_ink,
   status,
   type Conversation,
   type BackgroundView,
@@ -20,7 +22,7 @@ import {
 import { View as UsageView, Tokens } from "./usage/live";
 import { View as ContextView } from "./usage/context_window";
 import { Window } from "./usage/account";
-import type { Spark } from "./usage/limits";
+import type { Spark, SpendCell } from "./usage/limits";
 import { option } from "./agent_launcher";
 import { Writer } from "./text";
 import * as palette from "./palette";
@@ -440,7 +442,7 @@ function testAccounts(now: number): Accounts {
         { minutes: 10080, used: 63, reset_at: now + 3 * 86400 + 16 * 3600 },
       ],
     },
-    history: [[5, 13, 24, 35, null, 61, 73, 86, 100, 100, null], Array(11).fill(null)],
+    history: [[5, 13, 24, 35, null, 61, 73, 86, 100, 100, null, null, null, null], Array(14).fill(null)],
   });
   const codex = option({
     account: "me@home.dev",
@@ -521,25 +523,32 @@ test("account limits include monthly spend, optional caps and calendar reset", (
   };
   const accounts = new Accounts({ now, accounts: [a] });
   const draw = () => unstyled(render(w => drawOverview(w, [], new UsageView(), false, "", "", {}, accounts, 130, 40)));
-  const frame = draw();
+  const frame = draw(),
+    host = Terminal.create(130, 40);
+  let lines: string[];
+  try {
+    host.feed(render(w => drawOverview(w, [], new UsageView(), false, "", "", {}, accounts, 130, 40)));
+    lines = host.text().split("\n");
+  } finally {
+    host.destroy();
+  }
+  const row = lines.findIndex(line => line.includes(" mo "));
   expect(frame).toContain("Claude side · tal@side.dev · Enterprise");
-  expect(frame).toContain("mo $0.59 / $10k");
-  expect(frame).toContain("━━━━━━");
-  expect(frame).toContain("0.01%");
-  expect(frame).toContain("↻ 1d");
+  // The spark row lines up with 5h and 7d; the amounts sit beneath it.
+  expect(lines[row]).toMatch(/mo ⢕{14}  <1% ↻ 1d/);
+  expect(lines[row + 1]).toContain("$0.59 / $10k");
   a.option.spend = { ...a.option.spend, used_minor: 38820, limit_minor: 25000000, currency: null };
-  expect(draw()).toContain("mo ⛁388 / ⛁250k");
+  expect(draw()).toContain("⛁388 / ⛁250k");
   a.option.spend = { ...a.option.spend, used_minor: 59, limit_minor: 1000000, currency: "USD" };
   a.option.spend.limit_minor = null;
-  expect(draw()).toContain("mo $0.59");
-  expect(draw()).not.toContain("0.01%");
-  expect(draw()).not.toContain("━━━━━━");
+  expect(draw()).toContain("$0.59");
+  expect(draw()).not.toContain("<1%");
   expect(draw()).not.toContain("no limit");
   a.option.limits = { windows: [new Window({ minutes: 300, used: 47, reset_at: now + 60 }), null] };
   expect(draw()).toContain("47%");
-  expect(draw()).toContain("mo $0.59");
+  expect(draw()).toContain("$0.59");
   a.option.spend.reset_at = now;
-  expect(draw()).toContain("mo · stale");
+  expect(draw()).toContain("Hstale");
   expect(draw()).not.toContain("$0.59");
 });
 
@@ -607,62 +616,80 @@ test("accounts without agents keep their limits and short terminals fall back", 
 });
 
 function expectSparkCell(line: string, i: number, glyph: string, ink: string) {
-  // limitLine draws row 5, pane offset 87, spark from pane + 3, on a card at x = 0.
-  expect(line).toContain(`\x1b[6;${4 + 87 + 3 + i}H${base}${palette.bg("surface")}${ink}${glyph}`);
+  // limitLine draws row 5, pane offset 84, spark from pane + 3, on a card at x = 0.
+  expect(line).toContain(`\x1b[6;${4 + 84 + 3 + i}H${base}${palette.bg("surface")}${ink}${glyph}`);
 }
 
-test("sparks ghost unobserved slots and stipple the time left", () => {
+test("sparks stipple the time left, and slots no reading covers fainter", () => {
   const now = 1_000_000;
-  // 200 of 300 minutes have passed: 8 of 11 cells.
+  // 200 of 300 minutes have passed: 10 of 14 cells.
   const window = new Window({ minutes: 300, used: 52, reset_at: now + 100 * 60 });
-  const spark: Spark = [4, 11, null, null, 33, 45, null, null, null, null, null];
-  const line = render(w => limitLine(new Card(w, 0, 122), 5, 87, window, spark, true, now));
+  const spark: Spark = [4, 11, null, null, 33, 45, ...Array(8).fill(null)];
+  const line = render(w => limitLine(new Card(w, 0, 122), 5, 84, window, spark, true, now));
   // Short bars fade toward gray; from half height they are plain accent.
   expectSparkCell(line, 0, "▁", shallow_inks[0]);
   expectSparkCell(line, 1, "▁", shallow_inks[0]);
-  // Missed slots show a gray bar at the last reading's level.
-  expectSparkCell(line, 2, "▁", Tone.ansi("faint"));
-  expectSparkCell(line, 3, "▁", Tone.ansi("faint"));
+  // Missed slots are unknown, not a guess at their level.
+  expectSparkCell(line, 2, "⢕", unread_ink);
+  expectSparkCell(line, 3, "⢕", unread_ink);
   expectSparkCell(line, 4, "▃", shallow_inks[2]);
   expectSparkCell(line, 5, "▄", Tone.ansi("live"));
-  expectSparkCell(line, 6, "▄", Tone.ansi("faint"));
+  expectSparkCell(line, 8, "⢕", unread_ink);
   // The current slot shows the latest reading before history records it.
-  expectSparkCell(line, 7, "▄", Tone.ansi("live"));
-  for (let i = 8; i < 11; i++) expectSparkCell(line, i, "⢕", Tone.ansi("remaining"));
+  expectSparkCell(line, 9, "▄", Tone.ansi("live"));
+  for (let i = 10; i < 14; i++) expectSparkCell(line, i, "⢕", Tone.ansi("remaining"));
   expect(line).not.toContain("┈");
   expect(line).toContain("52%");
   expect(line).toContain("↻ 1h 40m");
 
-  // Before the first reading, missed slots are the gray floor.
   const early = new Window({ minutes: 300, used: 40, reset_at: now + 220 * 60 });
-  const first = render(w => limitLine(new Card(w, 0, 122), 5, 87, early, Array(11).fill(null), true, now));
-  expectSparkCell(first, 0, "▁", Tone.ansi("faint"));
-  expectSparkCell(first, 1, "▁", Tone.ansi("faint"));
-  expectSparkCell(first, 2, "▃", shallow_inks[2]);
-  expectSparkCell(first, 3, "⢕", Tone.ansi("remaining"));
+  const first = render(w => limitLine(new Card(w, 0, 122), 5, 84, early, Array(14).fill(null), true, now));
+  expectSparkCell(first, 0, "⢕", unread_ink);
+  expectSparkCell(first, 2, "⢕", unread_ink);
+  expectSparkCell(first, 3, "▃", shallow_inks[2]);
+  expectSparkCell(first, 4, "⢕", Tone.ansi("remaining"));
 
-  const stale = render(w => limitLine(new Card(w, 0, 122), 5, 87, window, spark, false, now));
+  const stale = render(w => limitLine(new Card(w, 0, 122), 5, 84, window, spark, false, now));
   expect(stale).toContain("stale");
   expect(stale).not.toContain("↻");
   expectSparkCell(stale, 5, "▄", Tone.ansi("faint"));
-  expectSparkCell(stale, 7, "▄", Tone.ansi("faint"));
+  expectSparkCell(stale, 9, "⢕", unread_ink);
 
   // Cells past 80% are warm and hot without bold; the figure stays bold.
   const full = new Window({ minutes: 300, used: 100, reset_at: now + 100 * 60 });
   const high = render(w =>
-    limitLine(
-      new Card(w, 0, 122),
-      5,
-      87,
-      full,
-      [50, 85, 100, null, null, null, null, null, null, null, null],
-      true,
-      now,
-    ),
+    limitLine(new Card(w, 0, 122), 5, 84, full, [50, 85, 100, ...Array(11).fill(null)], true, now),
   );
   expectSparkCell(high, 1, "▇", Tone.ansi("warm_cell"));
   expectSparkCell(high, 2, "█", Tone.ansi("hot_cell"));
   expect(high).toContain(`${Tone.ansi("hot")}100%`);
+});
+
+test("spend sparks scale to the busiest cell and set apart last month and unread days", () => {
+  const cell = (minor: number | null, earlier = false): SpendCell => ({ minor, earlier });
+  const cells = [
+    cell(null),
+    cell(400, true),
+    cell(0),
+    cell(100),
+    cell(800),
+    cell(null),
+    ...Array.from({ length: 8 }, () => cell(50)),
+  ];
+  const line = render(w => spendSpark(new Card(w, 0, 122), 5, 87, cells, true));
+  // Days Corgi didn't read are unknown, before the first reading or in a gap.
+  expectSparkCell(line, 0, "⢕", unread_ink);
+  expectSparkCell(line, 5, "⢕", unread_ink);
+  // Last month's cells are dimmer whatever their height.
+  expect(line).toContain(
+    `${palette.bg("surface")}${palette.fgRgb(palette.mix(palette.colors.accent, palette.colors.faint, 60))}▄`,
+  );
+  // Nothing spent is the gray floor; the busiest cell is full height.
+  expectSparkCell(line, 2, "▁", Tone.ansi("faint"));
+  expectSparkCell(line, 3, "▁", shallow_inks[0]);
+  expectSparkCell(line, 4, "█", Tone.ansi("live"));
+  const stale = render(w => spendSpark(new Card(w, 0, 122), 5, 87, cells, false));
+  expectSparkCell(stale, 4, "█", Tone.ansi("faint"));
 });
 
 test("a finished agent the user has not seen shows a dot", () => {

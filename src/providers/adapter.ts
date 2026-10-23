@@ -14,8 +14,10 @@ import type { Runtime } from "../runtime";
 /** What the launcher shows about a provider. Corgi opens one per launcher
  * worker and closes it with that worker. */
 export interface Launcher {
-  /** Its account, plan and usage limits. */
-  account(quit: Quit): Promise<Account>;
+  /** Its account, plan and usage limits. Usage is fetched again once the
+   * reading, which folders signed in to the same account share, is `max_age`
+   * seconds old; 0 fetches it now, even while a failed read waits. */
+  account(quit: Quit, max_age: number): Promise<Account>;
   /** The model it would start with in `cwd`, and the setting that chose it.
    * Corgi asks after `account`, whose sign-in may name the default. */
   model(cwd: string, quit: Quit): Promise<{ model: string; model_name?: string; source: string }>;

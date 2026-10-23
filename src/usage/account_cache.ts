@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import { mkdirSync, openSync, readFileSync, writeSync, ftruncateSync, fsyncSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { flock } from "../native_bridge";
-import { Info, expired, restoreLimits } from "./account";
+import { Info, expired, restoreLimits, usage_max_age } from "./account";
 import { Text } from "../providers/common";
 import { parse, stringify } from "../json";
 import * as spend from "./spend";
-export const interval = 60,
-  cooldown = 300;
+/** Seconds a folder waits after its read failed. Another folder signed in
+ * to the same account may try meanwhile. */
+export const cooldown = 300;
 export class State {
   info = new Info();
-  next_usage = 0;
   update(fresh: Info, now: number) {
     const previous = this.info;
     this.info = Object.assign(new Info(), fresh);
@@ -28,7 +28,9 @@ export class State {
       expired(result.usage_fetched_at, now) &&
       !result.usage_error.len
     )
-      result.usage_error = new Text(result.usage_fetched_at <= 0 ? "fetch time unknown" : "last success 10m+ ago");
+      result.usage_error = new Text(
+        result.usage_fetched_at <= 0 ? "fetch time unknown" : `last success ${usage_max_age / 60}m+ ago`,
+      );
     return result;
   }
   failed(reason: string) {
@@ -41,7 +43,6 @@ function lock(fd: number, operation: number) {
 
 function restoreState(value: any) {
   const state = new State();
-  state.next_usage = typeof value.next_usage === "number" ? value.next_usage : 0;
   state.info = Object.assign(new Info(), value.info ?? {});
   for (const key of ["account", "plan", "usage_error"] as const)
     state.info[key] = new Text(typeof value.info?.[key] === "string" ? value.info[key] : "");
