@@ -11,6 +11,7 @@ import {
   tabDrop,
   drawDividers,
   drawGhost,
+  drawWorkspaceGhost,
   divider_focused,
   drawRestoring,
   shellUnits,
@@ -648,5 +649,32 @@ test("a ghost dims the bottom half of the pane area, each row where entering lea
   expect(text).toContain("\x1b[12;30Hdimrow9");
   expect(text).toContain("\x1b[20;30Hdimrow17");
   expect(text).toContain("\x1b[11;29H");
-  expect(text).toContain("┄┄ release notes ┄");
+  expect(testVisible(text)).toContain("┄┄ ↓ release notes ↓ ┄");
+});
+
+test("a workspace ghost dims the top half with its tabs, each row where switching leaves it", () => {
+  const m = new Model();
+  const selection = new Selection();
+  const id = m.newTab("notes");
+  selection.reconcile(m);
+  const pane: any = {
+    id,
+    terminal: {
+      updateRender() {},
+      rows: (_id: number, x: number, y: number, _w: number, h: number, dimmed: boolean) =>
+        Array.from({ length: h }, (_, row) => `\x1b[${y + row + 1};${x + 1}H${dimmed ? "dim" : ""}row${row}`).join(""),
+    },
+  };
+  const side = sidebar.View.init(100, 21, true, 0, 0);
+  const out = new Writer();
+  const covered = drawWorkspaceGhost(out, { name: "alpha", view: new View(m, selection) }, [pane], side, 100, "corgi");
+  const text = out.buffered();
+  // The cut is row 11: rows from it on stay as they were.
+  expect(text).toContain("\x1b[2;29Hdimrow0");
+  expect(text).toContain("\x1b[11;29Hdimrow9");
+  expect(text).not.toContain("row10");
+  expect(testVisible(text)).toContain("notes");
+  expect(text).toContain("\x1b[12;29H");
+  expect(testVisible(text)).toContain("┄┄ ↑ alpha ↑ ┄");
+  expect(covered).toEqual(new Rect(28, 0, 72, 12));
 });

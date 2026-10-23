@@ -990,6 +990,27 @@ test("the sidebar's cursor ghosts an agent no pane shows, where entering it puts
   }
 });
 
+test("the sidebar's cursor previews a workspace it isn't on, as switching to it shows it", async () => {
+  const { s } = steering();
+  try {
+    s.focusPane(1);
+    await s.input(bytes("\x02w"));
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebarWorkspaceGhost()).toBeNull();
+    expect(s.frame()).not.toContain("┄┄ ");
+    await s.input(bytes("\x1b[B"));
+    const ghost = s.sidebarWorkspaceGhost();
+    expect(ghost.name).toBe("/b");
+    expect(s.frame()).toContain("┄┄ ");
+    await s.key(13);
+    expect(s.current().id).toBe(2);
+    expect(s.layoutView().placements(s.area())).toEqual(ghost.view.placements(s.area()));
+    expect(s.frame()).not.toContain("┄┄ ");
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("prefixed arrows walk past the last pane into the review panel, and left goes back to the focused pane", async () => {
   const { s, sent } = steering();
   try {

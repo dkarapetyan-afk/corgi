@@ -73,7 +73,8 @@ let tab_active: string,
   bar: string,
   divider_plain: string,
   ghost_band: string,
-  ghost_edge: string;
+  ghost_edge: string,
+  ghost_label: string;
 palette.derived(() => {
   tab_active = new Style({ fg: "strong", bg: "selected", bold: true }).sgr();
   tab_inactive = new Style({ fg: "faint", bg: "surface" }).sgr();
@@ -102,6 +103,7 @@ palette.derived(() => {
   divider_plain = new Style({ fg: "line" }).sgr();
   ghost_band = new Style({ bg: "bg" }).sgr();
   ghost_edge = new Style({ fg: "faint", bg: "bg" }).sgr();
+  ghost_label = new Style({ fg: "strong", bg: "bg", bold: true }).sgr();
 });
 /** The agent under the sidebar's cursor, as entering it would show it. */
 export interface Ghost {
@@ -110,6 +112,12 @@ export interface Ghost {
   rect: Rect;
   /** The pane area once entered. */
   area: Rect;
+}
+/** The workspace under the sidebar's cursor, as switching to it would show it. */
+export interface WorkspaceGhost {
+  name: string;
+  /** Its tabs and panes as switching leaves them. */
+  view: LayoutView;
 }
 
 export interface Ui {
@@ -144,6 +152,7 @@ export interface Ui {
   /** The sidebar list with the keyboard instead of the focused pane. */
   sidebar_focus: Section | null;
   ghost: Ghost | null;
+  workspace_ghost: WorkspaceGhost | null;
   menu: ResizeView | null;
   tab_menu: TabMenu | null;
   port_menu: PortMenu | null;
@@ -212,6 +221,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     prefix: false,
     sidebar_focus: null,
     ghost: null,
+    workspace_ghost: null,
     menu: null,
     tab_menu: null,
     port_menu: null,
@@ -499,48 +509,27 @@ export function drawPrefixBar(w: Writer, area: Rect, preset: keymap.Preset, pref
   w.splat(" ", sat(area.w, used));
   w.write("\x1b[0m");
 }
-export function frame(view: LayoutView, panes: Pane[], width: number, height: number, u: Ui): string {
+/** A workspace's tabs on the top row from column `left`, `space` columns
+ * wide, then its add button. */
+function drawTabs(
+  w: Writer,
+  view: LayoutView,
+  panes: Pane[],
+  preset: keymap.Preset,
+  left: number,
+  space: number,
+  thumb: TabThumb | null,
+): void {
   const model = view.model;
-  const w = new Writer();
-  const entries = u.dragged_agent ? u.dragged_agent.apply(u.agents) : u.agents;
-  const workspaces = u.dragged_workspace ? u.dragged_workspace.apply(u.workspaces) : u.workspaces;
-  const dragging = u.dragged_agent !== null || u.dragged_workspace !== null;
-  let side = SidebarView.init(width, height, u.sidebar_open, u.sidebar_offset, entries.length, u.prefs.sidebar_split)
-    .withSearch(u.agent_search)
-    .withWidth(u.prefs.sidebar_width)
-    .withPanel(u.review_width);
-  side.resources = u.prefs.resources;
-  side.gpus = resourceTooltip.gpuCount(u.resources) > 0;
-  side.drawer = u.sidebar_drawer;
-  side.focus = u.sidebar_focus;
-  side = side.withWorkspaces(u.workspaces.length, u.workspace_offset).withEntries(entries);
-  side.corgi_badge = u.corgi_badge;
-  side.supports_kitty_graphics = u.supports_kitty_graphics;
-  side.cell = u.cell_pixels;
-  side.scope_label = u.scope_label;
-  side.resource_hover = u.resource_hover;
-  side.corgi_intensity = u.corgi_setup?.previewIntensity(u.prefs) ?? u.prefs.corgi_intensity;
-  side.dragged = u.dragged_agent ? u.dragged_agent.destination : null;
-  side.dragged_workspace = u.dragged_workspace ? u.dragged_workspace.destination : null;
-  // Mouse tracking modes replace one another. Disabling first makes the host
-  // briefly switch to a text pointer on every redraw.
-  w.write("\x1b[?1003h");
-  // Erase from home to the end, preserving Kitty image storage. ED 2
-  // deletes cached images in Ghostty, even those without a placement.
-  w.write("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[H\x1b[J");
-  w.write(`\x1b[1;${side.tabX() + 1}H`);
+  w.write(`\x1b[1;${left + 1}H`);
   let x = 0;
-  const tab_space = sat(width - side.tabX() - side.panel, 3);
-  const start = tabStart(view, tab_space);
-  // The scrollbar shows while the pointer is where the wheel scrolls the tabs.
-  const over_tabs = u.pointer !== null && u.pointer.y === 0 && u.pointer.x >= side.tabX() && noOverlay(u);
-  const thumb = over_tabs ? tabThumb(view, width - side.tabX() - side.panel) : null;
+  const start = tabStart(view, space);
   for (let i = start; i < model.count; i++) {
     const tab = model.tabs[i];
-    const len = tabExtent(view, i, start, tab_space - x);
+    const len = tabExtent(view, i, start, space - x);
     if (len === 0) break;
     const active = i === view.selection.active;
-    const number = `${i + (u.prefs.preset === "tmux" ? 0 : 1)}`;
+    const number = `${i + (preset === "tmux" ? 0 : 1)}`;
     const focus = view.selection.tabs[i]?.focus;
     const p = tab.title.length === 0 ? panes.find(p => p.id === focus) : undefined;
     // The label is cut to leave a space at its end, unless the bar already cuts the tab.
@@ -572,6 +561,41 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   // The add button keeps the tabs' half-cell gap.
   w.write(button_edge + "▐" + button + "+" + button_edge + "▌");
   w.write("\x1b[0m");
+}
+export function frame(view: LayoutView, panes: Pane[], width: number, height: number, u: Ui): string {
+  const model = view.model;
+  const w = new Writer();
+  const entries = u.dragged_agent ? u.dragged_agent.apply(u.agents) : u.agents;
+  const workspaces = u.dragged_workspace ? u.dragged_workspace.apply(u.workspaces) : u.workspaces;
+  const dragging = u.dragged_agent !== null || u.dragged_workspace !== null;
+  let side = SidebarView.init(width, height, u.sidebar_open, u.sidebar_offset, entries.length, u.prefs.sidebar_split)
+    .withSearch(u.agent_search)
+    .withWidth(u.prefs.sidebar_width)
+    .withPanel(u.review_width);
+  side.resources = u.prefs.resources;
+  side.gpus = resourceTooltip.gpuCount(u.resources) > 0;
+  side.drawer = u.sidebar_drawer;
+  side.focus = u.sidebar_focus;
+  side = side.withWorkspaces(u.workspaces.length, u.workspace_offset).withEntries(entries);
+  side.corgi_badge = u.corgi_badge;
+  side.supports_kitty_graphics = u.supports_kitty_graphics;
+  side.cell = u.cell_pixels;
+  side.scope_label = u.scope_label;
+  side.resource_hover = u.resource_hover;
+  side.corgi_intensity = u.corgi_setup?.previewIntensity(u.prefs) ?? u.prefs.corgi_intensity;
+  side.dragged = u.dragged_agent ? u.dragged_agent.destination : null;
+  side.dragged_workspace = u.dragged_workspace ? u.dragged_workspace.destination : null;
+  // Mouse tracking modes replace one another. Disabling first makes the host
+  // briefly switch to a text pointer on every redraw.
+  w.write("\x1b[?1003h");
+  // Erase from home to the end, preserving Kitty image storage. ED 2
+  // deletes cached images in Ghostty, even those without a placement.
+  w.write("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[H\x1b[J");
+  const tab_space = sat(width - side.tabX() - side.panel, 3);
+  // The scrollbar shows while the pointer is where the wheel scrolls the tabs.
+  const over_tabs = u.pointer !== null && u.pointer.y === 0 && u.pointer.x >= side.tabX() && noOverlay(u);
+  const thumb = over_tabs ? tabThumb(view, width - side.tabX() - side.panel) : null;
+  drawTabs(w, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb);
   if (u.tab_drop_x !== null)
     w.write(`\x1b[1;${side.tabX() + u.tab_drop_x + 1}H\x1b[1m` + palette.fg("strong") + "│\x1b[0m");
   if (model.count === 0) {
@@ -748,6 +772,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   drawDividers(w, view, area, !u.sidebar_focus);
   // Under the sidebar, which covers what a drawer hides.
   if (u.ghost) cover(drawGhost(w, u.ghost, side.drawer !== null ? side.width : u.ghost.area.x));
+  if (u.workspace_ghost) cover(drawWorkspaceGhost(w, u.workspace_ghost, panes, side, width, u.prefs.preset));
   // The host may leave its last mouse report at the window edge.
   if (u.pointer && u.pointer.x > 0 && !dragging && !on_card && noOverlay(u))
     side.hovered = sidebar.agentIndexAt(side, entries, u.pointer.x, u.pointer.y);
@@ -1102,14 +1127,55 @@ export function drawGhost(w: Writer, g: Ghost, left = g.area.x): Rect | null {
     pane.terminal.updateRender();
     w.write(rowsFrom(pane.terminal.rows(pane.id, rect.x, rect.y, rect.w, rect.h, true, null), rect, from));
   }
-  const label = new Writer(),
-    room = area.x + area.w - left;
-  writeEllipsis(label, pane.label || pane.agent.name || providerName(pane.agent), sat(room, 8));
-  const name = label.buffered();
-  w.write(`\x1b[0m\x1b[${cut};${left + 1}H${ghost_edge}┄┄ ${name} `);
-  w.write("┄".repeat(sat(room, 4 + displayWidth(name))) + "\x1b[0m");
   // The dashed edge sits on the row above the band.
+  drawEdge(w, cut - 1, left, area.x + area.w - left, pane.label || pane.agent.name || providerName(pane.agent), "↓");
   return new Rect(area.x, cut - 1, area.w, area.y + area.h - cut + 1);
+}
+/** A ghost's dashed edge on row `y`, `room` columns from `left`, naming it
+ * between arrows that point at it. */
+function drawEdge(w: Writer, y: number, left: number, room: number, text: string, arrow: "↑" | "↓"): void {
+  const label = new Writer();
+  writeEllipsis(label, text, sat(room, 12));
+  const name = label.buffered();
+  w.write(`\x1b[0m\x1b[${y + 1};${left + 1}H${ghost_edge}┄┄ ${ghost_label}${arrow} ${name} ${arrow}${ghost_edge} `);
+  w.write("┄".repeat(sat(room, 8 + displayWidth(name))) + "\x1b[0m");
+}
+/** The top half of the screen as switching to `g`'s workspace would show it,
+ * its tabs included, dimmed over a dashed edge naming it, past a drawer.
+ * The mirror of `drawGhost`: every cell sits where switching leaves it. */
+export function drawWorkspaceGhost(
+  w: Writer,
+  g: WorkspaceGhost,
+  panes: Pane[],
+  side: SidebarView,
+  width: number,
+  preset: keymap.Preset,
+): Rect | null {
+  const area = side.area();
+  const cut = area.y + Math.floor(area.h / 2);
+  if (cut === area.y || area.w === 0) return null;
+  const tabs = side.tabX(),
+    tab_space = sat(width - tabs - side.panel, 3);
+  w.write(`\x1b[0m\x1b[1;${tabs + 1}H`);
+  w.splat(" ", sat(width - side.panel, tabs));
+  w.write(ghost_band);
+  for (let y = area.y; y < cut; y++) {
+    w.write(`\x1b[${y + 1};${area.x + 1}H`);
+    w.splat(" ", area.w);
+  }
+  drawTabs(w, g.view, panes, preset, tabs, tab_space, null);
+  for (const place of g.view.placements(area)) {
+    const r = place.rect,
+      p = panes.find(pane => pane.id === place.id);
+    if (!p || r.w === 0 || r.y >= cut) continue;
+    p.terminal.updateRender();
+    w.write(p.terminal.rows(p.id, r.x, r.y, r.w, Math.min(r.h, cut - r.y), true, null));
+  }
+  drawDividers(w, g.view, area, false, cut);
+  const left = side.drawer !== null ? side.width : area.x;
+  // The dashed edge sits on the row below the band.
+  drawEdge(w, cut, left, area.x + area.w - left, directoryLabel(g.name, null, 160), "↑");
+  return new Rect(area.x, 0, area.w, cut + 1);
 }
 /** `rows` from viewport row `from` on: each row opens with its own cursor move and style. */
 function rowsFrom(rows: string, rect: Rect, from: number): string {
@@ -1117,15 +1183,16 @@ function rowsFrom(rows: string, rect: Rect, from: number): string {
   const at = rows.indexOf(`\x1b[${rect.y + from + 1};${rect.x + 1}H`);
   return at < 0 ? "" : rows.slice(at);
 }
-/** Without `outline`, as while the sidebar has focus, no pane's border stands out. */
-export function drawDividers(w: Writer, view: LayoutView, area: Rect, outline = true): void {
+/** Without `outline`, as while the sidebar has focus, no pane's border
+ * stands out. Rows from `bottom` on are left alone. */
+export function drawDividers(w: Writer, view: LayoutView, area: Rect, outline = true, bottom = area.y + area.h): void {
   const borders: Border[] = view.borders(area);
   let focused = new Rect();
   for (const place of view.placements(area))
     if (outline && place.id === view.selection.tabs[view.selection.active].focus) focused = place.rect;
   for (const border of borders) {
     const r = border.rect;
-    for (let y = r.y; y < r.y + r.h; y++) {
+    for (let y = r.y; y < Math.min(r.y + r.h, bottom); y++) {
       let highlighted = touchesPane(focused, r.x, y);
       w.write(highlighted ? divider_focused : divider_plain);
       w.write(`\x1b[${y + 1};${r.x + 1}H`);

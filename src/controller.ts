@@ -584,6 +584,16 @@ export class Controller {
     const place = new LayoutView(owner.model, selection).placements(area).find(place => place.id === id);
     return place ? { pane: p, rect: place.rect, area } : null;
   }
+  /** The workspace under the sidebar's cursor, as switching to it would
+   * show it, while it isn't the current one. */
+  sidebarWorkspaceGhost(): render.WorkspaceGhost | null {
+    const cursor = this.sidebar_focus?.cursor;
+    if (!cursor || !("workspace" in cursor) || cursor.workspace === this.current().id) return null;
+    const index = this.runtime.workspaces.index(cursor.workspace);
+    if (index === null) return null;
+    const ws = this.runtime.workspaces.items[index];
+    return { name: ws.name, view: new LayoutView(ws.model, this.navigation.selection(this.runtime.workspaces, ws)) };
+  }
   /** `/` in the focused agent list searches it; Esc comes back to the list. */
   private searchSidebar(): void {
     const focus = this.sidebar_focus!;
@@ -6016,6 +6026,7 @@ export class Controller {
         prefix: this.prefix,
         sidebar_focus: this.sidebar_focus?.section() ?? null,
         ghost: this.sidebarGhost(),
+        workspace_ghost: this.sidebarWorkspaceGhost(),
         menu: this.menu(),
         tab_menu: this.tab_menu,
         port_menu: this.port_menu,

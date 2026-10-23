@@ -57,6 +57,10 @@ export class State {
     else this.entries[free] = e;
     return e;
   }
+  /** Workspace `ws`'s tabs as switching to it would show them. */
+  selection(store: Workspaces, ws: Workspace): Selection {
+    return this.entry(store, ws).value;
+  }
   /** Workspace `ws`'s tabs as focusing pane `id` would leave them. */
   entering(store: Workspaces, ws: Workspace, id: number): Selection {
     const from = this.entry(store, ws).value;
