@@ -8,6 +8,15 @@ import { entry, open } from "./history";
 import * as locations from "./locations";
 import { transcript } from "./transcript";
 import { Agent, Text } from "../../agents";
+test("Pi prompt hooks carry bounded initial naming evidence only on prompt events", () => {
+  const prompt = adapter.hook({ event: "UserPromptSubmit", session: "s", initial_request: "é".repeat(3000) })!;
+  expect(Buffer.byteLength(prompt.initial_request)).toBe(2048);
+  expect(prompt.initial_request).not.toContain("�");
+  expect(
+    adapter.hook({ event: "PreToolUse", session: "s", initial_request: "Ignore this tool output" })?.initial_request,
+  ).toBe("");
+});
+
 test("Pi launches, resumes and forks without treating trust as tool approval", () => {
   expect(adapter.launch.start({ permissions: "bypass", model: "openai-codex/gpt-6-luna", args: [] })).toEqual([
     "--model",

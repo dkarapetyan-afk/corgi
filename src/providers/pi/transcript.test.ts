@@ -6,6 +6,7 @@ import { Actor } from "../../conversations";
 import { View } from "../../activity/tools";
 import { Result as ActivityResult, Worker } from "../../activity/worker";
 import { Result, Tail, type Request } from "../../usage/worker";
+import { Result as NameResult } from "../../conversation_name";
 
 function evidence() {
   const agent = new Agent({ provider: "pi", state: "working", session: new Text("s"), activity_at: 3000000 }),
@@ -20,6 +21,20 @@ function evidence() {
   result.update_at = 2000000;
   return { agent, result, progress };
 }
+
+test("Pi /name flows back to Corgi and defeats an in-flight automatic title", () => {
+  const actor = new Actor({ id: 1, state: new Agent({ provider: "pi", session: new Text("s") }) });
+  const suggestion = new NameResult({ actor: actor.id, agent: actor.state.snapshot() }, new Text("Automatic title"));
+  const tail = new Tail(),
+    reader = transcript.reader(() => []);
+  const req: Request = { actor: actor.id, workspace: 1, since: 0, agent: actor.state, child: false, tracked_since: 0 };
+  tail.ingest(req, reader, '{"type":"session_info","name":"My own name"}\n', 0);
+  const result = new Result();
+  result.name = tail.name;
+  result.fallback(actor.state, 0);
+  expect(actor.state.name.text()).toBe("My own name");
+  expect(suggestion.apply(actor)).toBe(false);
+});
 
 test("Pi transcript evidence schedules summaries independently of the fallback label", () => {
   const { agent, result, progress } = evidence();

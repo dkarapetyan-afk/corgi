@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { grade, scorecard, validateCases, type Observation, type Result } from "./score";
 import cases from "./cases.json";
+import namingCases from "./naming_cases.json";
 
 const output = (label: string | null, action = label === null ? "none" : "new"): Observation => ({
   id: "case",
@@ -13,6 +14,18 @@ const output = (label: string | null, action = label === null ? "none" : "new"):
 describe("activity eval assertions", () => {
   test("fixtures have meaningful, bounded assertions", () => {
     expect(validateCases(cases)).toHaveLength(19);
+  });
+  test("name cases use the production format and reject mismatched driver output", () => {
+    expect(validateCases(namingCases)).toHaveLength(9);
+    const step = { task: "name" as const, evidence: "Fix Pi OAuth", expect: "label" as const, all: ["Pi", "OAuth"] };
+    const name = { ...output("Pi OAuth sign-in"), raw: '{"name":"Pi OAuth sign-in"}' };
+    expect(grade(step, name)).toEqual([]);
+    expect(grade(step, { ...name, raw: '{"name":null}' })).toEqual(["inconsistent name"]);
+    expect(grade(step, { ...name, raw: '{"name":"One two three four five six seven eight"}' })).toEqual([
+      "invalid name response",
+    ]);
+    expect(grade(step, output("Pi OAuth sign-in"))).toEqual(["invalid name response"]);
+    expect(() => validateCases([{ id: "bad", category: "naming", steps: [{ ...step, task: "bogus" }] }])).toThrow();
   });
   test("the original failure fails even though it has three words", () => {
     expect(grade({ evidence: "make", expect: "abstain" }, output("Awaiting task details"))).toContain(

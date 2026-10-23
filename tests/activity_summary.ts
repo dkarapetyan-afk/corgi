@@ -136,6 +136,41 @@ export class PiSummaries extends Runtime {
   async agent() {
     return (await this.session()).panes.find((p: any) => p.id === this.pane).agent;
   }
+  async test_pi_conversation_names_follow_opening_and_user_rename() {
+    writeFileSync(this.control, JSON.stringify({ name: "Pi parser fixes" }));
+    appendFileSync(
+      this.transcript,
+      JSON.stringify({
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "Fix Pi parser failures" }] },
+      }) + "\n",
+    );
+    await this.hook("SessionStart", "");
+    await this.until(async () => (await this.agent()).name === "Pi parser fixes");
+    this.assertEqual(JSON.parse(lines(this.log)[0]).initial_request, "Fix Pi parser failures");
+    appendFileSync(this.transcript, JSON.stringify({ type: "session_info", name: "My own /name" }) + "\n");
+    await this.settle();
+    await this.until(async () => (await this.agent()).name === "My own /name");
+    await this.advance(65);
+    this.assertEqual((await this.agent()).name, "My own /name");
+    this.assertEqual(lines(this.log).length, 1);
+  }
+  async test_pi_existing_name_never_requests_automatic_naming() {
+    appendFileSync(
+      this.transcript,
+      [
+        { type: "session_info", name: "Already named" },
+        { type: "message", message: { role: "user", content: "Fix Pi parser failures" } },
+      ]
+        .map(v => JSON.stringify(v))
+        .join("\n") + "\n",
+    );
+    await this.hook("SessionStart", "");
+    await this.settle();
+    await this.until(async () => (await this.agent()).name === "Already named");
+    await this.advance(65);
+    this.assertEqual(lines(this.log).length, 0);
+  }
   async test_pi_hooks_do_not_block_summaries_or_the_next_turn_timeline() {
     await this.hook("SessionStart", "");
     await this.settle();

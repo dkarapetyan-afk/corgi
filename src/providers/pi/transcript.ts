@@ -7,6 +7,7 @@ import { Call, clip, shortPath } from "../../activity/tools";
 import { Text as Summary } from "../../activity/summary";
 import { messageText, reported } from "./headless";
 export const transcript: Transcript = {
+  naming: agent => import("./naming").then(m => m.input(agent)),
   verify(head, session) {
     if (str(head, "type") !== "session" || str(head, "id") !== session) throw Error("WrongSession");
   },

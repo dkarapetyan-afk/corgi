@@ -94,11 +94,14 @@ for await (const line of createInterface({ input: process.stdin })) {
     let result = "label" in control ? control.label : JSON.stringify({ pid: process.pid, thread, turn: turns });
     if (codex) schema = value.params.outputSchema;
     const label = "label" in control ? control.label : "Tracing pane focus";
+    const properties = (codex ? schema : claudeSchema)?.properties ?? {};
     const structured =
-      "action" in ((codex ? schema : claudeSchema)?.properties ?? {})
-        ? { action: control.action ?? (label === null ? "none" : "new"), label }
-        : { label };
-    if (schema && "label" in control) result = JSON.stringify(structured);
+      "name" in properties
+        ? { name: control.name ?? null }
+        : "action" in properties
+          ? { action: control.action ?? (label === null ? "none" : "new"), label }
+          : { label };
+    if (schema && ("label" in control || "name" in control)) result = JSON.stringify(structured);
     if ("raw" in control) result = control.raw;
     if (content === "oversize") result = "x".repeat(9000);
     const failed = content === "fail" || !!control.fail;

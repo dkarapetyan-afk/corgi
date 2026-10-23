@@ -1,7 +1,10 @@
 import { actions, type Action } from "../src/activity/prompt";
+import * as naming from "../src/conversation_name";
 
 /** `action` lists the decisions a step accepts, when it matters which one. */
 export type CaseStep = {
+  task?: "name";
+  reference?: { provider: "claude" | "codex"; title: string; session: string };
   evidence: string;
   turn?: string;
   expect: "abstain" | "label";
@@ -46,6 +49,25 @@ export function grade(step: CaseStep, output: Observation | null): string[] {
   } catch {
     return ["invalid JSON response"];
   }
+  if (step.task === "name") {
+    let name;
+    try {
+      name = naming.parse(output.raw ?? "");
+    } catch {
+      return ["invalid name response"];
+    }
+    if ((name?.text() ?? null) !== output.label || output.status !== (name ? "label" : "abstained"))
+      return ["inconsistent name"];
+    const failures: string[] = [];
+    if (step.expect === "abstain" && name) failures.push("expected abstention");
+    if (step.expect === "label" && !name) failures.push("unnecessary abstention");
+    if (name) {
+      if (generic.test(name.text()) || inputClaim.test(name.text())) failures.push("generic name");
+      for (const pattern of step.all ?? [])
+        if (!new RegExp(pattern, "i").test(name.text())) failures.push(`missing topic: ${pattern}`);
+    }
+    return failures;
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).sort().join() !== "action,label")
     return ["invalid response schema"];
   const { action, label: value } = raw as { action: unknown; label: unknown };
@@ -72,8 +94,8 @@ export function grade(step: CaseStep, output: Observation | null): string[] {
 
 export function scorecard(results: Result[]): string {
   const lines = [
-    "| Model | Pass | Abstention | Activity | Sequences | Injection | Errors | p50 / p95 |",
-    "|---|---:|---:|---:|---:|---:|---:|---:|",
+    "| Model | Pass | Abstention | Activity | Sequences | Injection | Names | Errors | p50 / p95 |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
   ];
   for (const model of [...new Set(results.map(r => r.model))]) {
     const rows = results.filter(r => r.model === model);
@@ -86,10 +108,29 @@ export function scorecard(results: Result[]): string {
       times.length ? `${(times[Math.max(0, Math.ceil(times.length * p) - 1)] / 1000).toFixed(1)}s` : "—";
     const errors = rows.filter(r => !r.observation || ["error", "invalid"].includes(r.observation.status)).length;
     lines.push(
-      `| ${model.replaceAll("|", "\\|")} | ${ratio(rows)} | ${ratio(rows.filter(r => r.category === "abstention"))} | ${ratio(rows.filter(r => r.category === "activity"))} | ${ratio(rows.filter(r => r.category === "sequence"))} | ${ratio(rows.filter(r => r.category === "injection"))} | ${errors} | ${percentile(0.5)} / ${percentile(0.95)} |`,
+      `| ${model.replaceAll("|", "\\|")} | ${ratio(rows)} | ${ratio(rows.filter(r => r.category === "abstention"))} | ${ratio(rows.filter(r => r.category === "activity"))} | ${ratio(rows.filter(r => r.category === "sequence"))} | ${ratio(rows.filter(r => r.category === "injection"))} | ${ratio(rows.filter(r => r.category === "naming"))} | ${errors} | ${percentile(0.5)} / ${percentile(0.95)} |`,
     );
   }
   return lines.join("\n");
+}
+
+export function comparisons(results: Result[]): string[] {
+  const rows = results.filter(r => r.expected.reference);
+  if (!rows.length) return [];
+  const cell = (s: string) => s.replaceAll("|", "\\|").replaceAll("\n", " ");
+  return [
+    "## Historical conversation names",
+    "",
+    "Stored provider titles may reflect later turns; Corgi sees only the bounded initial request. These are topic/format checks, not a subjective quality ranking.",
+    "",
+    "| Source | Initial request | Stored title | Corgi model | Corgi name |",
+    "|---|---|---|---|---|",
+    ...rows.map(
+      r =>
+        `| ${r.expected.reference!.provider} | ${cell(r.expected.evidence)} | ${cell(r.expected.reference!.title)} | ${cell(r.model)} | ${cell(r.observation?.label ?? r.observation?.err ?? "(abstain)")} |`,
+    ),
+    "",
+  ];
 }
 
 export function validateCases(value: unknown): Scenario[] {
@@ -100,13 +141,21 @@ export function validateCases(value: unknown): Scenario[] {
       throw new Error("invalid/duplicate case ID");
     ids.add(scenario.id);
     if (
-      !["abstention", "activity", "sequence", "injection"].includes(scenario.category) ||
+      !["abstention", "activity", "sequence", "injection", "naming"].includes(scenario.category) ||
       !Array.isArray(scenario.steps) ||
       !scenario.steps.length
     )
       throw new Error(`invalid case ${scenario.id}`);
     for (const step of scenario.steps) {
       if (
+        (step.reference !== undefined &&
+          (step.task !== "name" ||
+            !step.reference ||
+            !["claude", "codex"].includes(step.reference.provider) ||
+            typeof step.reference.title !== "string" ||
+            typeof step.reference.session !== "string")) ||
+        (step.task !== undefined && step.task !== "name") ||
+        (step.task === "name" && step.action !== undefined) ||
         typeof step.evidence !== "string" ||
         !step.evidence.length ||
         Buffer.byteLength(step.evidence) > 2048 ||

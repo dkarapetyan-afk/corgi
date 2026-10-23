@@ -4,32 +4,40 @@ import { readdir, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { directory } from "./integration";
-function request(path: string, session: string, name?: string): Promise<boolean> {
+type Status = "named" | "exists" | "unavailable";
+function request(path: string, session: string, name?: string, only_unnamed = false): Promise<Status> {
   return new Promise(resolve => {
     const socket = createConnection(path),
-      finish = (ok: boolean) => {
+      finish = (status: Status) => {
         socket.destroy();
-        resolve(ok);
+        resolve(status);
       };
     let bytes = "";
-    socket.setTimeout(1500, () => finish(false));
-    socket.on("error", () => finish(false));
-    socket.on("end", () => finish(false));
-    socket.on("connect", () => socket.write(JSON.stringify({ session, name }) + "\n"));
+    socket.setTimeout(1500, () => finish("unavailable"));
+    socket.on("error", () => finish("unavailable"));
+    socket.on("end", () => finish("unavailable"));
+    socket.on("connect", () => socket.write(JSON.stringify({ session, name, only_unnamed }) + "\n"));
     socket.on("data", data => {
       bytes += data;
-      if (bytes.length > 1024) return finish(false);
+      if (bytes.length > 1024) return finish("unavailable");
       if (bytes.includes("\n")) {
         try {
-          finish(JSON.parse(bytes).ok === true);
+          const response = JSON.parse(bytes);
+          finish(
+            response.exists === true
+              ? "exists"
+              : response.ok === true && (!only_unnamed || response.automatic === true)
+                ? "named"
+                : "unavailable",
+          );
         } catch {
-          finish(false);
+          finish("unavailable");
         }
       }
     });
   });
 }
-export async function channel(session: string, _connected = false, account = "") {
+async function locate(session: string, account: string, automatic = false) {
   const uid = process.getuid?.() ?? 0;
   const hash = createHash("sha256")
     .update(directory(account) + "\n" + session)
@@ -45,10 +53,19 @@ export async function channel(session: string, _connected = false, account = "")
     } catch {
       continue;
     }
-    if (await request(path, session))
-      return async (name: string) => {
-        if (!(await request(path, session, name))) throw Error("PiRenameFailed");
-      };
+    if ((await request(path, session, undefined, automatic)) === "named") return path;
   }
   return null;
+}
+export async function channel(session: string, _connected = false, account = "") {
+  const path = await locate(session, account);
+  return path
+    ? async (name: string) => {
+        if ((await request(path, session, name)) !== "named") throw Error("PiRenameFailed");
+      }
+    : null;
+}
+export async function suggest(session: string, name: string, account = ""): Promise<Status> {
+  const path = await locate(session, account, true);
+  return path ? request(path, session, name, true) : "unavailable";
 }

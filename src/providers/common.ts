@@ -128,6 +128,7 @@ export class Hooks {
       session: str(v, "session_id"),
       turn: str(v, "turn_id"),
       prompt: str(v, "prompt_id"),
+      initial_request: "",
       transcript: str(v, "transcript_path"),
       cwd: str(v, "cwd"),
       model: str(v, "model"),

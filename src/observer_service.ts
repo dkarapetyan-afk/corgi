@@ -313,7 +313,8 @@ export function hook(server: Server, query: Request<"hook">) {
     runtime.conversations.observeHook(actor, event, seq, actorWatched(server, actor.id), now, presence),
     actor.state.state,
   );
-  workers.summaries.reconcile(runtime.conversations.items);
+  workers.summaries.reconcile(runtime.conversations.items, runtime.panes);
+  if (event.initial_request) workers.summaries.names.offer(actor, event.initial_request);
   changed(server);
 }
 export async function tick(server: Server) {
@@ -348,13 +349,37 @@ export async function tick(server: Server) {
     }
     const at = clock.microTimestamp();
     for (const actor of runtime.conversations.items) if (actor.state.trackWorking(at)) changed(server);
-    workers.summaries.reconcile(runtime.conversations.items);
+    workers.summaries.reconcile(runtime.conversations.items, runtime.panes);
     if (server.clients.some(client => client.viewer && !client.dead)) workers.summaries.observe(now);
     workers.summaries.remember(runtime.last_agent);
     publishInference(server, workers);
     for (const result of workers.summaries.take()) {
       const actor = runtime.conversations.byId(result.request.actor);
       if (actor && result.apply(actor)) changed(server);
+    }
+    for (const result of workers.summaries.names.take()) {
+      const actor = runtime.conversations.byId(result.request.actor);
+      if (!workers.summaries.naming() || !actor || !result.name || !result.matches(actor)) continue;
+      const pane = runtime.panes.find(p => p.attachment.actor === actor && !p.terminal.exited);
+      if (!pane || [...runtime.renames, ...runtime.wanted_names].some(r => r.pane === pane.id)) continue;
+      // The provider checks for a name set while inference was in flight.
+      try {
+        const status = await adapter(actor.provider()).rename?.suggest?.(
+          actor.state.sessionId(),
+          result.name.text(),
+          pane.account(),
+        );
+        if (status === "exists") continue;
+      } catch {
+        // Keep a local name if the provider's channel is gone.
+      }
+      if (
+        runtime.panes.includes(pane) &&
+        !pane.terminal.exited &&
+        pane.attachment.actor === actor &&
+        result.apply(actor)
+      )
+        changed(server);
     }
     const systemWorking = workers.summaries.implementation.pool.working;
     if (runtime.system_working !== systemWorking) {

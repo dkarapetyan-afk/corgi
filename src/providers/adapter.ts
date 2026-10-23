@@ -73,6 +73,8 @@ export interface Client {
 export type Place = { cwd: string; account: string; executable: string };
 /** A provider's session transcripts, read as they grow. */
 export interface Transcript {
+  /** Initial user evidence for Corgi naming, only when the provider has no automatic titles. */
+  naming?(agent: Agent): Promise<string | null>;
   /** Throws unless `head`, a transcript's first record, says it is `session`'s. */
   verify?(head: unknown, session: string): void;
   /** How a record ends `agent`'s current turn, if it does. */
@@ -115,6 +117,8 @@ export interface Observer {
 }
 /** How a provider renames a session. */
 export interface Rename {
+  /** Sets an automatic title only if the provider still has no explicit name. */
+  suggest?(session: string, name: string, account: string): Promise<"named" | "exists" | "unavailable">;
   /** Renames `session`, in `account`, through the provider's own channel, if
    * one is open now; `connected` when its protocol spoke in the last few
    * seconds. */

@@ -6,10 +6,11 @@ import * as commandLine from "../command_line";
 import { Pi, summaryArgs } from "./headless";
 import { directory, extension, source } from "./integration";
 import { transcript } from "./transcript";
-import { channel } from "./rename";
+import { channel, suggest } from "./rename";
 import { info } from "./info";
 import { accounts } from "./accounts";
 import * as locations from "./locations";
+import { clip } from "../../activity/tools";
 const hooks = new Hooks();
 export const adapter: Adapter = {
   ...info,
@@ -72,6 +73,7 @@ export const adapter: Adapter = {
         description: str(input, "description"),
       },
     });
+    if (hook && hook.kind === "prompt") hook.initial_request = clip(str(v, "initial_request"), 2048);
     const outcome = str(v, "outcome");
     if (hook && hook.kind === "stop" && ["completed", "interrupted", "failed"].includes(outcome))
       hook.outcome = outcome as "completed" | "interrupted" | "failed";
@@ -135,7 +137,7 @@ export const adapter: Adapter = {
         env: /^(?:HOME|PI_.+|.+_API_KEY|.+_AUTH_TOKEN|.+_BASE_URL)$/,
       }),
   },
-  rename: { channel },
+  rename: { channel, suggest },
   headless: { start: at => Pi.start(at), restore: Pi.restore },
   inference: {
     model: "openai-codex/gpt-6-luna",

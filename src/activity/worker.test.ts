@@ -4,6 +4,7 @@ import { Text, parseLabel, hash } from "./summary";
 import { Registry, Attachment, Actor } from "../conversations";
 import { View as ToolView } from "./tools";
 import { clone } from "../json";
+import { Path } from "../agents";
 import { Option, Selection, compare } from "../inference/models";
 test("Pi inference defaults to the cheapest subscription and pins an explicit model and account across handoff", () => {
   const worker = new Worker("pi");
@@ -110,6 +111,43 @@ test("Pi Auto re-resolves its model without pinning or saving the resolved name"
   worker.stop();
 });
 
+test("conversation names are queued only while attached to a live Corgi pane", () => {
+  const worker = new Worker(),
+    registry = new Registry(),
+    actor = registry.get("pi", "pi-session");
+  actor.state.transcript = new Path("/tmp/pi-session.jsonl");
+  const pane = { attachment: new Attachment(), terminal: { exited: false } } as any;
+  pane.attachment.select(actor);
+  worker.reconcile([actor]);
+  expect(worker.names.slots.size).toBe(0);
+  worker.reconcile([actor], [pane]);
+  expect(worker.names.slots.size).toBe(1);
+  pane.terminal.exited = true;
+  worker.reconcile([actor], [pane]);
+  expect(worker.names.slots.size).toBe(0);
+  pane.terminal.exited = false;
+  pane.attachment.deselect();
+  worker.reconcile([actor], [pane]);
+  expect(worker.names.slots.size).toBe(0);
+});
+test("conversation naming shares the worker's off switch and inference scheduling", async () => {
+  const worker = new Worker("off");
+  let calls = 0;
+  worker.names.ready = () => true;
+  worker.names.run = async () => {
+    calls++;
+    return true;
+  };
+  try {
+    await worker.run();
+    expect(calls).toBe(0);
+    worker.configure("claude");
+    await worker.run();
+    expect(calls).toBe(1);
+  } finally {
+    worker.stop();
+  }
+});
 test("each use turns off on its own, and an old off choice turns them all off", () => {
   const worker = new Worker("off");
   expect(worker.choice).toBe("auto");

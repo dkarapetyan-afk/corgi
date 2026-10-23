@@ -8,7 +8,7 @@ import { join } from "node:path";
 export default function (pi) {
   const owner = process.env.CORGI_PI_OWNER;
   if (owner && owner !== String(process.pid)) return;
-  let turn = "", result = "completed", escaped = false, prompts = 0, removeInput;
+  let turn = "", result = "completed", escaped = false, prompts = 0, prompt = "", removeInput;
   const inputs = new Map();
   let server;
   const active = ctx => ctx.mode === "tui" && process.env.CORGI_PANE && process.env.CORGI_SOCKET && process.env.CORGI_BIN;
@@ -42,9 +42,10 @@ export default function (pi) {
           if(r.session !== ctx.sessionManager.getSessionId()) return socket.end('{"ok":false}\n');
           if(r.name !== undefined) {
             if(typeof r.name !== "string" || r.name.length > 160 || /[\x00-\x1f]/.test(r.name)) return socket.end('{"ok":false}\n');
+            if(r.only_unnamed && pi.getSessionName()) return socket.end('{"ok":false,"exists":true}\n');
             pi.setSessionName(r.name);
           }
-          socket.end('{"ok":true}\n');
+          socket.end('{"ok":true,"automatic":true}\n');
         } catch { socket.destroy(); }
       });
     });
@@ -52,10 +53,17 @@ export default function (pi) {
     server.listen(socketPath, () => { try { chmodSync(socketPath,0o600); } catch {} });
     await report(ctx, "SessionStart");
   });
+  pi.on("before_agent_start", (e, ctx) => { prompt = active(ctx) && e.messageType !== "custom" ? e.prompt || "" : ""; });
   pi.on("agent_start", async (_e, ctx) => {
     if (!active(ctx) || turn) return;
     turn = randomUUID(); result = "completed"; escaped = false;
-    await report(ctx, "UserPromptSubmit");
+    const opening = pi.getSessionName() ? undefined : ctx.sessionManager.getBranch().find(e => e.type === "message" && e.message.role === "user");
+    const content = opening?.message.content ?? (pi.getSessionName() ? "" : prompt);
+    const text = typeof content === "string" ? content : (content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+    const bytes = Buffer.from(text);
+    let end = Math.min(bytes.length, 2048);
+    while(end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    await report(ctx, "UserPromptSubmit", { initial_request: bytes.subarray(0,end).toString() });
   });
   pi.on("message_end", (e, ctx) => {
     if (!active(ctx) || e.message.role !== "assistant") return;

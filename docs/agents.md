@@ -169,9 +169,9 @@ adapters. Live meters are not a durable ledger.
 
 ## Inference and data boundaries
 
-Activity summaries, worktree briefs and link names share a private inference
-worker. Its provider can differ from the agent being observed. Saved inference
-settings override environment defaults; [inference/setup.ts](../src/inference/setup.ts)
+Activity summaries, conversation names, worktree briefs and link names share a
+private inference worker. Its provider can differ from the agent being observed.
+Saved inference settings override environment defaults; [inference/setup.ts](../src/inference/setup.ts)
 owns that precedence and [inference/harness.ts](../src/inference/harness.ts) owns
 the persistent provider conversations.
 
@@ -192,14 +192,23 @@ unpriced zero costs are unknown, not free. Auto's resolved model and account are
 not saved as preferences and can change on a later catalog refresh. An explicit
 pick saves its model and account independently of Pi's chat settings; it never
 silently substitutes another model if that login becomes unavailable. Summaries,
-link names and worktree briefs all use that selection.
+link names, conversation names and worktree briefs all use that selection.
 The defaulted selection, catalog and account fields extend the wire and handoff
 snapshots without changing protocol or saved-format versions.
 
 Requests carry bounded current evidence. Activity summaries receive commentary
 and tool descriptions, not tool output; link naming can include visible terminal
-text. Worktree briefs use commits and a trimmed diff. Names and summaries are
-model guesses, never lifecycle evidence or verified page titles.
+text. Conversation names use at most 2048 bytes of the initial user request,
+never tool output or assistant commentary. Only untitled root conversations
+attached to live Corgi panes, of providers without automatic titles, opt in;
+explicit names always win. Pending name requests can be reconstructed after
+handoff; applied names use the actor's
+existing saved name. Pi's prompt hook supplies bounded opening text directly,
+without image data, so naming need not wait for a transcript or assistant reply.
+Older extensions fall back to the transcript; an absent or empty file retries
+promptly without using the model-error backoff. Worktree briefs use commits and a
+trimmed diff. Names and summaries are model guesses, never lifecycle
+evidence or verified page titles.
 
 Helper conversations must remain outside the visible agent registry and produce
 no attention notifications. The harness restricts provider tools and MCP access;
@@ -256,8 +265,12 @@ usage through its extension and session records. `agent_settled`, after
 retries and queued work, ends a Corgi turn. Pi 1.0 lacks settlement's
 `aborted` flag; assistant stop reasons and an observed Escape supply it.
 Corgi also supports session history, resume, fork, rename, headless RPC,
-private tool-less summaries and live transport handoff. Activity summaries
-use current-turn transcript commentary and tools independently of the
+private tool-less summaries and live transport handoff. Corgi names untitled Pi
+conversations running in its panes from their opening request, using its configured
+inference model. Pi running outside Corgi is never automatically named.
+Connected extensions save the suggestion into Pi too, only if it is still unnamed;
+older or unavailable extensions keep the name local to Corgi. Turn inference off
+to disable automatic naming. Activity summaries use current-turn transcript commentary and tools independently of the
 hook activity shown as a fallback.
 
 History follows Pi's session-directory environment variable and global

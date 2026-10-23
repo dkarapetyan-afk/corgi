@@ -4,8 +4,9 @@
 import { readFileSync } from "node:fs";
 import { Pool, type Provider } from "../src/inference";
 import * as contract from "../src/activity/prompt";
+import * as naming from "../src/conversation_name";
 
-type Step = { id: string; evidence: string; turn: string };
+type Step = { id: string; evidence: string; turn: string; task?: "name" };
 /** Instructions and schema default to production; playback backfills override them. */
 type Scenario = { id: string; steps: Step[]; instructions?: string | null; schema?: string | null };
 
@@ -16,7 +17,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length !== 3) throw Error("Usage");
   const [provider, model, planPath] = args;
-  if (provider !== "codex" && provider !== "claude") throw Error("InvalidProvider");
+  if (provider !== "codex" && provider !== "claude" && provider !== "pi") throw Error("InvalidProvider");
   const pool = new Pool({
     config: {
       provider: provider as Provider,
@@ -34,6 +35,38 @@ async function main() {
         if (stopping.value) throw Error("Cancelled");
         // Match the production evidence bound; never silently evaluate more context.
         if (Buffer.byteLength(step.evidence) > 2048) throw Error("EvidenceTooLong");
+        if (step.task === "name") {
+          const started = Date.now(),
+            input = naming.content(step.evidence);
+          let raw: string | null = null;
+          try {
+            const response = await pool.infer(
+              { instructions: naming.instructions, schema: naming.schema, content: input },
+              stopping,
+            );
+            raw = response.text();
+            const name = naming.parse(raw);
+            emit({
+              id: step.id,
+              status: name ? "label" : "abstained",
+              label: name?.text() ?? null,
+              raw,
+              elapsed_ms: Date.now() - started,
+              input: JSON.parse(input),
+            });
+          } catch (error) {
+            emit({
+              id: step.id,
+              status: raw === null ? "error" : "invalid",
+              err: (error as Error).message,
+              label: null,
+              raw,
+              elapsed_ms: Date.now() - started,
+              input: JSON.parse(input),
+            });
+          }
+          continue;
+        }
         // As in production, history accompanies only a newly created conversation.
         const history = context.recent.slice(0, context.len).map(entry => entry.text());
         const phase = context.phase(step.turn);

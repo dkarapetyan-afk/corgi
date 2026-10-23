@@ -3,6 +3,63 @@ import { mkdtemp, writeFile, chmod, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+test("historical naming manifests report native titles without sending them to the driver", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "corgi-name-eval-"));
+  try {
+    const cases = join(dir, "cases.json"),
+      driver = join(dir, "fixture.ts"),
+      out = join(dir, "results");
+    await writeFile(
+      cases,
+      JSON.stringify([
+        {
+          id: "history",
+          category: "naming",
+          steps: [
+            {
+              task: "name",
+              evidence: "Add Pi sign-in",
+              expect: "label",
+              all: ["Pi"],
+              reference: { provider: "claude", title: "Original native title", session: "private-session" },
+            },
+          ],
+        },
+      ]),
+    );
+    await writeFile(
+      driver,
+      `
+      const plan = await Bun.file(process.argv.at(-1)).json();
+      if (JSON.stringify(plan).includes("Original native title") || JSON.stringify(plan).includes("private-session")) throw Error("ReferenceLeak");
+      for (const scenario of plan) for (const step of scenario.steps) console.log(JSON.stringify({ id:step.id,status:"label",label:"Pi account sign-in",raw:JSON.stringify({name:"Pi account sign-in"}),elapsed_ms:1 }));
+    `,
+    );
+    const proc = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "run.ts"),
+        "--cases",
+        cases,
+        "--driver",
+        driver,
+        "--model",
+        "codex:fixture",
+        "--out",
+        out,
+      ],
+      { stdout: "ignore", stderr: "pipe" },
+    );
+    expect(await proc.exited, await new Response(proc.stderr).text()).toBe(0);
+    const report = JSON.parse(await readFile(join(out, "latest.json"), "utf8"));
+    expect(report.metadata.casesPath).toBe(cases);
+    expect(report.metadata.casesHash).toHaveLength(64);
+    expect(await readFile(join(out, "latest.md"), "utf8")).toContain("Original native title");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runner exits nonzero for failures/missing results and saves a reproducible scorecard", async () => {
   const dir = await mkdtemp(join(tmpdir(), "corgi-eval-test-"));
   try {

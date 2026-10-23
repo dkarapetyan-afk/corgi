@@ -1,6 +1,6 @@
-# Activity summary evals
+# Inference evals
 
-These are small, deterministic assertions around **live model responses**. They probe when an activity summarizer should abstain, whether it can still name useful work, and whether it keeps a phase across snapshots instead of adding a row per call. They run the production inference harness, prompt, JSON schema, parser, and bounded conversation-history implementation, through `evals/driver.ts`. They do not open a Corgi runtime or modify a running session.
+These are small, deterministic assertions around **live model responses** for activity summaries and conversation names. They probe when an activity summarizer should abstain, whether it can still name useful work, and whether it keeps a phase across snapshots instead of adding a row per call. They run the production inference harness, prompt, JSON schema, parser, and bounded conversation-history implementation, through `evals/driver.ts`. They do not open a Corgi runtime or modify a running session.
 
 ```sh
 bun test evals                         # scorer/runner tests; no model calls
@@ -8,12 +8,13 @@ bun run evals/run.ts                   # evaluate both defaults
 bun run evals/run.ts --repeat 3        # exercise output variability
 ```
 
-Defaults are Claude Haiku 5.5 (`claude-haiku-5-5`) and GPT-6 Luna (`gpt-6-luna`). Calls use the installed Claude/Codex CLI and its existing login, with the same tool restrictions as Corgi. They consume model usage. No extra SDK, API key, or evaluator model is required.
+Defaults are Claude Haiku 5.5 (`claude-haiku-5-5`) and GPT-6 Luna (`gpt-6-luna`). Pi targets use provider-qualified model IDs and the default Pi account. Calls use the installed Claude/Codex/Pi CLI and its existing login, with the same tool restrictions as Corgi. They consume model usage. No extra SDK, API key, or evaluator model is required.
 
 For a new model or a focused regression:
 
 ```sh
 bun run evals/run.ts --model codex:MODEL_ID
+bun run evals/run.ts --model pi:PROVIDER/MODEL_ID
 bun run evals/run.ts --model claude:MODEL_ID --repeat 3
 bun run evals/run.ts --case make-alone --case evidence-arrives
 bun run evals/run.ts --list
@@ -39,7 +40,49 @@ Each run writes `evals/results/<timestamp>/report.json` and `scorecard.md`, plus
 
 To add a probe, append a scenario with `id`, `category`, and `steps`. Each step includes the production evidence text, `expect: "abstain" | "label"`, an optional turn ID, and—for labels—an `all` array of case-insensitive topic regexes. A phase step may add `action`, the actions it accepts. A `keep` is scored as the label of the phase it kept. Evidence is limited to the production 2048-byte bound. Use synthetic evidence so scorecards are safe to share.
 
+## Conversation names
+
+`naming_cases.json` adds nine scenarios / eleven independent naming probes. They run the production
+conversation-name prompt, schema, input bound and parser. They check sparse and
+opaque requests, descriptive commands, goal rather than preparatory activity,
+multiple product names, Unicode and instructions embedded in a request.
+
+```sh
+bun run evals/run.ts --case name-goal-not-phase --case name-injection
+bun run evals/run.ts --cases /private/path/history-cases.json --out evals/results/history
+```
+
+A naming step has `task: "name"`, `evidence` containing the initial user request,
+and the same `expect` and topic `all` assertions. It may include
+`reference: { provider: "claude" | "codex", title, session }` to compare a stored
+native title with Corgi's guess. `--cases` replaces the built-in scenarios; the
+report records the manifest path and hash. Reference titles are reporting-only:
+they are never sent to the model or used as exact-match goldens. Reports show
+the initial input, stored title, and Corgi title under each inference model.
+Stored titles can reflect later turns; comparisons are not quality rankings.
+Exclude continued transcripts that no longer contain their original opening.
+
+Historical manifests and reports contain private conversations. Keep them under
+ignored `evals/results/` or outside the repository; do not add them to fixtures.
+Synthetic naming probes are safe to share. Discarded initial experiments remain
+in their timestamped directories, so a later successful rerun does not erase them.
+
 ## History
+
+On 2026-10-23, conversation naming passed all nine synthetic probes on Haiku
+5.5 and Luna, then all fourteen historical topic/format checks on each model
+(seven Claude and seven Codex conversations). Initial experiments exposed
+word-count violations and inconsistent naming of `$commit-all`; the prompt and
+provider-supported schema constraints were tightened. The combined suite scored
+33/33 on Haiku and 32/33 on Luna: its existing `background-build` check abstained
+once, then passed three focused reruns. Private comparisons remain in local
+`evals/results/history/`; no historical conversations were added to fixtures.
+
+The Pi picker follow-up passed all eleven naming probes on Haiku, Codex Luna
+and Pi's Codex-backed Luna. Pi initially copied raw command tokens or abstained
+on descriptive commands; explicit JSON examples fixed that behavior, and added
+command probes not shown in the prompt also passed. Reports, including failed
+experiments, remain under `evals/results/pi-models*/` and `pi-picker-final/`.
 
 The first candidate abstention prompt scored 57/60 on Haiku 4.5 and 54/60 on
 Luna. These assertions exposed generic tool-name labels and unnecessary

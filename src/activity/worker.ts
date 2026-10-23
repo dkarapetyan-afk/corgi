@@ -1,5 +1,6 @@
 import { hydrate } from "../persist/checkpoint";
 import * as links from "../trackers/link_labels";
+import * as conversation_name from "../conversation_name";
 import { Actor, max_actors } from "../conversations";
 import { Agent, Provider, Text } from "../agents";
 import * as summary from "./summary";
@@ -11,6 +12,7 @@ import { Selection } from "../inference/models";
 import { Catalog } from "../inference/catalog";
 import { adapter } from "../providers";
 import { Meter } from "../usage/live";
+import type { Pane } from "../runtime";
 import * as clock from "../clock";
 export const cooldown_ms = 8000,
   tool_quiet_ms = 5000,
@@ -132,6 +134,8 @@ export class Slot {
   }
 }
 export class Worker {
+  names = new conversation_name.Queue();
+  prefer_names = true;
   link_requests: Array<links.Request | null> = Array(links.capacity).fill(null);
   link_results: Array<links.Result | null> = Array(links.capacity).fill(null);
   link_cursor = 0;
@@ -195,7 +199,7 @@ export class Worker {
   summarizing() {
     return this.uses.activity;
   }
-  /** Whether links are named after what they open. */
+  /** Whether links and untitled conversations are named. */
   naming() {
     return this.link_names;
   }
@@ -436,7 +440,8 @@ export class Worker {
     const slot = this.slots.find(s => s?.request.actor === actor && s.request.turn_epoch === agent.turn_epoch);
     slot?.observeTools(progress, clock.milliTimestamp());
   }
-  reconcile(actors: Actor[]) {
+  reconcile(actors: Actor[], panes: readonly Pane[] = []) {
+    this.names.reconcile(actors.filter(actor => panes.some(p => !p.terminal.exited && p.attachment.actor === actor)));
     this.slots = this.slots.map(slot => {
       if (!slot) return null;
       const actor = actors.find(
@@ -517,6 +522,14 @@ export class Worker {
           break;
         }
       }
+      if (this.naming() && this.names.ready(now) && (this.prefer_names || (index < 0 && selected_link < 0))) {
+        this.prefer_names = false;
+        const inferred = await this.names.run(this.implementation.pool, { load: () => this.stopping });
+        this.next_global = inferred ? now + 1000 : now;
+        this.system_meter = this.implementation.pool.system_usage.meter;
+        return;
+      }
+      this.prefer_names = true;
       if (selected_link >= 0 && (this.prefer_links || index < 0)) {
         const request = this.link_requests[selected_link]!;
         this.link_requests[selected_link] = null;

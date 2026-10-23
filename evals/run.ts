@@ -2,15 +2,15 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { grade, scorecard, validateCases, type Result, type Observation } from "./score";
+import { grade, scorecard, comparisons, validateCases, type Result, type Observation } from "./score";
 
 const root = resolve(import.meta.dir, "..");
 const defaults = ["claude:claude-haiku-5-5", "codex:gpt-6-luna"];
 /** Runs the production prompt, parser and inference harness. */
 const productionDriver = join(root, "evals/driver.ts");
-const usage = `Activity abstention evals (live model calls using existing CLI logins)
+const usage = `Activity and conversation naming evals (live model calls using existing CLI logins)
   bun run evals/run.ts [--model PROVIDER:MODEL] [--repeat N] [--case ID]
-                      [--out DIR] [--driver PATH] [--list]
+                      [--out DIR] [--driver PATH] [--cases JSON] [--list]
 Defaults: ${defaults.join(", ")}; one repeat; all cases.
 Repeat --model or --case to select several. Any failed assertion or harness error exits 1.
   bun test evals                  # deterministic scorer checks, no model calls
@@ -22,6 +22,7 @@ async function main() {
   let repeats = 1,
     out = join(root, "evals/results"),
     driver = productionDriver,
+    casesPath: string | null = null,
     list = false;
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -34,7 +35,7 @@ async function main() {
       list = true;
       continue;
     }
-    if (!["--model", "--repeat", "--case", "--out", "--driver"].includes(flag) || !args[i + 1])
+    if (!["--model", "--repeat", "--case", "--out", "--driver", "--cases"].includes(flag) || !args[i + 1])
       throw new Error(`invalid argument: ${flag}\n${usage}`);
     const value = args[++i];
     if (flag === "--model") models.push(value);
@@ -45,8 +46,16 @@ async function main() {
     }
     if (flag === "--out") out = resolve(value);
     if (flag === "--driver") driver = resolve(value);
+    if (flag === "--cases") casesPath = resolve(value);
   }
-  const allCases = validateCases(JSON.parse(await readFile(join(root, "evals/cases.json"), "utf8")));
+  const allCases = validateCases(
+    casesPath
+      ? JSON.parse(await readFile(casesPath, "utf8"))
+      : [
+          ...JSON.parse(await readFile(join(root, "evals/cases.json"), "utf8")),
+          ...JSON.parse(await readFile(join(root, "evals/naming_cases.json"), "utf8")),
+        ],
+  );
   if (list) {
     console.log(allCases.map(c => `${c.id}\t${c.category}\t${c.steps.length} step(s)`).join("\n"));
     return;
@@ -57,7 +66,7 @@ async function main() {
     const separator = spec.indexOf(":");
     const provider = spec.slice(0, separator),
       model = spec.slice(separator + 1);
-    if (separator < 0 || !["codex", "claude"].includes(provider) || !model || /[\s\x00-\x1f]/.test(model))
+    if (separator < 0 || !["codex", "claude", "pi"].includes(provider) || !model || /[\s\x00-\x1f]/.test(model))
       throw new Error(`invalid model: ${spec}`);
     return { spec, provider, model };
   });
@@ -75,7 +84,7 @@ async function main() {
         steps: scenario.steps.map((step, index) => {
           const stepID = `${id}/${index + 1}`;
           expected.push({ id: stepID, scenario: scenario.id, category: scenario.category, repeat, expected: step });
-          return { id: stepID, evidence: step.evidence, turn: step.turn ?? `turn-${index + 1}` };
+          return { id: stepID, evidence: step.evidence, turn: step.turn ?? `turn-${index + 1}`, task: step.task };
         }),
       });
     }
@@ -83,6 +92,8 @@ async function main() {
   await writeFile(planPath, JSON.stringify(plan));
   const tracked = [
     "evals/cases.json",
+    "evals/naming_cases.json",
+    "src/conversation_name.ts",
     "evals/driver.ts",
     "evals/score.ts",
     "evals/run.ts",
@@ -195,11 +206,17 @@ async function main() {
     cases: cases.map(c => c.id),
     models: targets,
     infrastructure,
+    casesPath,
+    casesHash: casesPath
+      ? createHash("sha256")
+          .update(await readFile(casesPath))
+          .digest("hex")
+      : null,
   };
   const report = { metadata, results };
   const failures = results.filter(r => r.failures.length);
   const markdown = [
-    `# Activity summary eval scorecard`,
+    `# Inference eval scorecard`,
     "",
     `Run: ${started}. ${fixture ? "**Fixture run — not live model evidence.**" : "Live model calls using the production inference harness."}`,
     `Repeats: ${repeats}. Cases: ${cases.length}. Assertions per model: ${expected.length}.`,
@@ -207,6 +224,7 @@ async function main() {
     "",
     scorecard(results),
     "",
+    ...comparisons(results),
     "Every assertion must pass. Errors and missing responses count as failures. Sequence scores count individual steps, including later steps after an abstention.",
     "",
     failures.length
