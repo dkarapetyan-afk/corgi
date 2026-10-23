@@ -6,7 +6,9 @@ import { Failure } from "../failure";
 import { nativeFiles } from "../build_assets";
 import type { Wire } from "../protocol";
 export const history_capacity = 48,
-  process_capacity = 64;
+  process_capacity = 64,
+  /** Each history point covers this long. */
+  history_bucket_ms = 5000;
 export type Sort = "cpu" | "memory" | "io";
 const max64 = (1n << 64n) - 1n;
 const sat = (a: bigint, b: bigint) => (a + b > max64 ? max64 : a + b);
@@ -25,12 +27,74 @@ export function ioText(value: bigint | null) {
       ? (Number(value) / 1000000).toFixed(0) + "M/s"
       : (value / 1000n).toString() + "K/s";
 }
+/** Readings over one bucket: CPU and I/O averaged over its `samples`,
+ * memory at its peak. */
 export type Point = {
   at: number;
+  samples: number;
   cpu: number | null;
   memory: bigint | null;
   io: bigint | null;
+  /** The processes that led each figure over the bucket. */
+  processes: Process[];
 };
+/** How many processes a history point keeps per figure. */
+export const point_leaders = 5;
+const mean = (old: number | null, next: number | null, n: number) =>
+  old === null ? next : next === null ? old : old + (next - old) / n;
+const meanBig = (old: bigint | null, next: bigint | null, n: number) =>
+  old === null ? next : next === null ? old : (old * BigInt(n - 1) + next) / BigInt(n);
+const peak = (old: bigint | null, next: bigint | null) =>
+  old === null ? next : next === null ? old : old > next ? old : next;
+/** Processes over a bucket of `n` readings, as `record` treats the workspace;
+ * one missing from a reading had nothing to lead with in it. */
+function mergeProcesses(old: Process[], next: Process[], n: number): Process[] {
+  const key = (p: Process) => `${p.pid}:${p.start}`,
+    keys = [...new Set([...old, ...next].map(key))];
+  return keys.map(k => {
+    const was = old.find(p => key(p) === k),
+      now = next.find(p => key(p) === k),
+      p = (now ?? was)!;
+    return Object.assign(new Process(p.pid, p.start, p.name), {
+      provider: p.provider,
+      cpu: mean(was ? was.cpu : 0, now ? now.cpu : 0, n),
+      memory: peak(was?.memory ?? null, now?.memory ?? null) ?? 0n,
+      read: meanBig(was ? was.read : 0n, now ? now.read : 0n, n),
+      written: meanBig(was ? was.written : 0n, now ? now.written : 0n, n),
+    });
+  });
+}
+/** The processes leading any figure. */
+export function standouts(list: Process[]): Process[] {
+  const keep = new Set<Process>(),
+    lead = (value: (p: Process) => number | null | undefined, count: number) =>
+      list
+        .filter(p => (value(p) ?? 0) > 0)
+        .sort((a, b) => value(b)! - value(a)! || a.pid - b.pid)
+        .slice(0, count)
+        .forEach(p => keep.add(p));
+  for (const sort of ["cpu", "memory", "io"] as const) lead(p => Process.value(sort, p), point_leaders);
+  return list.filter(p => keep.has(p));
+}
+/** `history` with `next` folded into its last point while both fall in one
+ * bucket, else appended. */
+export function record(history: Point[], next: Point): Point[] {
+  const last = history.at(-1);
+  if (!last || Math.floor(last.at / history_bucket_ms) !== Math.floor(next.at / history_bucket_ms))
+    return [...history.slice(-(history_capacity - 1)), next];
+  const n = last.samples + 1;
+  return [
+    ...history.slice(0, -1),
+    {
+      at: last.at,
+      samples: n,
+      cpu: mean(last.cpu, next.cpu, n),
+      memory: peak(last.memory, next.memory),
+      io: meanBig(last.io, next.io, n),
+      processes: standouts(mergeProcesses(last.processes, next.processes, n)),
+    },
+  ];
+}
 export class Process {
   provider: Provider | null = null;
   cpu: number | null = null;
@@ -43,17 +107,19 @@ export class Process {
     public name: string,
   ) {}
   static less(sort: Sort, left: Process, right: Process) {
-    const value = (p: Process) =>
-      sort === "cpu"
-        ? (p.cpu ?? -1)
-        : sort === "memory"
-          ? Number(p.memory)
-          : p.read !== null && p.written !== null
-            ? Number(sat(p.read, p.written))
-            : -1;
-    const l = value(left),
-      r = value(right);
+    const l = Process.value(sort, left),
+      r = Process.value(sort, right);
     return l === r ? left.pid < right.pid : l > r;
+  }
+  static value(sort: Sort, p: Process) {
+    switch (sort) {
+      case "cpu":
+        return p.cpu ?? -1;
+      case "memory":
+        return Number(p.memory);
+      case "io":
+        return p.read !== null && p.written !== null ? Number(sat(p.read, p.written)) : -1;
+    }
   }
 }
 export class Work {
@@ -114,9 +180,11 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
       processes: (w.processes ?? []).map(restoreProcess),
       history: (w.history ?? []).map(point => ({
         at: point.at,
+        samples: point.samples ?? 1,
         cpu: point.cpu ?? null,
         memory: nullable(point.memory),
         io: nullable(point.io),
+        processes: (point.processes ?? []).map(restoreProcess),
       })),
     });
   return Object.assign(new Snapshot(), value, {
@@ -244,10 +312,12 @@ export type SampleRequest = {
 export type SampleResult = { pending: Batch; origins: SampleRequest["origins"] };
 // Structured clone retains bigint and Maps, but strips class prototypes.
 export function restoreSnapshot(view: Snapshot): Snapshot {
+  const process = (p: Process) => Object.assign(new Process(p.pid, p.start, p.name), p);
   return Object.assign(new Snapshot(), view, {
     workspaces: view.workspaces.map(work =>
       Object.assign(new Work(work.id), work, {
-        processes: work.processes.map(p => Object.assign(new Process(p.pid, p.start, p.name), p)),
+        processes: work.processes.map(process),
+        history: work.history.map(point => ({ ...point, processes: point.processes.map(process) })),
       }),
     ),
   });
@@ -493,15 +563,14 @@ export class Tracker {
         low = work.cpu === null || host_cpu === null || host_cpu < 75 || share < 15;
       work.cpu_pressure = health[i].cpu.update(high, low, now) && work.cpu !== null;
       work.processes = leaders(work.processes);
-      work.history = [
-        ...this.current.workspace(work.id).history.slice(-(history_capacity - 1)),
-        {
-          at: now,
-          cpu: work.cpu,
-          memory: work.memory,
-          io: work.read !== null && work.written !== null ? sat(work.read, work.written) : null,
-        },
-      ];
+      work.history = record(this.current.workspace(work.id).history, {
+        at: now,
+        samples: 1,
+        cpu: work.cpu,
+        memory: work.memory,
+        io: work.read !== null && work.written !== null ? sat(work.read, work.written) : null,
+        processes: standouts(work.processes),
+      });
     });
     this.pending = {
       view: Object.assign(new Snapshot(), {

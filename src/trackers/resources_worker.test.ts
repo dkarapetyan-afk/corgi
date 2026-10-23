@@ -32,7 +32,8 @@ test("resource Worker preserves counters and rejects samples after ownership cha
     await tracker.thread;
     expect(tracker.tick(runtime, false)).toBe(true);
     expect(tracker.current.workspace(1).cpu).not.toBeNull();
-    expect(tracker.current.workspace(1).history).toHaveLength(2);
+    // Both readings are in the history, in one five-second point or two.
+    expect(tracker.current.workspace(1).history.reduce((sum, p) => sum + p.samples, 0)).toBe(2);
     const previous = tracker.current;
     clock.advance(2100);
     tracker.tick(runtime, false);

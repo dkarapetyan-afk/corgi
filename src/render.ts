@@ -735,7 +735,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     if (u.resource_card) {
       if (card_rect) {
         const name = u.workspaces.find(ws => ws.id === u.resource_card!.workspace)?.name ?? "workspace";
-        resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card);
+        resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card, pointer);
       }
     } else if (corgiBadge.hit(u.corgi_badge, side.width, pointer.x, pointer.y)) {
       subagentTooltip.drawOverview(

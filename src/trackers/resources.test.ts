@@ -1,5 +1,21 @@
 import { test, expect } from "bun:test";
-import { Process, Work, Snapshot, fromJSON, Alarm, delta, owner, leaders, type Reading, type Root } from "./resources";
+import {
+  Process,
+  Work,
+  Snapshot,
+  fromJSON,
+  Alarm,
+  delta,
+  owner,
+  leaders,
+  record,
+  standouts,
+  history_bucket_ms,
+  history_capacity,
+  type Point,
+  type Reading,
+  type Root,
+} from "./resources";
 import * as json from "../json";
 test("resource snapshots restore concrete integers after JSON transport", () => {
   const snapshot = new Snapshot(),
@@ -11,7 +27,8 @@ test("resource snapshots restore concrete integers after JSON transport", () => 
   process.memory = 256n;
   process.written = 1n;
   work.processes.push(process);
-  work.history.push({ at: 10, cpu: 0, memory: 512n, io: 0n });
+  work.history.push({ at: 10, samples: 1, cpu: 0, memory: 512n, io: 0n, processes: [] });
+  work.history.push({ at: 11, samples: 3, cpu: 0, memory: 512n, io: 0n, processes: [process] });
   snapshot.workspaces.push(work);
   const bytes = json.stringify(snapshot),
     restored = fromJSON(json.parse(bytes));
@@ -119,4 +136,46 @@ test("bounded process details retain leaders for every resource", () => {
     selected = leaders(list);
   expect(selected.length).toBeLessThanOrEqual(64);
   for (const pid of [100, 1, 51]) expect(selected.some(p => p.pid === pid)).toBe(true);
+});
+
+test("history keeps a point per bucket: rates averaged, memory at its peak", () => {
+  const point = (at: number, cpu: number, memory: bigint, io: bigint): Point => ({
+    at,
+    samples: 1,
+    cpu,
+    memory,
+    io,
+    processes: [],
+  });
+  let history: Point[] = [];
+  history = record(history, point(0, 10, 100n, 10n));
+  history = record(history, point(1000, 30, 50n, 20n));
+  history = record(history, point(history_bucket_ms - 1, 20, 70n, 30n));
+  expect(history).toEqual([{ at: 0, samples: 3, cpu: 20, memory: 100n, io: 20n, processes: [] }]);
+  history = record(history, point(history_bucket_ms, 0, 0n, 0n));
+  expect(history.map(p => p.at)).toEqual([0, history_bucket_ms]);
+  for (let at = 2; at <= history_capacity + 1; at++)
+    history = record(history, point(at * history_bucket_ms, 0, 0n, 0n));
+  expect(history).toHaveLength(history_capacity);
+});
+
+test("history points keep the processes leading each figure", () => {
+  const proc = (pid: number, fields: Partial<Process>) =>
+    Object.assign(new Process(pid, BigInt(pid), `p${pid}`), fields);
+  // Six busy on CPU, one writing, and one idle that leads nothing.
+  const cpu = Array.from({ length: 6 }, (_, i) => proc(i + 1, { cpu: 10 + i }));
+  const kept = standouts([...cpu, proc(100, { read: 0n, written: 5n }), proc(200, {})]).map(p => p.pid);
+  expect(kept).toEqual([2, 3, 4, 5, 6, 100]);
+  // A bucket averages each leader's rates over its readings and keeps its peak memory.
+  const first: Point = {
+      at: 0,
+      samples: 1,
+      cpu: 0,
+      memory: 0n,
+      io: 0n,
+      processes: [proc(1, { cpu: 40, memory: 9n, read: 4n, written: 0n })],
+    },
+    second: Point = { ...first, at: 1000, processes: [proc(1, { cpu: 20, memory: 3n, read: 0n, written: 2n })] };
+  const [merged] = record([first], second);
+  expect(merged.processes[0]).toMatchObject({ cpu: 30, memory: 9n, read: 2n, written: 1n });
 });

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { geometry, aimed, draw, State } from "./resource_tooltip";
+import { geometry, aimed, draw, hoverAt, State } from "./resource_tooltip";
 import { Rect } from "./layout";
 import { Writer } from "./text";
 import { Terminal } from "./pane/terminal";
@@ -96,4 +96,71 @@ test("a second click on the sorted heading turns the order around, unsampled pro
   state.click(rect, rect.x + rect.w - 5, rect.y + 14);
   expect(state.ascending).toBe(false);
   expect(heading()).toMatch(/↓R MB\/s ↓W MB\/s/);
+});
+
+test("pointing at a graph's history shows that point's figures and leaders", () => {
+  const rect = geometry(120, 40, 28, 4)!,
+    proc = (pid: number, name: string, cpu: number, memory: bigint) => ({
+      pid,
+      start: 1n,
+      name,
+      cpu,
+      memory,
+      read: 0n,
+      written: 0n,
+    }),
+    work = {
+      id: 1,
+      known: true,
+      count: 2,
+      cpu: 5,
+      memory: 1n << 30n,
+      read: 0n,
+      written: 0n,
+      processes: [proc(1, "shell", 5, 1n << 30n)],
+      history: [
+        {
+          at: 0,
+          samples: 5,
+          cpu: 80,
+          memory: 3n << 30n,
+          io: 0n,
+          processes: [proc(2, "build", 70, 1n << 30n), proc(3, "cache", 10, 2n << 30n)],
+        },
+        { at: 5000, samples: 5, cpu: 5, memory: 1n << 30n, io: 0n, processes: [proc(1, "shell", 5, 1n << 30n)] },
+      ],
+    },
+    snapshot = { workspaces: [work] },
+    state = new State(),
+    screen = (pointer: { x: number; y: number } | null) => {
+      const w = new Writer(),
+        terminal = new Terminal(120, 40);
+      try {
+        draw(w, rect, "repo", snapshot, state, pointer);
+        terminal.feed(w.buffered());
+        return terminal.text().split("\n");
+      } finally {
+        terminal.destroy();
+      }
+    };
+  state.update(work, false);
+  const end = rect.x + 2 + 25 - 3,
+    header = rect.y + 14;
+  expect(hoverAt(rect, end - 1, rect.y + 5)).toEqual({ metric: "cpu", age: 1 });
+  expect(hoverAt(rect, end + 1, rect.y + 5)).toBeNull();
+  let lines = screen(null);
+  expect(lines[rect.y + 4]).toContain("5%");
+  expect(lines[header + 1]).toContain("shell");
+  // Over the cpu graph, five seconds back: its figure, and its leaders by CPU.
+  lines = screen({ x: end - 1, y: rect.y + 5 });
+  expect(lines[rect.y + 4]).toContain("80%");
+  expect(lines[header]).toMatch(/↓CPU %/);
+  expect(lines[header + 1]).toMatch(/build +70\.0/);
+  expect(lines[header + 2]).toMatch(/cache +10\.0/);
+  expect(lines[rect.y + rect.h - 2]).toContain("2 leading processes 5s ago");
+  // Over the memory graph the same point's leaders sort by memory.
+  lines = screen({ x: end + 26 - 1, y: rect.y + 5 });
+  expect(lines[rect.y + 4]).toContain("3.00 GiB");
+  expect(lines[header]).toMatch(/↓GiB/);
+  expect(lines[header + 1]).toMatch(/cache /);
 });

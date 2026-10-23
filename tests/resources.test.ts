@@ -272,7 +272,8 @@ class Resources extends Runtime {
     this.assertTrue(sampled);
     this.assertTrue(sampled.cpu > 3 && sampled.cpu < 50);
     this.assertFalse(sample.workspaces.find((w: any) => w.id === other)?.processes.some((p: any) => p.pid === pid));
-    this.assertTrue(work.history.length > 1);
+    // Readings fold into five-second points, so count readings, not points.
+    this.assertTrue(work.history.reduce((sum: number, p: any) => sum + p.samples, 0) > 1);
     this.assertFalse(work.cpu_pressure);
 
     const viewer = await Viewer.create(this, 120, 40);

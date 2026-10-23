@@ -521,12 +521,25 @@ $.snapshot.resources.workspaces[].processes[].read?: u64
 $.snapshot.resources.workspaces[].processes[].written: optional
 $.snapshot.resources.workspaces[].processes[].written?: u64
 $.snapshot.resources.workspaces[].history[].at: i64
+$.snapshot.resources.workspaces[].history[].samples: u32
 $.snapshot.resources.workspaces[].history[].cpu: optional
 $.snapshot.resources.workspaces[].history[].cpu?: f64
 $.snapshot.resources.workspaces[].history[].memory: optional
 $.snapshot.resources.workspaces[].history[].memory?: u64
 $.snapshot.resources.workspaces[].history[].io: optional
 $.snapshot.resources.workspaces[].history[].io?: u64
+$.snapshot.resources.workspaces[].history[].processes[].pid: i32
+$.snapshot.resources.workspaces[].history[].processes[].start: u64
+$.snapshot.resources.workspaces[].history[].processes[].name: string
+$.snapshot.resources.workspaces[].history[].processes[].provider: optional
+$.snapshot.resources.workspaces[].history[].processes[].provider?: enum codex claude pi
+$.snapshot.resources.workspaces[].history[].processes[].cpu: optional
+$.snapshot.resources.workspaces[].history[].processes[].cpu?: f64
+$.snapshot.resources.workspaces[].history[].processes[].memory: u64
+$.snapshot.resources.workspaces[].history[].processes[].read: optional
+$.snapshot.resources.workspaces[].history[].processes[].read?: u64
+$.snapshot.resources.workspaces[].history[].processes[].written: optional
+$.snapshot.resources.workspaces[].history[].processes[].written?: u64
 $.snapshot.type: string
 $.snapshot.protocol: u32
 $.snapshot.server_pid: i32
