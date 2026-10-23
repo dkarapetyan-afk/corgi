@@ -49,6 +49,7 @@ const table: Array<{ id: string; price: Price }> = [
     id: "gpt-6-astra",
     price: { label: "astra", input: 10000n, output: 50000n },
   },
+  { id: "gpt-6.1-sol", price: { label: "sol", input: 2000n, output: 10000n } },
   { id: "gpt-6-sol", price: { label: "sol", input: 2000n, output: 10000n } },
   { id: "gpt-6-luna", price: { label: "luna", input: 100n, output: 500n } },
   {
