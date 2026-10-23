@@ -398,17 +398,27 @@ test("the title names the worktree once, on a button that drops the checkouts an
   text = render();
   expect(text).toContain("⌥ topic ▴");
   expect(text).toContain("✓ topic");
-  // A blank row, then the form under a rule carrying n.
-  const rows = text.split("\n"),
-    rule = rows.findIndex(row => row.includes("├─  n  New worktree ─"));
-  expect(rows[rule - 1]).toMatch(/│ +│/);
-  expect(rows[rule + 1]).toContain("Branch  branch name");
-  expect(rows[rule + 3]).toContain("From    main");
-  expect(rows[rule + 4]).toContain("Folder  ./.worktrees/…");
-  const bx = m.worktreeBox(100, 30, side)!;
+  const rows = text.split("\n");
+  let bx = m.worktreeBox(100, 30, side)!;
+  expect(rows[bx.branch]).toContain("Branch  search or create");
+  expect(bx.branch).toBeLessThan(bx.list);
+  expect(rows[bx.from]).not.toContain("From");
+  expect(rows[bx.folder]).toContain("Folder  ../app-topic");
   expect(m.worktreeHit(100, 30, side, bx.label_x, bx.list)).toEqual({ checkout: 0 });
   expect(m.worktreeHit(100, 30, side, bx.label_x, bx.list + 1)).toEqual({ checkout: 1 });
   expect(m.worktreeHit(100, 30, side, bx.field_x, bx.branch)).toBe("branch");
+  expect(m.worktreeHit(100, 30, side, bx.field_x, bx.from)).toBeNull();
+  m.worktree.move(m.worktrees, 1);
+  expect(render()).toContain("↵ switch");
+  expect(render().split("\n")[bx.folder]).toContain("Folder  ./");
+  m.worktree.edit(field => field.key(21));
+  for (const byte of Buffer.from("top")) m.worktree.edit(field => field.key(byte));
+  bx = m.worktreeBox(100, 30, side)!;
+  text = render();
+  expect(text).toContain("+ Create “top”");
+  expect(text).toContain("hold ↵ to create");
+  expect(text.split("\n")[bx.from]).toContain("From    main");
+  expect(text.split("\n")[bx.folder]).toContain("Folder  ./.worktrees/top");
   expect(m.worktreeHit(100, 30, side, bx.field_x, bx.from)).toBe("from");
   // From's branches open right under its field, as wide as it.
   m.worktree.branches = [
@@ -416,8 +426,10 @@ test("the title names the worktree once, on a button that drops the checkouts an
     { ref: "refs/heads/topic", name: "topic", at: 0 },
   ];
   m.worktree.focusFrom();
+  bx = m.worktreeBox(100, 30, side)!;
   const pick = m.worktreePickRect(100, 30, side)!;
   expect([pick.x, pick.y, pick.w]).toEqual([bx.field_x, bx.from + 1, bx.field_w]);
+  expect(pick.y + pick.h).toBeLessThanOrEqual(bx.folder);
   expect(
     render()
       .split("\n")

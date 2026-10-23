@@ -51,9 +51,15 @@ estimates; resource collection does not call a model.
 
 ## Create or choose a worktree
 
-In the [agent picker](agent-launcher.md), press `w` to choose an existing
-checkout or enter a new branch, base branch and folder. The default base is
-the repository's local default branch; choose another with **From**.
+In the [agent picker](agent-launcher.md), press `w` and type in **Branch** to
+filter the checkouts. Arrows or a click fill the field with a choice; Enter
+switches to it. An empty field shows all checkouts.
+
+When the typed name has no exact match, **+ Create “name”** appears alongside
+any partial matches. Hold Enter or the **hold ↵ to create** button to plan it.
+**From** appears for a new worktree, defaulting to the repository's local
+default branch; Tab lets you search for another base. **Folder** previews
+the destination from the configured template.
 
 The worktree is created only when an agent, saved command or terminal launches.
 Escaping the picker leaves nothing behind. An existing branch/folder or an

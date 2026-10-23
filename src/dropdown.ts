@@ -71,7 +71,7 @@ export function hit(b: Rect, count: number, x: number, y: number, heading = fals
   const index = y - b.y - (heading ? 2 : 1);
   return index >= 0 && index < count ? index : null;
 }
-function row(w: Writer, b: Rect, y: number, choice: Choice, indent: number): void {
+export function row(w: Writer, b: Rect, y: number, choice: Choice, indent = 4): void {
   if (choice.heading) {
     const line = b.y + y + 1,
       room = b.w - indent - 4;

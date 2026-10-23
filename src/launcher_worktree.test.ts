@@ -70,35 +70,64 @@ test("the title's button turns warm off the comparison branch", () => {
   expect(title("/src/app-topic")).toContain(palette.fg("warm") + "⌥ \x1b[1m" + palette.fg("warm") + "topic");
 });
 
-test("the box opens in Branch over the checkouts, the primary first, the current one ticked", () => {
+test("Branch browses all checkouts without narrowing the list as arrows fill the field", () => {
   const c = new launcherWorktree.Chooser();
   c.open(snapshot, "/src/app");
   expect([c.mode, c.focus]).toEqual(["open", "branch"]);
-  // With the form's caret, the checkouts step back.
+  // Typing and browsing share Branch's caret.
   expect(launcherWorktree.choices(snapshot, "/src/app", c).map(x => [x.hovered, x.dim])).toEqual([
-    [false, true],
-    [false, true],
-    [false, true],
+    [false, false],
+    [false, false],
+    [false, false],
   ]);
-  // Up lands on the last checkout, just above the form.
-  c.toList(snapshot);
-  expect([c.focus, c.hovered]).toEqual(["list", 2]);
+  c.move(snapshot, -1);
+  expect([c.focus, c.highlight, c.field.name()]).toEqual(["branch", 2, "topic"]);
   const choices = launcherWorktree.choices(snapshot, "/src/app", c);
   expect(choices.map(x => [x.text, x.note, x.current, x.hovered])).toEqual([
     ["main", "2 changed", true, false],
-    ["fix", "1 changed", false, false],
+    ["worktree-fix", "1 changed", false, false],
     ["topic", "2 agents · clean", false, true],
   ]);
   expect(choices.some(x => x.dim)).toBe(false);
   c.move(snapshot, -1);
-  expect([c.focus, c.hovered]).toEqual(["list", 1]);
-  // Past the last is Branch again.
+  expect([c.highlight, c.field.name()]).toEqual([1, "worktree-fix"]);
   c.move(snapshot, 2);
   expect(c.focus).toBe("branch");
+  expect(c.entries(snapshot)).toHaveLength(3);
   // A named worktree reopens in the form, on its name and base.
   c.planned = { branch: "x", base: "refs/heads/topic", base_name: "topic", path: "/src/app/.worktrees/x" };
   c.open(snapshot, "/src/app-topic");
   expect([c.focus, c.field.name(), c.base?.name]).toEqual(["branch", "x", "topic"]);
+});
+
+test("partial matches offer creation, exact names switch, and editing resumes filtering", () => {
+  const c = new launcherWorktree.Chooser();
+  c.open(snapshot, "/src/app");
+  const type = (text: string) => {
+    for (const byte of Buffer.from(text)) c.edit(field => field.key(byte));
+  };
+  type("to");
+  expect(launcherWorktree.choices(snapshot, "/src/app", c).map(e => e.text)).toEqual(["topic", "+ Create “to”"]);
+  expect(c.creating(snapshot)).toBe(true);
+  c.move(snapshot, 1);
+  expect(c.field.name()).toBe("topic");
+  expect(c.selected(snapshot)?.path).toBe("/src/app-topic");
+  expect(c.creating(snapshot)).toBe(false);
+  expect(c.count(snapshot)).toBe(2);
+  c.move(snapshot, 1);
+  expect(c.field.name()).toBe("to");
+  expect(c.creating(snapshot)).toBe(true);
+  type("pic");
+  expect(c.offersCreate(snapshot)).toBe(false);
+  expect(c.selected(snapshot)?.path).toBe("/src/app-topic");
+  type("-new");
+  expect(c.entries(snapshot)).toEqual([]);
+  expect(c.count(snapshot)).toBe(1);
+  expect(c.creating(snapshot)).toBe(true);
+  c.edit(field => field.key(21));
+  expect(c.field.name()).toBe("");
+  expect(c.count(snapshot)).toBe(3);
+  expect(c.creating(snapshot)).toBe(false);
 });
 
 test("a new worktree goes where the template says, from main or the current branch", () => {

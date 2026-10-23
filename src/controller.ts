@@ -2424,15 +2424,35 @@ export class Controller {
     const launch = this.agent_launcher;
     if (!launch) return;
     const c = launch.worktree,
-      all = launcherWorktree.checkouts(launch.worktrees);
+      all = c.entries(launch.worktrees);
     this.dirty = true;
-    if (index >= all.length) return;
+    if (index < 0 || index >= all.length) return;
+    c.create.reset();
     c.mode = "closed";
     c.planned = null;
     if (launcherWorktree.containing(launch.worktrees, launch.cwd) === all[index]) return;
     launch.cwd = all[index].path;
     launch.preview = this.launch_previews.current(launch.cwd, this.runtime.accounts);
     launch.resume_view.focused = false;
+  }
+  /** Switch immediately; naming a new worktree takes a held key or button. */
+  private confirmWorktree(mouse = false): void {
+    const launch = this.agent_launcher!;
+    const c = launch.worktree,
+      selected = c.selected(launch.worktrees);
+    if (selected) return this.chooseWorktree(c.entries(launch.worktrees).indexOf(selected));
+    if (!c.creating(launch.worktrees)) return;
+    const problem = launcherWorktree.branchProblem(launch.worktrees, c.field.name());
+    if (problem !== null) {
+      c.error = problem;
+      return;
+    }
+    if (mouse) c.create.down(milliTimestamp());
+    else if (c.create.press(milliTimestamp())) {
+      c.accept(launch.worktrees, launch.cwd, launch.worktree_folder);
+      c.create.reset();
+    }
+    this.dirty = true;
   }
   /** Keys while the launcher's box of checkouts and new-worktree form is
    * open. Escape closes the box from anywhere in it but From's branch list,
@@ -2441,6 +2461,7 @@ export class Controller {
     const launch = this.agent_launcher!;
     const c = launch.worktree;
     this.dirty = true;
+    if (byte !== 13) c.create.reset();
     if (c.focus === "from") {
       switch (byte) {
         case 27:
@@ -2461,46 +2482,27 @@ export class Controller {
           return;
       }
     }
-    if (c.focus === "branch") {
-      switch (byte) {
-        case 27:
-          c.mode = "closed";
-          return;
-        case 13:
-          c.accept(launch.worktrees, launch.cwd, launch.worktree_folder);
-          return;
-        case 9:
-          c.focusFrom();
-          return;
-        default:
-          c.error = "";
-          // Branch names have no spaces; a typed one joins the words.
-          c.field.key(byte === 32 ? 45 : byte);
-          return;
-      }
-    }
     switch (byte) {
       case 27:
-      case 119:
         c.mode = "closed";
-        break;
+        return;
       case 13:
-        this.chooseWorktree(c.hovered);
-        break;
-      case 110:
-        c.focus = "branch";
-        break;
+        this.confirmWorktree();
+        return;
       case 9:
+        if (c.creating(launch.worktrees)) c.focusFrom();
+        else c.move(launch.worktrees, 1);
+        return;
       case 14:
-      case 106:
         c.move(launch.worktrees, 1);
-        break;
+        return;
       case 16:
-      case 107:
         c.move(launch.worktrees, -1);
-        break;
+        return;
       default:
-        break;
+        // Branch names have no spaces; a typed one joins the words.
+        c.edit(field => field.key(byte === 32 ? 45 : byte));
+        return;
     }
   }
   /** Resolves the command Manage agents' form has, once typing pauses. */
@@ -3492,6 +3494,10 @@ export class Controller {
     }
     if (this.agent_launcher) {
       const launch = this.agent_launcher;
+      if (byte === 13 && launch.worktree.create.quieted(milliTimestamp())) {
+        launch.worktree.create.quiet(milliTimestamp());
+        return;
+      }
       if (launch.pinned && byte === keymap.prefixByte(this.prefs.prefix)) {
         launch.prefix = true;
         return;
@@ -3829,7 +3835,7 @@ export class Controller {
     if (this.worktreeDetail() !== null) return "discard";
     if (this.agent_launcher)
       return (this.agent_launcher.managing && this.agent_launcher.manager.typing()) ||
-        (this.agent_launcher.worktree.mode === "open" && this.agent_launcher.worktree.focus !== "list") ||
+        this.agent_launcher.worktree.mode === "open" ||
         this.resumeSearching()
         ? "launcher"
         : "discard";
@@ -3853,7 +3859,7 @@ export class Controller {
     if (launch) {
       if (this.resumeSearching()) return launch.resume_view.query.area;
       const c = launch.worktree;
-      if (c.mode === "open" && c.focus !== "list") return c.input().area;
+      if (c.mode === "open") return c.input().area;
       return launch.managing && launch.manager.typing() ? launch.input().area : null;
     }
     if (this.corgi_setup) {
@@ -4026,6 +4032,7 @@ export class Controller {
             c = launch.worktree;
           if (launch.managing) launch.manager.paste(byte, launch.manageModel());
           else if (c.mode === "open" && c.focus === "from") c.search(from => from.pasteByte(byte));
+          else if (c.mode === "open") c.edit(field => field.pasteByte(byte === 32 ? 45 : byte));
           else launch.input().pasteByte(byte);
         }
         break;
@@ -4260,21 +4267,18 @@ export class Controller {
         this.dirty = true;
       } else if (this.agent_launcher) {
         const launch = this.agent_launcher;
-        // CSI-only on purpose: SS3 arrows reach the name field as input.
-        if (launch.worktree.mode === "open" && launch.worktree.focus !== "list" && !launch.managing) {
+        if (launch.worktree.mode === "open" && !launch.managing) {
           const c = launch.worktree;
-          // ↑ from Branch walks back to the checkouts; ↓ goes on to From.
+          c.create.reset();
           if (c.focus === "from" && parsed_key === "shift_tab") c.focus = "branch";
           else if (c.focus === "from" && (parsed_key === "up" || parsed_key === "down"))
             c.movePick(parsed_key === "up" ? -1 : 1);
           else if (c.focus === "from") c.search(from => from.sequence(text));
-          else if (parsed_key === "up" || parsed_key === "shift_tab") c.toList(launch.worktrees);
-          else if (parsed_key === "down") c.focusFrom();
-          else c.field.sequence(text);
-          this.dirty = true;
-        } else if (launch.worktree.mode === "open" && !launch.managing) {
-          if (parsed_key === "up" || parsed_key === "down")
-            launch.worktree.move(launch.worktrees, parsed_key === "up" ? -1 : 1);
+          else if (parsed_key === "up" || parsed_key === "down") c.move(launch.worktrees, parsed_key === "up" ? -1 : 1);
+          else if (parsed_key === "shift_tab") {
+            if (c.creating(launch.worktrees)) c.focusFrom();
+            else c.move(launch.worktrees, -1);
+          } else c.edit(field => field.sequence(text));
           this.dirty = true;
         } else if (launch.resume_view.focused && !launch.managing) {
           launch.pinned = true;
@@ -4788,7 +4792,11 @@ export class Controller {
     const tabs_x = this.sidebarView([]).tabX();
     const tabs_width = this.width - tabs_x;
     if (this.ui_mouse_down) {
-      if (release) this.ui_mouse_down = false;
+      if (release) {
+        this.ui_mouse_down = false;
+        this.agent_launcher?.worktree.create.release(milliTimestamp());
+        this.dirty = true;
+      }
       return;
     }
     if (this.corgi_setup) {
@@ -4854,13 +4862,17 @@ export class Controller {
             const c = launch.worktree,
               spot = launch.worktreeHit(this.width, this.height, side, x, y);
             this.dirty = true;
+            if (spot !== "confirm") c.create.reset();
             if (spot === "branch") c.focus = "branch";
             else if (spot === "from") {
               if (c.focus !== "from") c.focusFrom();
+            } else if (spot === "confirm") {
+              if (c.focus === "from") c.takeFrom();
+              else this.confirmWorktree(true);
             } else if (spot !== null && "pick" in spot) {
               c.picked = spot.pick;
               c.takeFrom();
-            } else if (spot !== null) return this.chooseWorktree(spot.checkout);
+            } else if (spot !== null) c.pick(launch.worktrees, spot.checkout);
             const bx = launch.worktreeBox(this.width, this.height, side);
             if (spot !== null || bx?.rect.contains(x, y)) return;
             // Elsewhere, the button included, closes the box.
@@ -4895,10 +4907,10 @@ export class Controller {
       } else if (!release && (button === 35 || button === 32)) {
         const launch = this.agent_launcher;
         const spot = launch.worktree.mode === "open" ? launch.worktreeHit(this.width, this.height, side, x, y) : null;
-        if (spot !== null && typeof spot === "object" && "checkout" in spot) launch.worktree.hovered = spot.checkout;
-        else if (spot !== null && typeof spot === "object") launch.worktree.picked = spot.pick;
-        else if (launch.worktree.mode !== "closed") {
-          // The list or form covers the rows under it.
+        if (launch.worktree.mode === "open") {
+          launch.worktree.hovered =
+            spot !== null && typeof spot === "object" && "checkout" in spot ? spot.checkout : null;
+          if (spot !== null && typeof spot === "object" && "pick" in spot) launch.worktree.picked = spot.pick;
         } else if (!launch.managing) {
           const row = launch.hit(this.width, this.height, side, x, y);
           if (row !== null) {
@@ -4909,6 +4921,11 @@ export class Controller {
             if (target !== null && target !== "scope") launch.resume_view.select(launch.resumeContext(), target.row);
           }
         }
+        this.dirty = true;
+      } else if (!release && (button === 64 || button === 65) && this.agent_launcher.worktree.mode === "open") {
+        const c = this.agent_launcher.worktree;
+        if (c.focus === "from") c.movePick(button === 65 ? 1 : -1);
+        else c.move(this.agent_launcher.worktrees, button === 65 ? 1 : -1);
         this.dirty = true;
       } else if (!release && (button === 64 || button === 65) && this.agent_launcher.resume_view.expanded) {
         const launch = this.agent_launcher;
@@ -5430,6 +5447,15 @@ export class Controller {
     }
     const launch = this.agent_launcher;
     if (launch?.transition.tick(milliTimestamp())) this.dirty = true;
+    if (launch?.worktree.mode === "open" && launch.worktree.create.active) {
+      const c = launch.worktree;
+      c.create.advance(milliTimestamp());
+      if (c.create.done()) {
+        c.accept(launch.worktrees, launch.cwd, launch.worktree_folder);
+        c.create.reset();
+      }
+      this.dirty = true;
+    }
     const model = this.launcherModel();
     if (model?.managing && model.manager.tick(model.manageModel())) this.dirty = true;
     // A brief being written glimmers.

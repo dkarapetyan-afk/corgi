@@ -1,6 +1,6 @@
 //! The launcher's worktree: the button in its title naming where agents
-//! start, and the box it drops: the checkouts, then a form naming a new
-//! worktree, which the daemon adds when an agent launches into it.
+//! start, and a field that searches checkouts or names a new worktree,
+//! which the daemon adds when an agent launches into it.
 import { basename, dirname, relative } from "node:path";
 import { homedir } from "node:os";
 import * as palette from "./palette";
@@ -8,6 +8,7 @@ import { Style, keycap } from "./palette";
 import { Rect } from "./layout";
 import * as dropdown from "./dropdown";
 import { Dialog } from "./name_dialog";
+import { KeyHold } from "./key_hold";
 import * as worktrees from "./worktrees";
 import { label } from "./worktree_agents";
 import * as worktreeFolder from "./worktree_folder";
@@ -23,8 +24,9 @@ export interface Planned {
   path: string;
 }
 export type Mode = "closed" | "open";
-/** Where the open box has the keyboard: a checkout, or one of the form's fields. */
-export type Focus = "list" | "branch" | "from";
+/** The field with the caret; browsing checkouts keeps it in Branch. */
+export type Focus = "branch" | "from";
+export const create_hold_ms = 3000;
 /** What a new worktree can branch from. */
 export interface Base {
   ref: string;
@@ -46,9 +48,13 @@ export function branchList(value: any): Branch[] {
 
 export class Chooser {
   mode: Mode = "closed";
-  focus: Focus = "list";
-  /** The checkout under the keyboard or pointer. */
-  hovered = 0;
+  focus: Focus = "branch";
+  /** The row under the pointer, independent of the keyboard selection. */
+  hovered: number | null = null;
+  /** The search before browsing, kept while arrows write choices into Branch. */
+  typed = "";
+  highlight: number | null = null;
+  create = new KeyHold(create_hold_ms, 220, 150, 80);
   /** The checkouts' first shown row, when they're more than fit. */
   scroll = 0;
   field = Dialog.init({ rename: 0 }, "");
@@ -69,29 +75,70 @@ export class Chooser {
   /** Git is adding the planned worktree. */
   adding = false;
 
-  /** Opens the box with the caret in Branch, on the new worktree's name and
-   * base when one is named, the current checkout in view above. */
+  /** Opens on all checkouts, or the planned worktree's name and base. */
   open(snapshot: worktrees.Snapshot | null, cwd: string): void {
     const planned = this.planned;
-    const at = containing(snapshot, cwd);
     this.mode = "open";
     this.focus = "branch";
-    this.hovered = Math.max(0, at && !planned ? checkouts(snapshot).indexOf(at) : 0);
+    this.hovered = this.highlight = null;
     this.scroll = 0;
     this.field = Dialog.init({ rename: 0 }, planned?.branch ?? "");
+    this.typed = this.field.name();
+    this.create.reset();
     this.base = planned ? { ref: planned.base, name: planned.base_name } : (bases(snapshot, cwd)[0] ?? null);
     this.error = "";
   }
-  /** Moves along the checkouts; past the last one, into Branch. */
-  move(snapshot: worktrees.Snapshot | null, delta: number): void {
-    const next = this.hovered + delta;
-    if (next >= checkouts(snapshot).length) this.focus = "branch";
-    else this.hovered = Math.max(0, next);
+  /** Matching checkouts, prefixes first; browsing doesn't change the search. */
+  entries(snapshot: worktrees.Snapshot | null): worktrees.Checkout[] {
+    const query = this.typed.toLowerCase();
+    const all = checkouts(snapshot).filter(e => worktrees.label(e).toLowerCase().includes(query));
+    return [
+      ...all.filter(e => worktrees.label(e).toLowerCase().startsWith(query)),
+      ...all.filter(e => !worktrees.label(e).toLowerCase().startsWith(query)),
+    ];
   }
-  /** From Branch back up to the checkouts, onto the last, just above it. */
-  toList(snapshot: worktrees.Snapshot | null): void {
-    this.focus = "list";
-    this.hovered = sat(checkouts(snapshot).length, 1);
+  /** An exact name takes an existing checkout, including a detached HEAD. */
+  selected(snapshot: worktrees.Snapshot | null): worktrees.Checkout | null {
+    const entries = this.entries(snapshot);
+    if (this.highlight !== null && this.highlight < entries.length) return entries[this.highlight];
+    return checkouts(snapshot).find(e => worktrees.label(e) === this.field.name()) ?? null;
+  }
+  offersCreate(snapshot: worktrees.Snapshot | null): boolean {
+    return this.typed.length > 0 && !checkouts(snapshot).some(e => worktrees.label(e) === this.typed);
+  }
+  creating(snapshot: worktrees.Snapshot | null): boolean {
+    return this.field.name().length > 0 && this.selected(snapshot) === null;
+  }
+  count(snapshot: worktrees.Snapshot | null): number {
+    return this.entries(snapshot).length + Number(this.offersCreate(snapshot));
+  }
+  /** Editing starts a fresh search; caret motion leaves the browsed list alone. */
+  edit(edit: (field: Dialog) => void): void {
+    const before = this.field.raw();
+    edit(this.field);
+    this.create.reset();
+    if (this.field.raw() === before) return;
+    this.typed = this.field.name();
+    this.highlight = this.hovered = null;
+    this.scroll = 0;
+    this.error = "";
+  }
+  /** Writes a row into Branch without narrowing the list under the cursor. */
+  pick(snapshot: worktrees.Snapshot | null, index: number): void {
+    if (index < 0 || index >= this.count(snapshot)) return;
+    const entry = this.entries(snapshot)[index];
+    this.field = Dialog.init({ rename: 0 }, entry ? worktrees.label(entry) : this.typed);
+    this.field.selected = false;
+    this.highlight = index;
+    this.focus = "branch";
+    this.create.reset();
+    this.error = "";
+  }
+  /** Arrows browse the matches and the offer to create, filling Branch. */
+  move(snapshot: worktrees.Snapshot | null, delta: number): void {
+    const count = this.count(snapshot);
+    const start = this.highlight ?? (delta > 0 ? -1 : count);
+    this.pick(snapshot, Math.max(0, Math.min(count - 1, start + delta)));
   }
   /** The field with the caret. */
   input(): Dialog {
@@ -99,6 +146,7 @@ export class Chooser {
   }
   /** Puts the caret in From, its text the base, selected so typing replaces it. */
   focusFrom(): void {
+    this.create.reset();
     this.focus = "from";
     this.from = Dialog.init({ rename: 0 }, this.base?.name ?? "");
     this.searching = false;
@@ -196,17 +244,27 @@ function note(snapshot: worktrees.Snapshot, e: worktrees.Checkout): string {
   else if (e.changes) parts.push(e.changes.total > 0 ? `${e.changes.total} changed` : "clean");
   return parts.join(" · ");
 }
-/** The checkouts as dropdown rows: the hovered one lit while the list has
- * the keyboard, all of them dim while the form has it. */
+/** The matching checkouts and creation offer; From dims the list. */
 export function choices(snapshot: worktrees.Snapshot | null, cwd: string, c: Chooser): dropdown.Choice[] {
   const current = c.planned ? null : containing(snapshot, cwd);
-  return checkouts(snapshot).map((e, i) => ({
-    text: label(e),
+  const selected = c.selected(snapshot);
+  const entries = c.entries(snapshot);
+  const out: dropdown.Choice[] = entries.map((e, i) => ({
+    text: worktrees.label(e),
     note: note(snapshot!, e),
     current: e === current,
-    hovered: c.focus === "list" && i === c.hovered,
-    dim: c.focus !== "list",
+    hovered: c.focus === "branch" && (e === selected || i === c.hovered),
+    dim: c.focus === "from",
   }));
+  if (c.offersCreate(snapshot))
+    out.push({
+      text: `+ Create “${c.typed}”`,
+      note: "",
+      current: false,
+      hovered: c.focus === "branch" && (c.creating(snapshot) || c.hovered === entries.length),
+      dim: c.focus === "from",
+    });
+  return out;
 }
 /** The comparison branch, then the current checkout's branch when that
  * differs: the default base, and what From offers when the daemon can't
@@ -299,39 +357,42 @@ export function drawTitle(w: Writer, b: Rect, p: Place, right: number, open: boo
 /** The most checkouts the box shows at once. */
 export const list_rows = 8;
 /** What a pointer is on in the open box. */
-export type Spot = { checkout: number } | "branch" | "from" | { pick: number };
-/** Where the open box's parts sit, in 0-based cells: the checkouts, a
- * blank row, the New worktree rule, then Branch, a blank row, From and
- * Folder, and a row for what's wrong when something is. */
+export type Spot = { checkout: number } | "branch" | "from" | "confirm" | { pick: number };
+/** The search, matches, destination details and action, in 0-based cells. */
 export interface Box {
   rect: Rect;
   /** Rows of checkouts shown, from `list`. */
   shown: number;
   list: number;
-  rule: number;
   branch: number;
   from: number;
+  picks: number;
   folder: number;
+  footer: number;
   error: number | null;
   label_x: number;
   field_x: number;
   field_w: number;
 }
-/** The box hanging from the title's button with its ✓ under the ⌥, inside the launcher. */
-export function box(b: Rect, button_x: number, count: number, error: boolean): Box {
+/** The box hanging from the title's button, inside the launcher. */
+export function box(b: Rect, button_x: number, count: number, error: boolean, pick_count = 0): Box {
   const width = Math.min(56, sat(b.w, 2));
   const x = Math.max(b.x + 1, Math.min(button_x + 3, b.x + b.w - 1 - width));
-  const shown = Math.min(count, list_rows);
-  const rule = b.y + shown + 3;
+  const picks = Math.max(0, Math.min(pick_count, b.h - 14 - Number(error)));
+  const shown = Math.max(0, Math.min(count, list_rows, b.h - 13 - Number(error) - picks));
+  const list = b.y + 5;
+  const from = list + shown + 1;
+  const folder = from + picks + 1;
   return {
-    rect: new Rect(x, b.y + 1, width, shown + 8 + (error ? 1 : 0)),
+    rect: new Rect(x, b.y + 1, width, shown + 10 + Number(error) + picks),
     shown,
-    list: b.y + 2,
-    rule,
-    branch: rule + 1,
-    from: rule + 3,
-    folder: rule + 4,
-    error: error ? rule + 5 : null,
+    list,
+    branch: b.y + 3,
+    from,
+    picks,
+    folder,
+    footer: folder + 2 + Number(error),
+    error: error ? folder + 1 : null,
     label_x: x + 4,
     field_x: x + 12,
     field_w: sat(width, 14),
@@ -340,27 +401,29 @@ export function box(b: Rect, button_x: number, count: number, error: boolean): B
 /** The rows the launcher needs below its title for the box with `shown`
  * checkouts, and From's list of `picks` rows while it's open. */
 export function boxHeight(shown: number, error: boolean, picks: number | null): number {
-  return Math.max(shown + 11 + (error ? 1 : 0), picks === null ? 0 : shown + 9 + picks);
+  return shown + 13 + Number(error) + (picks ?? 0);
 }
-/** The checkouts shown, scrolled to keep the hovered one in view. */
+/** The choices shown, scrolled to keep the keyboard selection in view. */
 export function visible(c: Chooser, all: dropdown.Choice[], shown: number): dropdown.Choice[] {
-  c.scroll = Math.max(Math.min(c.scroll, c.hovered), c.hovered - shown + 1, 0);
+  const selected = c.highlight ?? all.findIndex(e => e.hovered);
+  if (selected >= 0) c.scroll = Math.max(Math.min(c.scroll, selected), selected - shown + 1, 0);
+  c.scroll = Math.min(c.scroll, Math.max(0, all.length - shown));
   return all.slice(c.scroll, c.scroll + shown);
 }
 /** The most branches From's list shows at once. */
 export const pick_rows = 8;
 /** From's list: rows right under the field, as wide as it, so the field
  * seems to open downward. */
-export function pickRect(bx: Box, rows: number): Rect {
-  return new Rect(bx.field_x, bx.from + 1, bx.field_w, rows);
+export function pickRect(bx: Box): Rect {
+  return new Rect(bx.field_x, bx.from + 1, bx.field_w, bx.picks);
 }
 /** From's list as dropdown rows, scrolled to keep the highlighted one in view. */
-export function pickChoices(c: Chooser, now: number): dropdown.Choice[] {
+export function pickChoices(c: Chooser, now: number, rows = pick_rows): dropdown.Choice[] {
   if (c.branches === null) return [{ text: "Reading branches…", note: "", current: false, hovered: false }];
   const all = c.matches();
   if (all.length === 0) return [{ text: "No branch matches", note: "", current: false, hovered: false }];
-  c.pick_scroll = Math.max(Math.min(c.pick_scroll, c.picked), c.picked - pick_rows + 1, 0);
-  return all.slice(c.pick_scroll, c.pick_scroll + pick_rows).map((b, i) => ({
+  c.pick_scroll = Math.max(Math.min(c.pick_scroll, c.picked), c.picked - rows + 1, 0);
+  return all.slice(c.pick_scroll, c.pick_scroll + rows).map((b, i) => ({
     text: b.name,
     note: b.at > 0 ? ageLabel(now - b.at) : "",
     current: b.ref === c.base?.ref,

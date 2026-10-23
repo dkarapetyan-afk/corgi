@@ -332,7 +332,7 @@ export class Menu {
       c.mode !== "open"
         ? 0
         : launcherWorktree.boxHeight(
-            Math.min(launcherWorktree.checkouts(this.worktrees).length, launcherWorktree.list_rows),
+            Math.min(c.count(this.worktrees), launcherWorktree.list_rows),
             c.error.length > 0,
             c.focus === "from" ? launcherWorktree.pickChoices(c, now()).length : null,
           );
@@ -483,14 +483,16 @@ export class Menu {
     const button = this.worktreeButton(cols, rowsCount, side);
     if (!button || this.worktree.mode === "closed") return null;
     const b = this.bounds(cols, rowsCount, side);
-    const count = launcherWorktree.checkouts(this.worktrees).length;
-    return launcherWorktree.box(b, button.x, count, this.worktree.error.length > 0);
+    const count = this.worktree.count(this.worktrees);
+    const picks = this.worktree.focus === "from" ? launcherWorktree.pickChoices(this.worktree, now()).length : 0;
+    return launcherWorktree.box(b, button.x, count, this.worktree.error.length > 0, picks);
   }
   /** From's branch list under its field, while From has the caret. */
   worktreePickRect(cols: number, rowsCount: number, side: SidebarView): Rect | null {
     const bx = this.worktreeBox(cols, rowsCount, side);
-    if (!bx || this.worktree.focus !== "from") return null;
-    return launcherWorktree.pickRect(bx, launcherWorktree.pickChoices(this.worktree, now()).length);
+    if (!bx || this.worktree.focus !== "from" || bx.picks === 0) return null;
+    launcherWorktree.pickChoices(this.worktree, now(), bx.picks);
+    return launcherWorktree.pickRect(bx);
   }
   /** What a pointer is on in the open box: a checkout, a field, or a branch in From's list. */
   worktreeHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): launcherWorktree.Spot | null {
@@ -504,9 +506,12 @@ export class Menu {
     if (y >= bx.list && y < bx.list + bx.shown) {
       launcherWorktree.visible(this.worktree, this.worktreeChoices(), bx.shown);
       const index = this.worktree.scroll + y - bx.list;
-      return index < launcherWorktree.checkouts(this.worktrees).length ? { checkout: index } : null;
+      return index < this.worktree.count(this.worktrees) ? { checkout: index } : null;
     }
-    return y === bx.branch ? "branch" : y === bx.from ? "from" : null;
+    if (y === bx.branch) return "branch";
+    if (y === bx.from && this.worktree.creating(this.worktrees)) return "from";
+    if (y === bx.footer && x >= bx.field_x) return "confirm";
+    return null;
   }
   /** Whether conversations show: once the daemon has sent some. A first
    * read takes seconds; the menu does not wait on it or show a placeholder. */
@@ -757,13 +762,7 @@ export class Menu {
     const c = m.resumeContext();
     const on_more = view.focused && view.entry(c, view.lines(c)) === null;
     let hints: Hint[];
-    if (m.worktree.mode === "open" && m.worktree.focus === "list")
-      hints = [
-        { key: "↵", label: "choose" },
-        { key: "n", label: "new" },
-        { key: "esc", label: "close" },
-      ];
-    else if (m.worktree.mode === "open" && m.worktree.focus === "from")
+    if (m.worktree.mode === "open" && m.worktree.focus === "from")
       hints = [
         { key: "↑↓", label: "pick" },
         { key: "↵", label: "use" },
@@ -771,8 +770,8 @@ export class Menu {
       ];
     else if (m.worktree.mode === "open")
       hints = [
-        { key: "↵", label: "done" },
-        { key: "tab", label: "from" },
+        { key: "↑↓", label: "choose" },
+        ...(m.worktree.creating(m.worktrees) ? [{ key: "tab", label: "from" }] : []),
         { key: "esc", label: "close" },
       ];
     else if (view.searching && view.query.len > 0)
@@ -830,8 +829,7 @@ export class Menu {
     const bx = m.worktreeBox(cols, rowsCount, side);
     if (bx) m.drawWorktreeBox(w, bx, cols, rowsCount, side);
   }
-  /** The checkouts, then the New worktree rule and its form, in one box.
-   * From's branches open right under its field while it has the caret. */
+  /** Branch searches the checkouts and offers creation alongside its matches. */
   private drawWorktreeBox(
     w: Writer,
     bx: launcherWorktree.Box,
@@ -845,26 +843,41 @@ export class Menu {
     const text = new Style({ fg: "text", bg: "surface" }).sgr(),
       panel = new Style({ fg: "faint", bg: "surface" }).sgr(),
       rule = new Style({ fg: "line", bg: "surface" }).sgr();
-    dropdown.draw(w, r, launcherWorktree.visible(c, this.worktreeChoices(), bx.shown));
-    // The New worktree rule joins the frame, with n's keycap on it; it lights
-    // up while the form has the keyboard.
-    w.write(at(r.x, bx.rule) + rule + "├─ " + keycap + " n " + text + " ");
-    w.write((c.focus === "list" ? palette.fg("muted") : "\x1b[1m" + palette.fg("strong")) + "New worktree\x1b[22m ");
-    w.write(rule + "─".repeat(sat(r.w, 21)) + "┤");
+    dropdown.draw(w, r, []);
+    w.write(at(r.x + 2, r.y) + text + " Worktree " + rule);
+    launcherWorktree
+      .visible(c, this.worktreeChoices(), bx.shown)
+      .forEach((choice, i) => dropdown.row(w, r, bx.list - r.y + i, choice));
     const label = (y: number, name: string) => w.write(at(bx.label_x, y) + panel + name);
     // The text is strong, a placeholder faint.
     const input = (d: Dialog, placeholder: string, y: number, focused: boolean) =>
       Menu.drawInput(w, d, placeholder, bx.field_x + 1, y + 1, bx.field_w, focused, d.len === 0 ? "faint" : "strong");
     label(bx.branch, "Branch");
-    input(c.field, "branch name", bx.branch, c.focus === "branch");
-    label(bx.from, "From");
-    const from = c.focus === "from" ? c.from : Dialog.init({ rename: 0 }, c.base?.name ?? "");
-    input(from, "", bx.from, c.focus === "from");
+    input(c.field, "search or create", bx.branch, c.focus === "branch");
+    const selected = c.selected(this.worktrees),
+      creating = c.creating(this.worktrees);
+    if (creating) {
+      label(bx.from, "From");
+      const from = c.focus === "from" ? c.from : Dialog.init({ rename: 0 }, c.base?.name ?? "");
+      input(from, "", bx.from, c.focus === "from");
+    }
     label(bx.folder, "Folder");
     w.write(at(bx.field_x, bx.folder) + text);
     const root = launcherWorktree.projectRoot(this.worktrees, this.cwd),
-      planned = launcherWorktree.plannedPath(this.worktrees, this.cwd, c.field.name() || "…", this.worktree_folder);
-    writeEllipsis(w, launcherWorktree.folderLabel(planned, root), bx.field_w);
+      path =
+        selected?.path ??
+        (creating
+          ? launcherWorktree.plannedPath(this.worktrees, this.cwd, c.field.name(), this.worktree_folder)
+          : this.cwd);
+    writeEllipsis(w, launcherWorktree.folderLabel(path, root), bx.field_w);
+    label(bx.footer, "↑↓ choose");
+    const action =
+      c.focus === "from" ? "↵ use branch" : creating ? "hold ↵ to create" : selected ? "↵ switch" : "type to search";
+    w.write(at(r.x + r.w - displayWidth(action) - 3, bx.footer) + text + action);
+    if (c.create.progress > 0)
+      w.write(
+        at(r.x + 1, r.y + r.h - 1) + palette.fg("accent") + "━".repeat(Math.floor((r.w - 2) * c.create.progress)),
+      );
     if (bx.error !== null) {
       w.write(at(bx.label_x, bx.error) + palette.fg("hot"));
       writeEllipsis(w, c.error, sat(r.x + r.w - 2, bx.label_x));
@@ -874,7 +887,7 @@ export class Menu {
     const pick = this.worktreePickRect(cols, rowsCount, side);
     if (pick) {
       const message = c.branches === null || c.matches().length === 0;
-      launcherWorktree.pickChoices(c, now()).forEach((choice, i) => {
+      launcherWorktree.pickChoices(c, now(), pick.h).forEach((choice, i) => {
         const style = new Style(choice.hovered ? { fg: "strong", bg: "line" } : { fg: "text", bg: "selected" }).sgr();
         const note_x = pick.x + pick.w - displayWidth(choice.note);
         w.write(at(pick.x, pick.y + i) + style);
@@ -884,7 +897,6 @@ export class Menu {
         writeEllipsis(w, choice.text, sat(note_x - 1, pick.x));
       });
     }
-    if (c.focus === "list") return;
     // The caret, where the focused field's text ends or the cursor stands.
     const field = c.input(),
       offset = DialogView.scroll(field, bx.field_w),
