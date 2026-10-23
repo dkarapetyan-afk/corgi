@@ -212,8 +212,17 @@ export class Pane {
   agent(): Agent {
     return this.attachment.agent();
   }
+  /** Releases detected identity without losing provisional completion receipts. */
+  releaseDetection() {
+    const observation = this.attachment.provisional.observation;
+    this.attachment.detach();
+    this.attachment.provisional.observation = observation;
+    this.attachment.provisional.attention = observation.unread() ? "finished" : "none";
+    this.detection = new Tracker();
+  }
   /** The provider account its agent runs in, "" for the default. */
   account(): string {
+    if (this.detection.claim) return "";
     const launch = this.resumeLaunch(),
       provider =
         this.agent().provider ?? launch?.agent?.provider ?? (launch?.command ? identify(launch.command) : null);
@@ -564,7 +573,7 @@ export class Runtime {
       p.refreshCwd();
       p.terminal.read();
       p.terminal.reap();
-      p.resume_hint.observe(p.agent());
+      if (!p.detection.claim) p.resume_hint.observe(p.agent());
       const running = (p.dormant || !p.terminal.exited) && p.attachment.actor !== null;
       this.stopShell(p.terminal);
       if (running && p.resume_hint.args() !== null) {

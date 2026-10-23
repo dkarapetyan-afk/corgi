@@ -215,12 +215,16 @@ export class Agent {
     const event = hook.kind,
       session = hook.session,
       start = event === "session_start",
-      reported = hook.turn;
+      reported = hook.turn,
+      screen_completed = this.last_seq === 0n && this.observation.source === "screen" && this.finished_since_activity,
+      binds_completion = screen_completed && (event === "stop" || event === "interrupt");
     if ((this.session.len && session && session !== this.sessionId()) || (this.provider && this.provider !== provider))
       return null;
     if (
       ["stop", "interrupt"].includes(event) &&
-      (this.finishedTurn(reported) || (reported && this.turn.len && reported !== this.turnId()))
+      ((!binds_completion &&
+        (this.finishedTurn(reported) || (this.finished_since_activity && !this.last_finished_turn.len))) ||
+        (reported && this.turn.len && reported !== this.turnId()))
     )
       return null;
     if (path.isAbsolute(hook.transcript)) this.transcript = new Path(hook.transcript);
@@ -229,7 +233,8 @@ export class Agent {
     this.paused = false;
     // A live conversation that is already shown is only announcing itself
     // again: after compaction, a Codex revert, or from a second pane.
-    if (start && presence !== "attaching" && this.state !== "unknown" && this.state !== "done") return false;
+    if (start && this.last_seq > 0n && presence !== "attaching" && this.state !== "unknown" && this.state !== "done")
+      return false;
     const next: State = (
       {
         session_start: "idle",
@@ -249,7 +254,7 @@ export class Agent {
         session_end: presence === "attached" ? "idle" : "done",
       } as Record<string, State>
     )[event];
-    if (start || next === "working" || next === "blocked") this.finished_since_activity = false;
+    if ((start && !screen_completed) || next === "working" || next === "blocked") this.finished_since_activity = false;
     if (hook.turn && Buffer.byteLength(hook.turn) <= 160) this.setTurn(hook.turn);
     this.last_seq = seq;
     this.permission_review = event === "permission" && hook.confirm === "screen" ? 0 : null;
@@ -257,7 +262,8 @@ export class Agent {
     if (session && Buffer.byteLength(session) <= 160) this.session = new Text(session);
     const old = this.state;
     this.observation.source = "hook";
-    this.observation.pending_stop = event === "stop";
+    this.observation.pending_stop = event === "stop" && !binds_completion;
+    if (binds_completion) this.last_finished_turn = Text.ascii(reported || this.turnId());
     this.state = this.observation.pending_stop ? "working" : next;
     this.changed_at = now;
     this.compacting = event === "compact_start";

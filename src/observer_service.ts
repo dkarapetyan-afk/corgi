@@ -3,6 +3,7 @@ import { Worker as UsageWorker } from "./usage/worker";
 import { Worker as SummaryWorker } from "./activity/worker";
 import { Provider, adapter } from "./providers";
 import { Path, type Presence } from "./agents";
+import { ResumeHint } from "./resume_hint";
 import { Counts } from "./usage/tokens";
 import * as setup from "./inference/setup";
 import * as detection from "./detection";
@@ -195,7 +196,14 @@ export function retitled(runtime: Runtime, pane: Pane, provider: Provider, prefi
   binding.selection_hash = hash;
 }
 export function reattachFromTitle(server: Server, pane: Pane, provider: Provider, pid: number) {
-  if (pane.attachment.actor || pane.terminal.exited || pid <= 0 || pane.terminal.title_pid !== pid) return;
+  if (
+    pane.detection.claim ||
+    pane.attachment.actor ||
+    pane.terminal.exited ||
+    pid <= 0 ||
+    pane.terminal.title_pid !== pid
+  )
+    return;
   const prefix = adapter(provider).titleSession?.(pane.terminal.title);
   const actor = prefix && titleActor(server.runtime, provider, prefix);
   if (!actor) return;
@@ -203,18 +211,40 @@ export function reattachFromTitle(server: Server, pane: Pane, provider: Provider
   if (!actor.workspace || !server.runtime.workspaces.get(actor.workspace))
     actor.workspace = server.runtime.workspaces.owner(pane.id)?.id ?? actor.workspace;
 }
+/** Claims are provisional screen identity, never a local conversation or resume command. */
+export function claimPane(server: Server, query: Request<"pane.agent">) {
+  const pane = server.runtime.pane(query.pane);
+  if (!pane) throw Error("NoPane");
+  if (pane.terminal.exited) throw Error("PaneExited");
+  if (query.owner <= 1) throw Error("InvalidOwner");
+  const previous = pane.detection.claim;
+  if (previous && detection.claimAlive(previous) && previous.owner !== query.owner) throw Error("AgentClaimed");
+  if (query.provider === null && !previous) return;
+  const claim = query.provider === null ? null : detection.claim(query.provider, query.owner);
+  if (claim && previous && detection.claimAlive(previous) && claim.provider === previous.provider) return;
+  pane.releaseDetection();
+  pane.detection.claim = claim;
+  pane.resume_hint = new ResumeHint();
+  if (pane.launch?.agent) pane.launch = null;
+  detectPane(server, pane);
+  changed(server);
+}
 export function detectPane(server: Server, pane: Pane, observedJob?: detection.Job | null) {
   const runtime = server.runtime,
     workers = start(server),
     worker = workers.summaries;
   const before = stringify(pane.agent());
-  const job = observedJob === undefined ? detection.foreground(pane.terminal.fd) : observedJob;
-  const previous = pane.detection.pid;
   const generation = pane.attachment.generation;
-  pane.resume_hint.observe(pane.agent());
+  if (pane.detection.claim && (pane.terminal.exited || !detection.claimAlive(pane.detection.claim))) {
+    pane.releaseDetection();
+  }
+  const claim = pane.detection.claim;
+  const job = claim ? null : observedJob === undefined ? detection.foreground(pane.terminal.fd) : observedJob;
+  const previous = pane.detection.pid;
+  if (!claim) pane.resume_hint.observe(pane.agent());
   if (job) {
     if ((previous && previous !== job.pid) || (pane.attachment.actor && pane.agent().provider !== job.provider))
-      pane.attachment.detach();
+      pane.releaseDetection();
     // An agent someone typed into the pane's shell comes back as they typed it.
     if (job.pid !== previous && (!pane.launch || pane.launch.agent?.observed))
       pane.launch = Launch.observed(job.provider, job.pid);
@@ -238,18 +268,28 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     watched = paneWatched(server, pane.id);
   const authoritative = actor?.authoritative(now) ?? false;
   pane.attachment.provisional.last_seq = authoritative ? 1n : 0n;
-  const speaks = pane.detection.update(pane.attachment.provisional, job);
+  let speaks: boolean;
+  if (claim) {
+    const agent = pane.attachment.provisional;
+    if (agent.provider !== claim.provider) {
+      agent.reset();
+      agent.provider = claim.provider;
+      agent.state = "initializing";
+    }
+    speaks = true;
+  } else speaks = pane.detection.update(pane.attachment.provisional, job);
+  if (actor?.state.last_seq) pane.detection.followStructured();
   if (job && job.pid !== previous) worker.observeLaunch(job.provider);
-  if (previous && !pane.detection.pid) pane.attachment.detach();
+  if (previous && !pane.detection.pid) pane.releaseDetection();
   // The provider judges its own screen; without one running, the pane shows nothing.
-  const judge = job?.provider ?? actor?.provider();
+  const judge = claim?.provider ?? job?.provider ?? actor?.provider();
   let ding = false;
   if (judge) {
     let text: string | null = null;
     const view = {
         id: pane.id,
-        title: job ? pane.terminal.title : "",
-        text: () => (text ??= job ? pane.terminal.liveText() : ""),
+        title: claim || job ? pane.terminal.title : "",
+        text: () => (text ??= claim || job ? pane.terminal.liveText() : ""),
       },
       known: Known | null = actor && {
         state: actor.state.state,
@@ -259,9 +299,10 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
         prompt: actor.prompt_watch,
       },
       seen = watcher(workers, judge, pane.account()).read(view, pane.detection, known, now);
-    if (seen.shown && speaks && job) ding = pane.detection.show(pane.attachment.provisional, seen.shown, watched);
+    const target = actor && pane.detection.screen_only ? actor.state : pane.attachment.provisional;
+    if (seen.shown && speaks && (claim || job)) ding = pane.detection.show(target, seen.shown, watched);
     if (actor) {
-      actor.screen(pane.attachment.provisional, ding, now);
+      if (target !== actor.state) actor.screen(pane.attachment.provisional, ding, now);
       if (actor.state.state === "working") actor.observeCompactionScreen(seen.compacting, now);
       if (seen.interrupted) actor.state.abandonTurn(now);
       if (seen.answered) actor.state.observeAnswer(seen.answered, now);
@@ -269,7 +310,7 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
         ding = actor.state.observePermissionPrompt(seen.prompt === true, watched, now) || ding;
     }
   }
-  pane.resume_hint.observe(pane.agent());
+  if (!claim) pane.resume_hint.observe(pane.agent());
   if (generation !== pane.attachment.generation || before !== stringify(pane.agent())) changed(server);
   attention(server, ding, pane.agent().state);
 }
@@ -291,12 +332,14 @@ export function hook(server: Server, query: Request<"hook">) {
   let actor;
   if (query.background) actor = known;
   else {
-    const from = runtime.pane(query.pane),
-      route = watcher(workers, query.provider, from?.account() ?? "").route(event, query.pane, session =>
+    const from = runtime.pane(query.pane);
+    if (from?.detection.claim) return;
+    const route = watcher(workers, query.provider, from?.account() ?? "").route(event, query.pane, session =>
         showing(runtime, query.provider, session),
       ),
       pane = route && runtime.pane(route.pane);
     if (!pane) throw Error("NoPane");
+    if (pane.detection.claim) return;
     detectPane(server, pane);
     if (seq <= pane.attachment.hook_seq) return;
     actor = runtime.conversations.routeHook(pane.attachment, query.provider, event, route.binds);
@@ -324,9 +367,11 @@ export async function tick(server: Server) {
   if (workers.settling || now - workers.detected >= 250) {
     workers.detected = now;
     const panes = runtime.panes.filter(pane => !pane.terminal.exited && (workers.settling || pane.detectionDue(now)));
-    const jobs = detection.foregroundJobs(panes.map(pane => ({ fd: pane.terminal.fd, pid: pane.terminal.pid })));
+    const jobs = detection.foregroundJobs(
+      panes.filter(pane => !pane.detection.claim).map(pane => ({ fd: pane.terminal.fd, pid: pane.terminal.pid })),
+    );
     for (const pane of panes) {
-      detectPane(server, pane, jobs.get(pane.terminal.fd) ?? null);
+      detectPane(server, pane, jobs.get(pane.terminal.fd));
       pane.detected = { output: pane.terminal.surface_revision, at: now };
     }
     for (const actor of runtime.conversations.items) actor.checkPause();

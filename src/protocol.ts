@@ -66,6 +66,7 @@ export const operations = [
   "pane.mark_unread",
   "pane.paste",
   "pane.idle",
+  "pane.agent",
   "conversation.list",
   "conversation.acknowledge",
   "pane.surface",
@@ -491,6 +492,7 @@ const requests = {
   "viewer.image": { pane: "u32", image: "string", offset: "u32" },
   "pane.paste": { pane: "u32", text: ["?string", null], image: ["?image", null] },
   "pane.idle": { workspace: ["u32", 0], cwd: ["string", ""], first: ["bool", false] },
+  "pane.agent": { pane: "u32", provider: ["?provider", null], owner: "i32" },
   "pane.acknowledge": {
     pane: "u32",
     session: ["string", ""],
@@ -594,6 +596,7 @@ export interface ReplyPayloads {
   };
   "viewer.list": Ok & { viewers: ViewerInfo[] };
   "viewer.image": Ok & { data: string | null };
+  "pane.agent": Ok;
   "pane.paste": Ok & { pasted: boolean };
   "pane.idle": Ok & { panes: { pane: number; tab: number; workspace: number; cwd: string }[] };
   "pane.surface": {

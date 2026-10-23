@@ -229,6 +229,21 @@ export class Attachment {
     return this.actor?.state ?? this.provisional;
   }
   select(actor: Actor) {
+    if (this.actor !== actor && this.provisional.observation.source === "screen") {
+      if (
+        this.actor === null &&
+        this.known_len === 0 &&
+        this.provisional.provider === actor.provider() &&
+        actor.state.last_seq === 0n &&
+        actor.state.state === "unknown" &&
+        actor.state.observation.completed === 0n
+      ) {
+        const session = actor.state.session;
+        actor.state = this.provisional.snapshot();
+        actor.state.session = session;
+      }
+      this.provisional = new Agent({ provider: actor.provider() });
+    }
     if (!this.knows(actor.id)) {
       if (this.known.length === 256) this.known.shift();
       this.known.push(actor.id);

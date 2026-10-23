@@ -5,6 +5,16 @@ import type { PaneMemory, PromptMemory } from "./providers/adapter";
 import { n, ptr, processArgs } from "./native_bridge";
 import { processJob, processTree } from "./os";
 export type Job = { pid: number; provider: Provider };
+/** A local bridge owns the identity; the provider itself may run elsewhere. */
+export type Claim = { provider: Provider; owner: number; parent: number };
+export function claim(provider: Provider, owner: number): Claim {
+  const job = owner > 1 ? processJob(owner) : null;
+  if (!job) throw Error("InvalidOwner");
+  return { provider, owner, parent: job.ppid };
+}
+export function claimAlive(claim: Claim): boolean {
+  return processJob(claim.owner)?.ppid === claim.parent;
+}
 export const process_buffer = 1024 * 1024;
 export function identify(argv: string[]): Provider | null {
   return locate(argv)?.provider ?? null;
@@ -45,6 +55,21 @@ export class PromptWatch implements PromptMemory {
 }
 /** Which provider a pane runs, and what its watcher keeps about the pane. */
 export class Tracker implements PaneMemory {
+  claim: Claim | null = null;
+  /** The current process has acquired structured lifecycle evidence. */
+  structured = false;
+  /** The screen has shown work since its last confirmed idle screen. */
+  screen_worked = false;
+  get screen_only() {
+    return !this.structured && (this.claim !== null || this.pid > 0);
+  }
+  get allow_initial_work() {
+    return this.screen_only;
+  }
+  followStructured() {
+    this.structured = true;
+    this.screen_worked = false;
+  }
   pid = 0;
   missing = 0;
   candidate: State | null = null;
@@ -69,12 +94,15 @@ export class Tracker implements PaneMemory {
     if (this.pid !== job.pid || agent.provider !== job.provider) {
       if (this.pid || agent.provider !== job.provider) agent.reset();
       this.pid = job.pid;
+      this.structured = false;
+      this.screen_worked = false;
       this.candidate = null;
       this.confirmations = 0;
       this.ready = false;
       agent.provider = job.provider;
       if (!agent.last_seq) agent.state = "initializing";
     }
+    if (agent.last_seq) this.followStructured();
     return !agent.last_seq;
   }
   /** Shows what the watcher confirmed the screen says; true when it should ring. */
@@ -83,8 +111,20 @@ export class Tracker implements PaneMemory {
     agent.tool_active = shown.tool;
     if (agent.state === next) return false;
     if (next === "idle") this.ready = true;
+    const now = Date.now() * 1000;
+    if (this.screen_only) {
+      if (next === "working" && !this.screen_worked) {
+        this.screen_worked = true;
+        this.interrupt_key_at = 0;
+        agent.beginTurn("");
+      } else if (next === "idle" && this.screen_worked) {
+        this.screen_worked = false;
+        const interrupted = this.interrupt_key_at > 0 && now - this.interrupt_key_at <= 5000000;
+        return agent.endTurn("", interrupted ? "interrupted" : "completed", "screen", now);
+      } else if (next === "idle") agent.attention = agent.observation.unread() ? "finished" : "none";
+    }
     agent.state = next;
-    agent.changed_at = Date.now() * 1000;
+    agent.changed_at = now;
     agent.activity = new Text();
     agent.observation.source = "screen";
     if (next === "working") agent.attention = agent.observation.unread() ? "finished" : "none";

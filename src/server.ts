@@ -101,6 +101,7 @@ export class Server {
     if (this.bell && this.bell_kind === "finished") {
       const unread =
         this.runtime.conversations.items.some(actor => actor.state.observation.unread()) ||
+        this.runtime.panes.some(pane => pane.agent().observation.unread()) ||
         this.runtime.sessions.some(session => session.attention() === "finished");
       if (!unread) {
         this.bell = false;
@@ -496,6 +497,10 @@ export class Server {
         return;
       case "pane.idle":
         cl.reply(op, { panes: await session.idle(this.runtime, request.payload) });
+        return;
+      case "pane.agent":
+        observers.claimPane(this, request.payload);
+        cl.reply(op, {});
         return;
       case "action":
         await viewer.action(this, cl, request.payload);

@@ -7,6 +7,8 @@ import { checkpoint as schema, validateCheckpoint } from "./schema";
 import * as json from "../json";
 import { Runtime, Pane } from "../runtime";
 import { Terminal } from "../pane/terminal";
+import { claim } from "../detection";
+import { adapter } from "../providers";
 import { n, ptr, symbols, waitpid } from "../native_bridge";
 import { Order } from "../agent_order";
 import { Workspace } from "../workspace";
@@ -39,6 +41,71 @@ const show = (r: Runtime, actor: Actor) => {
 const roundtrip = (state: any) => json.parse(json.stringify(state));
 const restore = (r: Runtime, state: any, live: boolean) =>
   cp.restore(r, roundtrip(state), live, "/tmp/unused-checkpoint.sock", "/tmp/corgi");
+test("bridge claims survive live handoff but never become cold-recovered local agents", async () => {
+  using original = fresh();
+  const ws = original.workspaces.items[0];
+  const pane = new Pane(ws.model.newTab(""), Terminal.create(20, 4), "/tmp");
+  original.panes.push(pane);
+  original.workspaces.next_pane_id = ws.model.next_id;
+  pane.detection.claim = claim("claude", process.pid);
+  pane.attachment.provisional.provider = "claude";
+  pane.attachment.provisional.state = "working";
+  pane.attachment.provisional.observation.finish("completed", "screen");
+  pane.detection.screen_worked = true;
+  for (const live of [true, false]) {
+    using next = new Runtime();
+    const saved = cp.capture(original, live);
+    await restore(next, saved, live);
+    const restored = next.panes[0];
+    expect(restored.detection.claim).toEqual(live ? pane.detection.claim : null);
+    expect(restored.agent().provider).toBe(live ? "claude" : null);
+    expect(restored.detection.screen_worked).toBe(live);
+    expect(restored.agent().observation.completed).toBe(1n);
+    expect(restored.agent().observation.unread()).toBe(true);
+    expect(restored.resumeLaunch()).toBeNull();
+    expect(restored.resume_hint.provider).toBeNull();
+    if (live) {
+      const watcher = adapter("claude").watch("");
+      for (let i = 0; i < 6; i++) {
+        const seen = watcher.read({ id: pane.id, title: "✳ Ready", text: () => "" }, restored.detection, null, 0);
+        if (seen.shown) restored.detection.show(restored.agent(), seen.shown, false);
+      }
+      expect(restored.agent().observation.completed).toBe(2n);
+    }
+  }
+  const older = roundtrip(cp.capture(original, true));
+  delete older.panes[0].detection.claim;
+  delete older.panes[0].detection.screen_worked;
+  delete older.panes[0].detection.structured;
+  using compatible = new Runtime();
+  await restore(compatible, older, true);
+  expect(compatible.panes[0].detection.claim).toBeNull();
+  expect(compatible.panes[0].detection.screen_worked).toBe(false);
+  expect(compatible.panes[0].detection.structured).toBe(false);
+  for (const invalid of [{ owner: 123 }, { provider: "bogus", owner: 123, parent: 1 }]) {
+    const saved = roundtrip(cp.capture(original, true));
+    saved.panes[0].detection.claim = invalid;
+    using next = new Runtime();
+    await expect(restore(next, saved, true)).rejects.toThrow();
+  }
+});
+
+test("structured lifecycle ownership survives live reload, not a new cold process", async () => {
+  using original = fresh();
+  const actor = original.conversations.get("codex", "structured");
+  show(original, actor);
+  original.panes[0].detection.pid = 123;
+  original.panes[0].detection.followStructured();
+  actor.state.last_seq = 1n;
+  actor.state.observation.source = "protocol";
+  for (const live of [true, false]) {
+    using next = new Runtime();
+    await restore(next, cp.capture(original, live), live);
+    expect(next.panes[0].detection.structured).toBe(live);
+    expect(next.panes[0].detection.screen_worked).toBe(false);
+  }
+});
+
 test("worktree evidence survives live and cold recovery independently of the launch directory", async () => {
   using original = fresh();
   const actor = original.conversations.get("codex", "worktree-session");

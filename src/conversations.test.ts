@@ -200,6 +200,79 @@ test("first hook establishes identity without process detection but cannot reviv
   expect(registry.routeHook(binding, "claude", event, true)).toBeNull();
   expect(registry.items.length).toBe(1);
 });
+test("first hook acquisition keeps screen receipts without completing the same work again", () => {
+  for (const first of ["session_start", "stop"] as const) {
+    const registry = new Registry(),
+      binding = new Attachment();
+    binding.provisional.provider = "claude";
+    binding.provisional.beginTurn("");
+    binding.provisional.endTurn("", "completed", "screen", 1);
+    const event = hook(first, "discovered", { turn: first === "stop" ? "old" : "" });
+    const actor = registry.routeHook(binding, "claude", event, true)!;
+    expect(actor.state.observation).toMatchObject({ completed: 1n, read: 0n, source: "screen" });
+    expect(binding.provisional.observation.completed).toBe(0n);
+    expect(actor.observeHook(event, 1n, false, 10, "attached")).toBe(false);
+    expect(actor.state.last_seq).toBe(1n);
+    expect(actor.observeHook(hook("stop", "discovered", { turn: "old" }), 2n, false, 20, "attached")).toBe(false);
+    expect(actor.confirmStop(actor.state.last_seq, "completed", 30)).toBe(false);
+    expect(actor.state.observation.completed).toBe(1n);
+    expect(actor.state.observation.pending_stop).toBe(false);
+    actor.state.acknowledge();
+    actor.observeHook(hook("prompt", "discovered", { turn: "next" }), 3n, false, 40, "attached");
+    actor.observeHook(hook("stop", "discovered", { turn: "next" }), 4n, false, 50, "attached");
+    expect(actor.confirmStop(4n, "completed", 60)).toBe(true);
+    expect(actor.state.observation).toMatchObject({ completed: 2n, read: 1n, source: "transcript" });
+  }
+});
+
+test("first protocol acquisition adopts screen receipts and baselines its completed turn", () => {
+  for (const read of [false, true]) {
+    const registry = new Registry(),
+      binding = new Attachment(),
+      initial = snapshot("idle");
+    binding.provisional.provider = "codex";
+    binding.provisional.beginTurn("");
+    binding.provisional.endTurn("", "completed", "screen", 1);
+    if (read) binding.provisional.acknowledge();
+    const actor = registry.get("codex", initial.session);
+    binding.select(actor);
+    initial.turn = new Text("old");
+    initial.outcome = "completed";
+    expect(actor.observeSnapshot(initial, false, 100)).toBe(false);
+    initial.observed_at++;
+    expect(actor.observeSnapshot(initial, false, 200)).toBe(false);
+    expect(actor.state.observation).toMatchObject({ completed: 1n, read: read ? 1n : 0n });
+    initial.observed_at++;
+    initial.state = "working";
+    initial.turn = new Text("next");
+    initial.outcome = null;
+    actor.observeSnapshot(initial, false, 300);
+    initial.observed_at++;
+    initial.state = "idle";
+    initial.outcome = "completed";
+    expect(actor.observeSnapshot(initial, false, 400)).toBe(true);
+    expect(actor.state.observation.completed).toBe(2n);
+  }
+});
+
+test("screen receipts cannot overwrite an existing actor or leak into a later selection", () => {
+  const registry = new Registry(),
+    binding = new Attachment(),
+    known = registry.get("claude", "known");
+  binding.provisional.provider = "claude";
+  binding.provisional.beginTurn("");
+  binding.provisional.endTurn("", "completed", "screen", 1);
+  known.state.last_seq = 100n;
+  known.state.observation.completed = 4n;
+  known.state.observation.read = 4n;
+  binding.select(known);
+  expect(known.state.observation).toMatchObject({ completed: 4n, read: 4n });
+  expect(binding.provisional.observation.completed).toBe(0n);
+  const other = registry.get("claude", "other");
+  binding.select(other);
+  expect(other.state.observation.completed).toBe(0n);
+});
+
 test("screen fallback keeps following work after a structured observation expires", () => {
   const actor = new Registry().get("codex", "resumed");
   Object.assign(actor.state, {

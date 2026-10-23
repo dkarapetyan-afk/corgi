@@ -1,13 +1,22 @@
 import { stringify } from "./json";
 import { afterEach, expect, test } from "bun:test";
 import { Server } from "./server";
-import { Pane } from "./runtime";
+import { Pane, Launch } from "./runtime";
 import { Terminal } from "./pane/terminal";
 import { Worker } from "./providers/codex/observer";
 import { Snapshot } from "./providers/snapshot";
 import { Text } from "./providers/common";
 import * as codex from "./providers/codex";
-import { snapshotActor, missed, reattachFromTitle, retitled } from "./observer_service";
+import {
+  snapshotActor,
+  missed,
+  reattachFromTitle,
+  retitled,
+  claimPane,
+  detectPane,
+  hook,
+  stop,
+} from "./observer_service";
 
 const id = "11111111-1111-4111-8111-111111111111";
 class ObserverTerminal extends Terminal {
@@ -42,9 +51,175 @@ function fixture() {
   const pane = new Pane(1, terminal, "/tmp");
   pane.detection.pid = 42;
   server.runtime.panes.push(pane);
-  afterEach(() => terminal.destroy());
+  afterEach(() => {
+    stop(server);
+    terminal.destroy();
+  });
   return { server, pane, terminal, registry: server.runtime.conversations };
 }
+
+test("a bridge claim runs the existing screen watcher without a local agent or conversation", () => {
+  const { server, pane, terminal, registry } = fixture();
+  pane.launch = new Launch({ provider: "codex" });
+  pane.attachment.select(registry.get("codex", id));
+  claimPane(server, { pane: 1, provider: "claude", owner: process.pid });
+  terminal.feed("Working (esc to interrupt)");
+  terminal.title = "⠋ Remote task";
+  for (let i = 0; i < 3; i++) detectPane(server, pane, null);
+  expect(pane.agent()).toMatchObject({ provider: "claude", state: "working", attention: "none" });
+  expect(pane.detection.pid).toBe(0);
+  expect(pane.attachment.actor).toBeNull();
+  expect(pane.resumeLaunch()).toBeNull();
+  expect(pane.account()).toBe("");
+  terminal.feed("\x1b[2J\x1b[HEnter to confirm · Esc to cancel");
+  for (let i = 0; i < 2; i++) detectPane(server, pane, null);
+  expect(pane.agent()).toMatchObject({ state: "blocked", attention: "needs_input" });
+  const generation = pane.attachment.generation;
+  claimPane(server, { pane: 1, provider: "claude", owner: process.pid });
+  expect(pane.attachment.generation).toBe(generation);
+  hook(server, {
+    pane: 1,
+    provider: "claude",
+    event: { hook_event_name: "SessionStart", session_id: "remote-session" },
+    pid: 42,
+    seq: 1n,
+    background: false,
+  });
+  expect(pane.attachment.actor).toBeNull();
+  expect(registry.find("claude", "remote-session")).toBeNull();
+  claimPane(server, { pane: 1, provider: null, owner: process.pid });
+  expect(pane.detection.claim).toBeNull();
+  expect(pane.agent()).toMatchObject({ provider: null, state: "unknown", attention: "none" });
+  expect(pane.agent().observation.completed).toBe(0n);
+});
+
+test("only a claim's live owner can replace or clear it, and owner loss returns to local detection", () => {
+  const { server, pane, terminal } = fixture();
+  claimPane(server, { pane: 1, provider: "codex", owner: process.pid });
+  for (const provider of [null, "claude"] as const)
+    expect(() => claimPane(server, { pane: 1, provider, owner: process.ppid })).toThrow("AgentClaimed");
+  terminal.feed("› ");
+  for (let i = 0; i < 3; i++) detectPane(server, pane, null);
+  terminal.feed("\x1b[2J\x1b[H• Working (20s • esc to interrupt)\r\n› Ask Codex to do anything");
+  for (let i = 0; i < 3; i++) detectPane(server, pane, null);
+  expect(pane.agent().state).toBe("working");
+  pane.detection.claim!.parent = -1;
+  detectPane(server, pane, { provider: "claude", pid: 123 });
+  expect(pane.detection.claim).toBeNull();
+  expect(pane.detection.pid).toBe(123);
+  expect(pane.agent().provider).toBe("claude");
+  expect(pane.agent().observation.completed).toBe(0n);
+  expect(pane.attachment.actor).toBeNull();
+});
+
+test("claimed screen completions retain their receipts through clear, replacement and owner loss", () => {
+  const { server, pane, terminal } = fixture();
+  const show = (text: string, title: string) => {
+    terminal.feed("\x1b[2J\x1b[H" + text);
+    terminal.title = title;
+    for (let i = 0; i < 3; i++) detectPane(server, pane, null);
+  };
+  claimPane(server, { pane: 1, provider: "claude", owner: process.pid });
+  show("Working (esc to interrupt)", "⠋ Remote task");
+  show("", "✳ Ready");
+  expect(pane.agent()).toMatchObject({ state: "idle", attention: "finished" });
+  expect(pane.agent().observation).toMatchObject({ completed: 1n, read: 0n, source: "screen" });
+  expect(server.bell_kind).toBe("finished");
+  const generation = pane.attachment.generation;
+  claimPane(server, { pane: 1, provider: null, owner: process.pid });
+  expect(pane.attachment.generation).toBeGreaterThan(generation);
+  expect(pane.agent()).toMatchObject({ provider: null, attention: "finished" });
+  expect(pane.agent().observation.completed).toBe(1n);
+  claimPane(server, { pane: 1, provider: "codex", owner: process.pid });
+  expect(pane.agent().observation.unread()).toBe(true);
+  show("Working (esc to interrupt)", "");
+  expect(pane.detection.screen_worked).toBe(true);
+  pane.detection.claim!.parent = -1;
+  detectPane(server, pane, null);
+  expect(pane.agent()).toMatchObject({ provider: null, attention: "finished" });
+  expect(pane.agent().observation.completed).toBe(1n);
+  expect(pane.detection.screen_worked).toBe(false);
+});
+
+test("autodetected local agents complete screen-only turns without a claim", () => {
+  for (const provider of ["claude", "codex"] as const) {
+    const { server, pane, terminal } = fixture();
+    const job = { provider, pid: 42 };
+    terminal.title = "⠋ Task";
+    terminal.feed("Working (esc to interrupt)");
+    for (let i = 0; i < 3; i++) detectPane(server, pane, job);
+    expect(pane.agent().state).toBe("working");
+    expect(pane.detection.claim).toBeNull();
+    expect(pane.detection.screen_only).toBe(true);
+    terminal.title = "✳ Ready";
+    terminal.feed("\x1b[2J\x1b[H› ");
+    for (let i = 0; i < 3; i++) detectPane(server, pane, job);
+    expect(pane.agent()).toMatchObject({ state: "idle", attention: "finished" });
+    expect(pane.agent().observation).toMatchObject({ completed: 1n, read: 0n, source: "screen" });
+    expect(server.bell_kind).toBe("finished");
+    detectPane(server, pane, null);
+    detectPane(server, pane, null);
+    expect(pane.agent().provider).toBeNull();
+    expect(pane.agent().observation.completed).toBe(1n);
+    expect(pane.agent().observation.unread()).toBe(true);
+  }
+});
+
+test("identity without structured evidence keeps screen-only lifecycle on its actor", () => {
+  const { server, pane, terminal, registry } = fixture();
+  const actor = registry.get("codex", id),
+    job = { provider: "codex" as const, pid: 42 };
+  terminal.feed("Working (esc to interrupt)");
+  for (let i = 0; i < 3; i++) detectPane(server, pane, job);
+  expect(pane.attachment.actor).toBe(actor);
+  expect(actor.state.state).toBe("working");
+  terminal.feed("\x1b[2J\x1b[H› ");
+  for (let i = 0; i < 3; i++) detectPane(server, pane, job);
+  expect(actor.state).toMatchObject({ state: "idle", attention: "finished", last_seq: 0n });
+  expect(actor.state.observation.completed).toBe(1n);
+  expect(pane.attachment.provisional.observation.completed).toBe(0n);
+  expect(server.bell_kind).toBe("finished");
+});
+
+test("expired structured evidence permits screen status but never switches to inferred completion", () => {
+  const { server, pane, terminal, registry } = fixture();
+  const actor = registry.get("codex", id),
+    job = { provider: "codex" as const, pid: 42 };
+  actor.state.last_seq = 100n;
+  actor.state.observation.source = "protocol";
+  const show = (text: string) => {
+    terminal.feed("\x1b[2J\x1b[H" + text);
+    for (let i = 0; i < 3; i++) detectPane(server, pane, job);
+  };
+  show("› ");
+  expect(pane.detection.structured).toBe(true);
+  show("Working (esc to interrupt)");
+  expect(actor.state.state).toBe("working");
+  show("› ");
+  expect(actor.state.state).toBe("idle");
+  expect(actor.state.observation.completed).toBe(0n);
+  expect(pane.detection.screen_worked).toBe(false);
+  expect(server.bell_kind).toBe("none");
+});
+
+test("claims reject missing panes, dead owners and ended terminals", () => {
+  const { server, terminal } = fixture();
+  expect(() => claimPane(server, { pane: 2, provider: "claude", owner: process.pid })).toThrow("NoPane");
+  for (const owner of [0, 1, 2147483647])
+    expect(() => claimPane(server, { pane: 1, provider: "claude", owner })).toThrow("InvalidOwner");
+  terminal.exited = true;
+  expect(() => claimPane(server, { pane: 1, provider: "claude", owner: process.pid })).toThrow("PaneExited");
+});
+
+test("Codex claims cannot reattach local conversation identity from a remote title", () => {
+  const { server, pane, registry } = fixture();
+  registry.get("codex", id);
+  claimPane(server, { pane: 1, provider: "codex", owner: process.pid });
+  reattachFromTitle(server, pane, "codex", 42);
+  for (let i = 0; i < 3; i++) detectPane(server, pane, { provider: "codex", pid: 42 });
+  expect(pane.attachment.actor).toBeNull();
+  expect(pane.agent().sessionId()).toBe("");
+});
 
 test("Codex selection rejects delayed ABA observations while detached actors remain addressable", () => {
   const { server, pane, terminal, registry } = fixture();

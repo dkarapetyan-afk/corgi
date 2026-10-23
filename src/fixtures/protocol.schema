@@ -167,6 +167,10 @@ $.requests|pane.paste.image?.path: string
 $.requests|pane.idle.workspace: u32
 $.requests|pane.idle.cwd: string
 $.requests|pane.idle.first: bool
+$.requests|pane.agent.pane: u32
+$.requests|pane.agent.provider: optional
+$.requests|pane.agent.provider?: enum codex claude pi
+$.requests|pane.agent.owner: i32
 $.requests|conversation.list: {}
 $.requests|conversation.acknowledge.conversation: u32
 $.requests|conversation.acknowledge.through: u64

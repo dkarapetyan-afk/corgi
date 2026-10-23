@@ -5,7 +5,7 @@
 import type { Hook } from "./common";
 import type { Known, PaneMemory, PaneView, Seen, Watcher } from "./adapter";
 /** What a provider's screen shows, from its own reader. */
-export type Reading = "working" | "compacting" | "tool" | "idle" | "blocked";
+export type Reading = "initializing" | "working" | "compacting" | "tool" | "idle" | "blocked";
 export class ScreenWatcher implements Watcher {
   constructor(readonly reading: (title: string, text: string) => Reading | null) {}
   /** A hook goes to the pane it came from, whose conversation it names. */
@@ -25,10 +25,10 @@ export class ScreenWatcher implements Watcher {
     return seen;
   }
   /** The state a reading confirms: idle three reads in a row, anything else
-   * two, and working only once the screen has shown idle. */
+   * two. Working needs a prior idle screen unless identity is explicit. */
   protected confirm(memory: PaneMemory, reading: Reading | null) {
     const next = reading === "compacting" || reading === "tool" ? "working" : reading;
-    if (!next || (next === "working" && !memory.ready)) {
+    if (!next || (next === "working" && !memory.ready && !memory.allow_initial_work)) {
       memory.candidate = null;
       memory.confirmations = 0;
       return null;

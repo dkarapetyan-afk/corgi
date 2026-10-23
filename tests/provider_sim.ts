@@ -72,7 +72,11 @@ function event(name) {
 }
 let loading=process.argv.includes('--loading');
 if(loading) console.log('\\x1b[2J\\x1b[H\\x1b]2;⠋ Starting\\x07Initializing (esc to interrupt)');
-else { event('SessionStart'); console.log('\\x1b[2J\\x1b[H\\x1b]2;✳ Ready\\x07› '); }
+else {
+  event('SessionStart');
+  if(process.argv.includes('--working')) { event('UserPromptSubmit'); console.log('\\x1b[2J\\x1b[H\\x1b]2;⠋ Task\\x07Working (esc to interrupt)'); }
+  else console.log('\\x1b[2J\\x1b[H\\x1b]2;✳ Ready\\x07› ');
+}
 for await(const line of (await import('node:readline')).createInterface({input:process.stdin})) {
   const command=line.trim();
   if(loading) { if(command==='ready') { loading=false; event('SessionStart'); console.log('\\x1b[2J\\x1b[H\\x1b]2;✳ Ready\\x07› '); } continue; }

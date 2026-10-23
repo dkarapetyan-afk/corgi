@@ -47,6 +47,8 @@ export function validateCheckpoint(value: any): void {
   for (const pane of value.panes) {
     requireFields(pane, ["binding", "id", "cwd", "screen"]);
     requireFields(pane.screen, ["cols", "rows", "data"]);
+    if (pane.detection?.claim !== undefined && pane.detection.claim !== null)
+      requireFields(pane.detection.claim, ["provider", "owner", "parent"]);
   }
   for (const closed of value.closed) {
     requireFields(closed, ["cwd", "screen", "tab", "workspace_id"]);

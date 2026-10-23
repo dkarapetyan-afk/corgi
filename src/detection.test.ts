@@ -7,9 +7,10 @@ import { adapter } from "./providers";
 import { screen as claudeScreen, interrupted } from "./providers/claude/screen";
 /** A tick of a pane's detection: follow its process, then show what its watcher confirms. */
 function look(tracker: Tracker, agent: Agent, job: Job | null, title: string, text: string, watched: boolean) {
-  const speaks = tracker.update(agent, job);
-  if (!job) return false;
-  const seen = adapter(job.provider)
+  const speaks = tracker.claim ? true : tracker.update(agent, job);
+  const provider = tracker.claim?.provider ?? job?.provider;
+  if (!provider) return false;
+  const seen = adapter(provider)
     .watch("")
     .read({ id: 1, title, text: () => text }, tracker, null, 0);
   return !!seen.shown && speaks && tracker.show(agent, seen.shown, watched);
@@ -75,8 +76,10 @@ test("fallback debounces attention, yields to hooks, and clears exited agents", 
   expect(agent.state).toBe("idle");
   for (let i = 0; i < 2; i++) look(tracker, agent, job, "⠋ Task", "Working (esc to interrupt)", false);
   expect(agent.state).toBe("working");
-  for (let i = 0; i < 3; i++) expect(look(tracker, agent, job, "✳ Task", "", false)).toBe(false);
-  expect(agent.attention).toBe("none");
+  for (let i = 0; i < 2; i++) expect(look(tracker, agent, job, "✳ Task", "", false)).toBe(false);
+  expect(look(tracker, agent, job, "✳ Task", "", false)).toBe(true);
+  expect(agent.attention).toBe("finished");
+  expect(agent.observation.completed).toBe(1n);
   agent.last_seq = 1n;
   agent.state = "blocked";
   for (let i = 0; i < 4; i++) look(tracker, agent, job, "⠋ Task", "", false);
@@ -87,6 +90,108 @@ test("fallback debounces attention, yields to hooks, and clears exited agents", 
   expect(agent.provider).toBeNull();
   expect(agent.last_seq).toBe(0n);
 });
+test("claimed and autodetected screens share a lifecycle from the first observed work", () => {
+  for (const [provider, claimed] of [
+    ["claude", false],
+    ["codex", false],
+    ["claude", true],
+    ["codex", true],
+  ] as const) {
+    const tracker = new Tracker(),
+      agent = new Agent({ provider, state: "initializing" });
+    if (claimed) tracker.claim = { provider, owner: process.pid, parent: process.ppid };
+    const job = claimed ? null : { provider, pid: 123 };
+    const show = (title: string, text: string, reads: number) => {
+      let ding = false;
+      for (let i = 0; i < reads; i++) ding = look(tracker, agent, job, title, text, false) || ding;
+      return ding;
+    };
+    const working = "Working (esc to interrupt)",
+      idle = "› ";
+    expect(show("⠋ Task", working, 2)).toBe(false);
+    expect(agent.state).toBe("working");
+    expect(tracker.ready).toBe(false);
+    expect(tracker.screen_worked).toBe(true);
+    expect(show("", "unrecognized or disconnected output", 5)).toBe(false);
+    expect(agent.state).toBe("working");
+    expect(show("✳ Ready", idle, 2)).toBe(false);
+    expect(agent.observation.completed).toBe(0n);
+    expect(show("✳ Ready", idle, 1)).toBe(true);
+    expect(agent).toMatchObject({ state: "idle", attention: "finished", finished_since_activity: true });
+    expect(agent.observation).toMatchObject({ completed: 1n, read: 0n, source: "screen", outcome: "completed" });
+    expect(tracker.screen_worked).toBe(false);
+    expect(show("✳ Ready", idle, 5)).toBe(false);
+    expect(agent.observation.completed).toBe(1n);
+    show("⠋ Task", working, 2);
+    expect(agent.attention).toBe("finished");
+    show("", "Enter to confirm · Esc to cancel", 2);
+    expect(agent.state).toBe("blocked");
+    expect(tracker.screen_worked).toBe(true);
+    expect(show("✳ Ready", idle, 3)).toBe(true);
+    expect(agent.observation.completed).toBe(2n);
+    agent.readThrough(1n);
+    expect(agent.observation.unread()).toBe(true);
+    agent.acknowledge();
+    expect(agent.observation.unread()).toBe(false);
+    expect(agent.attention).toBe("none");
+  }
+});
+
+test("claimed startup idle and startup dialogs do not complete work", () => {
+  const tracker = new Tracker(),
+    agent = new Agent({ provider: "claude", state: "initializing" });
+  tracker.claim = { provider: "claude", owner: process.pid, parent: process.ppid };
+  for (let i = 0; i < 3; i++) expect(look(tracker, agent, null, "✳ Ready", "", false)).toBe(false);
+  for (let i = 0; i < 2; i++) look(tracker, agent, null, "", "Enter to confirm · Esc to cancel", false);
+  expect(agent.attention).toBe("needs_input");
+  for (let i = 0; i < 3; i++) expect(look(tracker, agent, null, "✳ Ready", "", false)).toBe(false);
+  expect(agent).toMatchObject({ state: "idle", attention: "none" });
+  expect(agent.observation.completed).toBe(0n);
+});
+
+test("a claimed turn interrupted through the pane records interruption without a finished sound", () => {
+  const tracker = new Tracker(),
+    agent = new Agent({ provider: "claude", state: "initializing" });
+  tracker.claim = { provider: "claude", owner: process.pid, parent: process.ppid };
+  const working = "Working (esc to interrupt)";
+  for (let i = 0; i < 2; i++) look(tracker, agent, null, "⠋ Task", working, false);
+  tracker.observeInput("\x03", Date.now() * 1000);
+  for (let i = 0; i < 3; i++) expect(look(tracker, agent, null, "✳ Ready", "", false)).toBe(false);
+  expect(agent.observation).toMatchObject({ completed: 1n, outcome: "interrupted", source: "screen" });
+  for (let i = 0; i < 2; i++) look(tracker, agent, null, "⠋ Task", working, false);
+  expect(tracker.interrupt_key_at).toBe(0);
+  let ding = false;
+  for (let i = 0; i < 3; i++) ding = look(tracker, agent, null, "✳ Ready", "", false) || ding;
+  expect(ding).toBe(true);
+  expect(agent.observation).toMatchObject({ completed: 2n, outcome: "completed" });
+});
+
+test("structured ownership stays sticky until process replacement", () => {
+  const tracker = new Tracker(),
+    agent = new Agent(),
+    job = { provider: "claude" as const, pid: 123 };
+  for (let i = 0; i < 2; i++) look(tracker, agent, job, "⠋ Task", "Working (esc to interrupt)", false);
+  expect(tracker.screen_worked).toBe(true);
+  agent.last_seq = 1n;
+  look(tracker, agent, job, "✳ Ready", "", false);
+  expect(tracker.structured).toBe(true);
+  expect(tracker.screen_worked).toBe(false);
+  agent.last_seq = 0n;
+  for (let i = 0; i < 3; i++) expect(look(tracker, agent, job, "✳ Ready", "", false)).toBe(false);
+  for (let i = 0; i < 2; i++) look(tracker, agent, job, "⠋ Task", "Working (esc to interrupt)", false);
+  for (let i = 0; i < 3; i++) expect(look(tracker, agent, job, "✳ Ready", "", false)).toBe(false);
+  expect(agent.observation.completed).toBe(0n);
+  const replacement = { ...job, pid: 456 };
+  for (let i = 0; i < 3; i++) look(tracker, agent, replacement, "✳ Ready", "", false);
+  expect(tracker.structured).toBe(false);
+  expect(agent.observation.completed).toBe(0n);
+  for (let i = 0; i < 2; i++) look(tracker, agent, replacement, "⠋ Task", "Working (esc to interrupt)", false);
+  let ding = false;
+  for (let i = 0; i < 3; i++) ding = look(tracker, agent, replacement, "✳ Ready", "", false) || ding;
+  expect(ding).toBe(true);
+  expect(agent.observation.completed).toBe(1n);
+});
+
 test("Codex fallback tracks tools without a lifecycle state transition", () => {
   const tracker = new Tracker(),
     agent = new Agent(),

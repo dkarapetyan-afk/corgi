@@ -50,7 +50,7 @@ export function screenTail(screen: string) {
 }
 /** What the prompts Claude Code and Codex share show: a question waiting
  * for an answer, or a turn the user can interrupt. */
-export function sharedPrompt(screen: string): "blocked" | "working" | null {
+export function sharedPrompt(screen: string): "initializing" | "blocked" | "working" | null {
   const text = screenTail(screen);
   if (
     (text.includes("enter to confirm") && text.includes("esc to cancel")) ||
@@ -58,6 +58,7 @@ export function sharedPrompt(screen: string): "blocked" | "working" | null {
     text.includes("enter to submit all")
   )
     return "blocked";
+  if (text.includes("initializing (esc to interrupt)")) return "initializing";
   return text.includes("esc to interrupt") ? "working" : null;
 }
 

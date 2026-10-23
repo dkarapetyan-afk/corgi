@@ -20,6 +20,8 @@ Agent controls (--json prints the daemon's reply as JSON):
   corgi pane send ID|current TEXT|--stdin [--enter]
   corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.
   corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt
+  corgi claim PROVIDER [--pane ID|current] [--owner PID]
+  corgi claim --clear [--pane ID|current] [--owner PID]
   corgi focus ID|current --viewer ID  select in exactly one viewer
   corgi launcher list [--workspace ID] [--json]  agents each launcher shows
   corgi launcher hide|show AGENT... [--workspace ID]  in one workspace only

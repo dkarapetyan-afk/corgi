@@ -247,6 +247,12 @@ $.panes[].screen.exit_status: i32
 $.panes[].screen.runs_command: bool
 $.panes[].screen.initial_input: optional
 $.panes[].screen.initial_input?: string
+$.panes[].detection.claim: optional
+$.panes[].detection.claim?.provider: enum codex claude pi
+$.panes[].detection.claim?.owner: i32
+$.panes[].detection.claim?.parent: i32
+$.panes[].detection.structured: bool
+$.panes[].detection.screen_worked: bool
 $.panes[].detection.pid: c_int
 $.panes[].detection.missing: u8
 $.panes[].detection.candidate: optional

@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, layout_tree, Viewer } from "./runtime";
-import { registerCase, run } from "./support";
+import { registerCase, run, shellJoin } from "./support";
+import { write_ordinary_agent } from "./provider_sim";
 
 class AgentCli extends Runtime {
   async cli(args: any[], { caller, error, stdin }: { caller?: number; error?: string; stdin?: string } = {}) {
@@ -111,7 +112,7 @@ class AgentCli extends Runtime {
     this.assertIn(table, reference, "docs/reference.md is stale: paste in the table `corgi keys` prints");
   }
   async test_discovery_errors_and_terminal_io() {
-    for (const args of [["--help"], ["--skill"], ["tab"], ["pane"], ["pane", "move", "--help"]])
+    for (const args of [["--help"], ["--skill"], ["tab"], ["pane"], ["pane", "move", "--help"], ["claim", "--help"]])
       await run([EXE, ...args], {
         env: { ...this.env, CORGI_SOCKET: this.temp.name + "/absent.sock" },
       });
@@ -135,6 +136,97 @@ class AgentCli extends Runtime {
       error: "InvalidKey",
     });
     await this.cli(["focus", one.pane, "--viewer", 999], { error: "NoViewer" });
+  }
+  async test_bridge_claims_scrape_screens_survive_reload_and_expire_with_the_owner() {
+    const owner = Bun.spawn(["/bin/sleep", "60"], { env: this.env, stdout: "ignore", stderr: "ignore" });
+    try {
+      const one = (
+        await this.cli([
+          "tab",
+          "new",
+          "--workspace",
+          1,
+          "--command",
+          "printf '\\033]0;⠋ Remote task\\007BRIDGE_WORKING\\nWorking (esc to interrupt)\\n'; read stage; printf '\\033[2J\\033[H\\033]0;✳ Ready\\007'; read stage; printf '\\033[2J\\033[H\\033]0;⠋ Next task\\007Working (esc to interrupt)\\n'; read stage",
+        ])
+      ).result;
+      const state = async () => (await this.snapshot()).panes.find((p: any) => p.id === one.pane).agent;
+      await this.until(async () => (await this.cli(["pane", "read", one.pane])).result.text.includes("BRIDGE_WORKING"));
+      const other = await this.new("viewer"),
+        viewer = await Viewer.create(this);
+      await viewer.focus(other.pane);
+      await this.cli(["claim", "claude"], { caller: one.pane });
+      await this.until(async () => (await state()).state === "working");
+      await this.cli(["claim", "--clear"], { caller: one.pane });
+      this.assertEqual((await state()).provider, null);
+      this.assertEqual((await state()).observation.completed, 0);
+      await this.cli(["claim", "claude", "--pane", one.pane, "--owner", owner.pid]);
+      await this.until(async () => (await state()).state === "working");
+      await this.cli(["claim", "--clear", "--pane", one.pane], { error: "AgentClaimed" });
+      this.assertEqual((await state()).provider, "claude");
+      const before = (await this.session()).server_pid;
+      await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+      this.assertNotEqual((await this.session()).server_pid, before);
+      this.assertEqual([(await state()).provider, (await state()).state], ["claude", "working"]);
+      this.assertEqual((await state()).session, "");
+      await this.cli(["pane", "keys", one.pane, "enter"]);
+      await this.until(async () => (await state()).observation.completed === 1);
+      this.assertEqual([(await state()).state, (await state()).attention], ["idle", "finished"]);
+      this.assertEqual((await state()).observation.source, "screen");
+      await this.settle();
+      this.assertEqual((await state()).observation.completed, 1);
+      await this.advance(2);
+      await this.until(async () => {
+        await viewer.poll();
+        return viewer.events.some(event => event.type === "bell" && event.kind === "finished");
+      });
+      await viewer.focus(one.pane);
+      await this.until(async () => (await state()).observation.read === 1);
+      this.assertEqual((await state()).attention, "none");
+      await this.cli(["pane", "keys", one.pane, "enter"]);
+      await this.until(async () => (await state()).state === "working");
+      owner.kill();
+      await owner.exited;
+      await this.until(async () => (await state()).provider === null);
+      this.assertEqual((await state()).observation.completed, 1);
+    } finally {
+      owner.kill();
+      await owner.exited;
+    }
+  }
+  async test_autodetected_agents_share_screen_completion_without_claims_or_hooks() {
+    const other = await this.new("viewer"),
+      viewer = await Viewer.create(this);
+    await viewer.focus(other.pane);
+    for (const provider of ["codex", "claude"]) {
+      const executable = write_ordinary_agent(join(this.temp.name, provider)),
+        one = await this.new(provider),
+        state = async () => (await this.snapshot()).panes.find((p: any) => p.id === one.pane).agent;
+      await this.cli(["pane", "send", one.pane, shellJoin([executable, "--working"]), "--enter"]);
+      await this.until(async () => (await state()).state === "working");
+      this.assertEqual([(await state()).provider, (await state()).session], [provider, ""]);
+      this.assertEqual((await state()).observation.completed, 0);
+      await viewer.poll();
+      const bell = viewer.state.bell_seq;
+      await this.cli(["pane", "send", one.pane, "stop", "--enter"]);
+      await this.until(async () => (await state()).observation.completed === 1);
+      this.assertEqual([(await state()).state, (await state()).attention], ["idle", "finished"]);
+      this.assertEqual((await state()).observation.source, "screen");
+      await this.advance(2);
+      await this.until(async () => {
+        await viewer.poll();
+        return viewer.state.bell_seq > bell && viewer.state.bell_kind === "finished";
+      });
+      await viewer.focus(one.pane);
+      await this.until(async () => (await state()).observation.read === 1);
+      await viewer.focus(other.pane);
+      await this.cli(["pane", "send", one.pane, "work", "--enter"]);
+      await this.until(async () => (await state()).state === "working");
+      await this.cli(["pane", "send", one.pane, "exit", "--enter"]);
+      await this.until(async () => (await state()).provider === null);
+      this.assertEqual((await state()).observation.completed, 1);
+      this.assertEqual((await state()).observation.read, 1);
+    }
   }
   async test_viewers_keep_selection_and_explicit_focus() {
     const one = await this.new("one"),

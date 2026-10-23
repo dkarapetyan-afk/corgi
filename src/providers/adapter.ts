@@ -152,6 +152,8 @@ export interface PaneMemory {
   confirmations: number;
   /** The screen has shown idle since the process started. */
   ready: boolean;
+  /** Explicit identity can establish work before the first idle screen. */
+  readonly allow_initial_work?: boolean;
   idle_since: number;
   /** When the user last pressed a key that interrupts, if lately. */
   interrupt_key_at: number;

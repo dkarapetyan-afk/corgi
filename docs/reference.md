@@ -189,6 +189,35 @@ Use `corgi --help` and each command's `--help` for syntax, or `corgi --skill`
 for the [bundled scripting guide](../assets/corgi-skill.md).
 [Agent internals](agents.md) covers hooks and headless provider sessions.
 
+### Agents behind a bridge
+
+A local SSH, container or Slurm wrapper can identify the agent its pane shows:
+
+```sh
+#!/bin/sh
+corgi claim claude --owner "$$"
+trap 'corgi claim --clear --owner "$$"' EXIT
+ssh -t compute-node claude
+```
+
+`claim` enables that provider's existing screen watcher; it does not launch an
+agent. The pane defaults to `CORGI_PANE`, or use `--pane ID`. The owner defaults
+to the CLI's parent process; `--owner PID` names the long-lived local bridge.
+Only that owner can change or clear a live claim. A claim disappears when its
+owner exits or the pane ends. Claims survive live reload, not cold recovery.
+
+Run these commands where `CORGI_SOCKET` is reachable: normally the local
+bridge, not the remote shell. Screen inference supplies status and completion
+notifications when observed work returns to a confirmed idle screen. It can pick
+up an agent already working; initial idle alone does not complete a turn.
+Autodetected local agents use the same screen-only lifecycle until hooks or the
+provider protocol take ownership; a quiet structured source does not switch back
+to inferred completion. Screen-only observations are marked as screen-derived,
+not backed by remote transcripts, usage, conversation identity or local resume
+commands. Clearing a
+claim or losing its owner does not complete a turn or erase existing unread
+receipts.
+
 ## Settings and troubleshooting
 
 Prefer **Corgi setup** for changes. **Panes → Shell** selects the shell for new

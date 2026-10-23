@@ -13,8 +13,8 @@ identity and activity independently of whether a pane currently shows it.
 An attachment represents a terminal or headless transport's current selection.
 Switching from A to B changes the attachment, not A's identity. Attachments that
 select the same actor share its receipts. Before identity is known, screen
-observations may supply provisional status. Process replacement clears the old
-source associations.
+observations may supply provisional status and completion receipts. Process
+replacement clears the old source associations.
 
 Workers receive snapshots and return observations; the daemon applies them to
 the addressed actor after checking identity and generation. Delayed results from
@@ -120,10 +120,29 @@ hides the environment of system binaries, so an agent started through a system
 
 ## Observations and lifecycle
 
+An external bridge can claim a pane's provider with `corgi claim`
+([usage](reference.md#agents-behind-a-bridge)). The claim lives in the pane's
+screen tracker and enables the same provider watcher without a local agent PID.
+It never selects a conversation, reads local transcripts or supplies a resume
+hint; hooks and title-based local reattachment cannot take it over. The local
+owner's lifetime bounds the claim. Live handoff keeps it; cold recovery drops its
+identity but retains unread receipts.
+
+Identified panes without structured lifecycle evidence share one screen-only
+lifecycle, whether identified by a foreground process or a claim. They can
+establish work before their first idle screen. A confirmed return to idle after
+observed work records a screen-sourced completion, including after a permission
+prompt. Startup idle, process exit, claim release and owner loss do not complete
+work. First conversation binding adopts provisional screen receipts only into a
+fresh actor; late hooks and protocol snapshots do not count that work again.
+
 Hooks, transcript readers, the Codex observer, headless transports and terminal
 screens supply different evidence. Fresh structured evidence takes precedence
-over screen inference. An unavailable source is not a completion event; idle
-screen text alone must not create completion receipts or sounds.
+over screen inference. Once a local process acquires structured lifecycle,
+silence does not switch it to screen-only completion. Screens may still
+supplement status when protocol evidence ages. This ownership survives live
+reload and resets with process replacement. An unavailable source or idle screen
+alone is not a completion event.
 
 - A hook `SessionStart` can select a conversation. Later events for a known
   conversation may update it without switching the pane back to it.

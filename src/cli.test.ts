@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { realpathSync } from "node:fs";
-import { asksHelp, help, idle, launcher, launcherText, layout, list, parse, read, usage, words } from "./cli";
+import { asksHelp, handles, help, idle, launcher, launcherText, layout, list, parse, read, usage, words } from "./cli";
 
 test("help is asked for only before --", () => {
   expect(asksHelp(["move", "3", "--help"])).toBe(true);
@@ -16,6 +16,10 @@ test("usage finds the lines for the longest command a line names", () => {
   expect(usage(help, ["workspace", "new", "X"]).every(line => line.includes("corgi workspace"))).toBe(true);
   expect(usage(help, ["tab", "bogus"]).every(line => line.trim().startsWith("corgi tab "))).toBe(true);
   expect(usage(help, ["bogus"])).toEqual([]);
+  expect(usage(help, ["claim", "--clear"]).map(line => line.trim())).toEqual([
+    "corgi claim PROVIDER [--pane ID|current] [--owner PID]",
+    "corgi claim --clear [--pane ID|current] [--owner PID]",
+  ]);
 });
 
 test("command lines are rejected before connecting", async () => {
@@ -194,6 +198,38 @@ test("command lines parse to the request the daemon receives", async () => {
     launcher: null,
   });
 });
+test("external agent claims default to the caller pane and parent owner", async () => {
+  expect(handles(["claim", "claude"])).toBe(true);
+  expect(await parse(["claim", "claude"], 7)).toMatchObject({
+    action: "claim",
+    claim: { pane: 7, provider: "claude", owner: process.ppid },
+  });
+  expect(await parse(["claim", "codex", "--pane", "9", "--owner", "123", "--json"])).toMatchObject({
+    json: true,
+    claim: { pane: 9, provider: "codex", owner: 123 },
+  });
+  expect(await parse(["claim", "--clear", "--owner", "123"], 7)).toMatchObject({
+    claim: { pane: 7, provider: null, owner: 123 },
+  });
+  expect(await parse(["claim", "--clear", "--pane", "9", "--owner", "123"])).toMatchObject({
+    claim: { pane: 9, provider: null, owner: 123 },
+  });
+  await expect(parse(["claim", "claude"])).rejects.toThrow("NoCallerPane");
+  await expect(parse(["claim", "--clear"])).rejects.toThrow("NoCallerPane");
+  for (const args of [
+    ["claim"],
+    ["claim", "bogus"],
+    ["claim", "--clear", "claude"],
+    ["claim", "claude", "codex"],
+    ["claim", "clear"],
+    ["claim", "claude", "--owner", "1"],
+    ["claim", "claude", "--owner", "2147483648"],
+    ["claim", "claude", "--name", "remote"],
+    ["pane", "agent", "claim", "claude"],
+  ])
+    await expect(parse(args, 7)).rejects.toThrow("Usage");
+});
+
 test("a tab's layout names each split's sides", () => {
   const nodes = [
     { split: { axis: "horizontal", first: 1, second: 2, ratio: 500 } },

@@ -168,13 +168,18 @@ export function capture(r: Runtime, live: boolean) {
     })),
     panes: r.panes.map(p => {
       p.refreshCwd();
-      p.resume_hint.observe(p.agent());
+      if (!p.detection.claim) p.resume_hint.observe(p.agent());
+      const binding = captureBinding(p.attachment, live);
+      if (p.detection.claim && !live) {
+        const observation = binding.provisional.observation;
+        binding.provisional = new Agent({ observation, attention: observation.unread() ? "finished" : "none" });
+      }
       return {
         id: p.id,
         label: p.label,
         cwd: p.cwd,
         screen: Screen.capture(p.terminal, live),
-        binding: captureBinding(p.attachment, live),
+        binding,
         detection: live ? p.detection : new Tracker(),
         resume_hint: p.resume_hint,
         launch: p.launch,
@@ -342,7 +347,7 @@ export async function restore(
     const pane = new Pane(p.id, Screen.restore(p.screen, live), p.cwd);
     pane.label = p.label ?? "";
     pane.attachment = restoreBinding(r.conversations, p.binding, live);
-    pane.detection = hydrate(new Tracker(), p.detection);
+    pane.detection = live ? hydrate(new Tracker(), p.detection) : new Tracker();
     pane.resume_hint = hydrate(new ResumeHint(), p.resume_hint);
     pane.launch = p.launch ? Launch.from(p.launch) : null;
     pane.dormant = live && p.dormant === true;

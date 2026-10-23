@@ -8,12 +8,14 @@ import { Entry as CommandEntry } from "./launch/command";
 import helpText from "../assets/cli-help.txt" with { type: "text" };
 import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
-const groups = new Set(["tab", "pane", "workspace", "launcher", "current", "list", "focus", "--skill"]);
+const groups = new Set(["tab", "pane", "workspace", "launcher", "claim", "current", "list", "focus", "--skill"]);
 const nested = new Set(["tab", "pane", "workspace", "launcher"]);
 const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "first", "left", "right", "up", "down"]);
 const options = new Set([
   ...flags,
   "viewer",
+  "pane",
+  "owner",
   "workspace",
   "name",
   "command",
@@ -46,6 +48,7 @@ const actions = new Set([
   "pane.send",
   "pane.keys",
   "pane.idle",
+  "claim",
   "workspace.new",
   "workspace.edit",
   "workspace.close",
@@ -168,7 +171,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
     target = 0;
-  if (group !== "launcher" && !["list", "current", "tab.new", "workspace.new", "pane.idle"].includes(action)) {
+  if (group !== "launcher" && !["list", "current", "tab.new", "workspace.new", "pane.idle", "claim"].includes(action)) {
     if (start === words.length) throw Error("Usage");
     current = words[start] === "current";
     if (current && group === "workspace") throw Error("Usage");
@@ -188,7 +191,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
         : null;
   let command: Record<string, any> | null = null,
     idle: { workspace: number; cwd: string; first: boolean } | null = null,
-    launcher: { workspace: number; agents: string[] } | null = null;
+    launcher: { workspace: number; agents: string[] } | null = null,
+    claim: { pane: number; provider: Provider | null; owner: number } | null = null;
   const set = (op: string, payload: any) => {
     command = { [op]: payload };
   };
@@ -215,6 +219,20 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       };
       if (action !== "launcher.list" && !launcher.agents.length) throw Error("Usage");
       break;
+    case "claim": {
+      const clear = args.flag("clear");
+      const provider = clear ? null : Provider.parse(args.next());
+      if (!clear && !provider) throw Error("Usage");
+      const pane = args.option("pane") ?? "current";
+      if (pane === "current" && !caller) throw Error("NoCallerPane");
+      claim = {
+        pane: pane === "current" ? caller : id(pane),
+        provider,
+        owner: id(args.option("owner") ?? String(process.ppid)),
+      };
+      if (claim.owner <= 1 || claim.owner > 0x7fffffff) throw Error("Usage");
+      break;
+    }
     case "pane.idle":
       idle = {
         workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
@@ -305,7 +323,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   const created = (command as Record<string, any> | null)?.["pane.create"];
   if (created?.workspace === 0 && !caller) throw Error("MissingWorkspace");
   if (launcher?.agents.length && !launcher.workspace && !caller) throw Error("MissingWorkspace");
-  return { action, target, current, json, viewer, command, idle, launcher };
+  return { action, target, current, json, viewer, command, idle, launcher, ...(claim ? { claim } : {}) };
 }
 /** A tab's split tree from the layout's node array, in words: `3 left of (4
  * above 5)`. */
@@ -510,6 +528,11 @@ export async function run(path: string, args: string[], agent = false): Promise<
     lines = reading?.lines;
   if (reading) reading.lines = Math.min(lines + 1, 10000);
   try {
+    if (inv.claim) {
+      const reply = await conn.call("pane.agent", inv.claim);
+      process.stdout.write(inv.json ? stringify(reply) + "\n" : words(reply));
+      return;
+    }
     if (inv.launcher) {
       const workspaces = await launcherCommand(conn, inv, caller);
       process.stdout.write(inv.json ? stringify({ ok: true, workspaces }) + "\n" : launcherText(workspaces));

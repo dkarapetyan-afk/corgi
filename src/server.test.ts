@@ -1,6 +1,8 @@
 import { test, expect, spyOn } from "bun:test";
 import { Server } from "./server";
 import { Preview } from "./launch/preview";
+import { Pane } from "./runtime";
+import { Terminal } from "./pane/terminal";
 import { captureManifest, restoreClient, restoreMetadata } from "./persist/handoff";
 import * as json from "./json";
 function fixture() {
@@ -68,6 +70,28 @@ test("attention prioritizes input within a burst and releases the next completio
     actor.state.observation.read = 1n;
     (server as any).flushBell(5500);
     expect(server.bell_seq).toBe(2n);
+    expect(server.bell).toBe(false);
+  } finally {
+    dispose();
+  }
+});
+
+test("provisional pane completions ring until their receipts are read", () => {
+  const { server, dispose } = fixture();
+  try {
+    const pane = new Pane(1, new Terminal(20, 4), "/tmp");
+    server.runtime.panes.push(pane);
+    pane.agent().observation.finish("completed", "screen");
+    server.attention(true, "idle");
+    (server as any).flushBell(2000);
+    expect(server.bell_seq).toBe(1n);
+    expect(server.last_bell_kind).toBe("finished");
+    pane.releaseDetection();
+    expect(pane.agent().observation.unread()).toBe(true);
+    pane.agent().acknowledge();
+    server.attention(true, "idle");
+    (server as any).flushBell(4000);
+    expect(server.bell_seq).toBe(1n);
     expect(server.bell).toBe(false);
   } finally {
     dispose();
