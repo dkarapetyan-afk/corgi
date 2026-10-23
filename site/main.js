@@ -5,6 +5,7 @@
 import "./browser/process";
 import "./browser/buffer";
 import * as heroConfig from "./hero_config";
+import * as resourceSamples from "./resource_samples";
 import DATA from "./frames.json";
 import * as terminal from "./terminal";
 import * as corgiAnimation from "../src/corgi_animation";
@@ -60,11 +61,16 @@ const G = "linear-gradient(currentColor, currentColor)";
 const ARM = { l: ["calc(50% + .5px) 1px", "left center"], r: ["calc(50% + .5px) 1px", "right center"], u: ["1px calc(50% + .5px)", "center top"], d: ["1px calc(50% + .5px)", "center bottom"] };
 const BOX = { "─": "lr", "│": "ud", "┌": "rd", "┐": "ld", "└": "ur", "┘": "ul", "├": "udr", "┤": "udl", "┬": "lrd", "┴": "lru", "┼": "udlr" };
 const BRAILLE_DOTS = [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [0, 3], [1, 3]];
+// Blocks run a pixel past the cell's edges, so neighbors meet without a seam.
+const SHADES = { "░": 25, "▒": 50, "▓": 75 };
 function shape(ch) {
-  if (ch === "▌" || ch === "▐") return { img: G, size: "50% 100%", pos: ch === "▌" ? "left" : "right" };
+  if (ch === "▌" || ch === "▐") return { img: G, size: "calc(50% + 1px) calc(100% + 2px)", pos: ch === "▌" ? "-1px center" : "calc(100% + 1px) center" };
+  // Shades fill the cell with their share of the color, as Ghostty draws them.
+  if (SHADES[ch]) { const c = `color-mix(in srgb, currentColor ${SHADES[ch]}%, transparent)`; return { img: `linear-gradient(${c}, ${c})`, size: "calc(100% + 2px) calc(100% + 2px)", pos: "center" }; }
   const cp = ch.codePointAt(0);
   // Lower eighths, ▁ through █, fill from the cell's bottom edge.
-  if (cp >= 0x2581 && cp <= 0x2588) return { img: G, size: `100% ${(cp - 0x2580) * 12.5}%`, pos: "bottom" };
+  if (cp === 0x2588) return { img: G, size: "calc(100% + 2px) calc(100% + 2px)", pos: "center" };
+  if (cp >= 0x2581 && cp < 0x2588) return { img: G, size: `calc(100% + 2px) calc(${(cp - 0x2580) * 12.5}% + 1px)`, pos: "center calc(100% + 1px)" };
   if (cp >= 0x2800 && cp <= 0x28ff) {
     const dots = BRAILLE_DOTS.filter((_, bit) => (cp - 0x2800) & (1 << bit));
     return { img: dots.map(() => G).join(","), size: dots.map(() => ".15em .15em").join(","), pos: dots.map(([x, y]) => `${0.075 + x * 0.3}em ${0.125 + y * 0.34}em`).join(",") };
@@ -918,27 +924,43 @@ function cardNow(ws, i) {
   if (W.phone) return early ? [PEARLY_CARD, PEARLY_BOX] : [PCARDS[ws][i][read], PCARD_BOX[ws][i]];
   return early ? [EARLY_CARD, EARLY_BOX] : [CARDS[ws][i][read], CARD_BOX[ws][i]];
 }
-// Each workspace's resource card, drawn by corgi's own code from a sample a
-// second the recorder kept; the sidebar's figures follow the same samples.
-const RES_SAMPLES = DATA.resources.length;
+// Each workspace's resource card, drawn by corgi's own code from the second
+// of resource_samples.ts's loop the page is on, on keeps watch's laptop or
+// the GPU host; the sidebar's figures follow the same seconds.
 const RES_ROW = { C: WS_ROWS.C[2], M: WS_ROWS.M[2] };
 const RES_WS = { C: [1, "corgi"], M: [2, "moonlander"] };
-const resWork = (ws, f) => DATA.resources[f].workspaces.find((w) => w.id === RES_WS[ws][0]);
-// Each sample's totals as the sidebar prints them: [CPU, memory].
-const RES_TOTALS = Object.fromEntries(Object.keys(RES_WS).map((ws) => [ws, DATA.resources.map((_, f) => {
-  const w = resWork(ws, f);
-  return [cpuText(w.cpu), memoryText(BigInt(w.memory))];
-})]));
-// The card in `rect` at sample f, its rows in `state`'s order, which holds
-// while `held`, as corgi holds it under the pointer.
+const resSnapshot = (host, t) => resourceSamples.snapshot(host, Math.floor(t / 1000));
+const resWork = (snapshot, ws) => snapshot.workspaces.find((w) => w.id === RES_WS[ws][0]);
+const resGpus = (host) => resourceTooltip.gpuCount(resourceSamples.snapshot(host, 0));
+// A workspace's figures as its sidebar row prints them: CPU, memory, and GPU
+// while it uses one.
+function resTotals(host, ws, t) {
+  const w = resWork(resSnapshot(host, t), ws);
+  return [cpuText(w.cpu), memoryText(w.memory), w.gpu_shown ? cpuText(w.gpu) : ""];
+}
+// Puts them where the recording printed its own: the first percentage is
+// CPU's, the size memory's, and a second percentage GPU's.
+function putTotals(g, row, [cpu, memory, gpu]) {
+  const text = g[row].map(([ch]) => ch).join(""), rates = [...text.matchAll(/\d+%/g)], size = text.match(/\d[\d.]*[GM]\b/);
+  if (rates[0]) put(g, row, rates[0].index, cpu.padEnd(rates[0][0].length));
+  if (size) put(g, row, size.index, memory.padEnd(size[0].length));
+  if (rates[1]) put(g, row, rates[1].index, gpu.padEnd(rates[1][0].length));
+}
+// The card in `rect` at time t, its rows in `state`'s order, which holds
+// while `held`, as corgi holds it under the pointer. A pointer on its
+// history shows that moment's figures and leaders.
 const RES_CELLS = new Map();
-function resCells(ws, f, state, rect, held) {
-  state.update(resWork(ws, f), held);
-  const key = [ws, f, rect.w, rect.h, state.sort, state.order.map((k) => k.pid)].join(":");
+function resCells(host, ws, t, state, rect, held, pointer = null) {
+  const snapshot = resSnapshot(host, t), gpus = resourceTooltip.gpuCount(snapshot), local = new Rect(0, 0, rect.w, rect.h);
+  state.update(resWork(snapshot, ws), held, gpus);
+  const at = pointer && { x: pointer.col - rect.x, y: pointer.row - rect.y }, hover = at && resourceTooltip.hoverAt(local, gpus, at.x, at.y);
+  const key = [host, ws, Math.floor(t / 1000) % resourceSamples.loop_s, rect.w, rect.h, state.sort, state.ascending, state.order.map((k) => k.pid), hover?.metric, hover?.age, hover?.line].join(":");
   if (!RES_CELLS.has(key)) {
     const out = new Writer();
-    resourceTooltip.draw(out, new Rect(0, 0, rect.w, rect.h), RES_WS[ws][1], DATA.resources[f], state);
+    resourceTooltip.draw(out, local, RES_WS[ws][1], snapshot, state, at);
     RES_CELLS.set(key, terminal.grid(out.buffered(), rect.w, rect.h).map((row) => row.map(([ch, ...look]) => [ch, style(...look)])));
+    // Seconds go by: only the latest few cards stay.
+    if (RES_CELLS.size > 16) RES_CELLS.delete(RES_CELLS.keys().next().value);
   }
   return RES_CELLS.get(key);
 }
@@ -1166,7 +1188,7 @@ function locatePointer() {
 const W = {
   ws: "C", width: 34, focus: { C: 0, M: 0 }, read: new Set(), git: "ahead", gitAt: 0, gitHover: false, dragging: false,
   taken: false, inside: false, resumeAt: 0, offset: TOUR_START, hover: null, card: null, dismissed: null, spot: -1, t: 0, herdAt: null,
-  res: null, link: false, cols: WATCH_COLS, compacting: still, peekAt: null, wsHover: null,
+  res: null, resPointer: null, link: false, cols: WATCH_COLS, compacting: still, peekAt: null, wsHover: null,
   phone: false, desk: 34,
 };
 // Frames by name; a phone's carry a "p".
@@ -1270,13 +1292,7 @@ function drawWatch(t) {
   W.compacting = still || (W.peekAt != null && now - W.peekAt >= COMPACT_AFTER);
   const g = animate(sidebarNow(), t);
   // Resources sample once a second; the sidebar shows the latest totals.
-  const sample = Math.floor(t / 1000) % RES_SAMPLES;
-  for (const ws of ["C", "M"]) {
-    const row = RES_ROW[ws], text = g[row].map(([ch]) => ch).join("");
-    const cpu = text.match(/\d+%/), memory = text.match(/\d[\d.]*[GM]\b/);
-    if (cpu) put(g, row, cpu.index, RES_TOTALS[ws][sample][0].padEnd(cpu[0].length));
-    if (memory) put(g, row, memory.index, RES_TOTALS[ws][sample][1].padEnd(memory[0].length));
-  }
+  for (const ws of ["C", "M"]) putTotals(g, RES_ROW[ws], resTotals("laptop", ws, t));
   // The compacting agent piles its dots and herds its letters once, as corgi
   // does, starting when its row is fully on screen.
   if (W.ws === "C" && W.compacting) {
@@ -1310,7 +1326,7 @@ function drawWatch(t) {
     if (bg === "bg") g[r][c] = [ch, style(fg, HOVER_BG, bold, ul, ulc)];
   }
   if (W.link) CHIP.forEach((cell, c) => (g[WATCH_ROWS_N - 1][c] = cell));
-  if (W.res) { const rect = resRect(W.res); paste(g, resCells(W.res, sample, watchRes, rect, false), rect); }
+  if (W.res) { const rect = resRect(W.res); paste(g, resCells("laptop", W.res, t, watchRes, rect, !!W.resPointer, W.resPointer), rect); }
   else if (W.card != null) overlay(g, ...cardNow(W.ws, W.card), W.width);
   else if (W.gitHover && W.git !== "none") overlay(g, W.phone ? F.pgit : F.git, W.phone ? PGIT_BOX : GIT_BOX, W.width);
   watchScreen.paint(g);
@@ -1343,13 +1359,14 @@ const resAt = ({ col, row }) => (W.phone || col >= W.width ? null : row === RES_
 const within = ({ col, row }, box) => row >= box.top && row <= box.bottom && col >= box.left && col <= box.right;
 // A phone has no hover: taps drive it (tapWatch).
 watchEl.addEventListener("mouseenter", () => { if (W.phone) return; Object.assign(W, { taken: true, inside: true }); watchEl.classList.add("taken"); });
-watchEl.addEventListener("mouseleave", () => { if (!W.phone) Object.assign(W, { inside: false, hover: null, card: null, res: null, link: false, wsHover: null, dismissed: null, gitHover: false, resumeAt: performance.now() + 5000 }); });
+watchEl.addEventListener("mouseleave", () => { if (!W.phone) Object.assign(W, { inside: false, hover: null, card: null, res: null, resPointer: null, link: false, wsHover: null, dismissed: null, gitHover: false, resumeAt: performance.now() + 5000 }); });
 watchEl.addEventListener("mousemove", (e) => {
   if (W.dragging || W.phone) return;
   const at = watchCell(e), i = agentAt(at);
   W.wsHover = workspaceAt(at);
   // The resource card stays open while the pointer is on it.
-  if (W.res && resRect(W.res).contains(at.col, at.row) && !resAt(at)) return drawWatch(W.t);
+  W.resPointer = W.res && resRect(W.res).contains(at.col, at.row) && !resAt(at) ? at : null;
+  if (W.resPointer) return drawWatch(W.t);
   W.link = linkAt(at);
   if (W.link) { Object.assign(W, { hover: null, card: null, res: null, gitHover: false }); watchEl.style.cursor = "pointer"; return drawWatch(W.t); }
   W.res = resAt(at);
@@ -1857,8 +1874,7 @@ function wrap(rows, w) {
     return out;
   });
 }
-const sample = (t) => Math.floor(t / 1000) % RES_SAMPLES;
-const resRectAt = (ws, rows) => resourceTooltip.geometry(COLS, rows, SW, RES_ROW[ws]);
+const resRectAt = (ws, rows, host) => resourceTooltip.geometry(COLS, rows, SW, RES_ROW[ws], resGpus(host));
 function find(g, text, { r0 = 0, r1 = g.length - 1, c0 = 0, c1 = g[0].length - 1 } = {}) {
   for (let r = r0; r <= r1; r++) {
     const at = rowText(g, r).slice(c0, c1 + 1).indexOf(text);
@@ -2175,7 +2191,7 @@ function session(init = {}) {
   const S = {
     ws: "C", tabs: TABS, tab: { C: 0, M: 0 }, focus: { C: "C0", M: "M0" }, read: new Set(),
     typed: "", history: [], server: false, link: 0, linkAt: -1e9,
-    hover: null, card: null, res: null, resHeld: false, wsHover: null, linkHover: false,
+    hover: null, card: null, res: null, resHeld: false, resPointer: null, wsHover: null, linkHover: false,
     git: "ahead", gitAt: 0, gitHover: false, approvedAt: null, tagged: false, clear: null, newButton: true, solo: false,
     // Refactor the viewer compacting, its herd walking in from herdAt.
     compacting: false, herdAt: null,
@@ -2198,6 +2214,8 @@ function session(init = {}) {
     // `shot`, it has saved a screenshot of the game, and with `pr`, opened a
     // pull request.
     idle: false, shot: false, pr: false,
+    // The host the resource figures come from: keeps watch's laptop, or the GPU host.
+    host: "laptop",
     ...init,
   };
   Object.assign(S, { read: new Set(S.read), tab: { ...S.tab }, focus: { ...S.focus }, term: S.term && structuredClone(S.term) });
@@ -2384,11 +2402,7 @@ function session(init = {}) {
     const g = animate(sidebar(), t);
     // Resources sample once a second, as in keeps watch; a workspace alone
     // has its row where the first one's is.
-    for (const [ws, row] of Object.entries(S.alone ? { [S.ws]: RES_ROW.C } : RES_ROW)) {
-      const text = rowText(g, row), cpu = text.match(/\d+%/), mem = text.match(/\d[\d.]*[GM]\b/);
-      if (cpu) put(g, row, cpu.index, RES_TOTALS[ws][sample(t)][0].padEnd(cpu[0].length));
-      if (mem) put(g, row, mem.index, RES_TOTALS[ws][sample(t)][1].padEnd(mem[0].length));
-    }
+    for (const [ws, row] of Object.entries(S.alone ? { [S.ws]: RES_ROW.C } : RES_ROW)) putTotals(g, row, resTotals(S.host, ws, t));
     // Every demo links to the game; starting its shell server animates it.
     const lc = linkCol(), shown = Math.min(LINK_TEXT.length, Math.max(0, Math.floor((at - S.linkAt) / 70)));
     if (lc >= 0) for (let k = shown; k < LINK_TEXT.length; k++) g[LINK_ROW][lc + k] = [" ", style("muted", groundOf(g, LINK_ROW, lc - 1))];
@@ -2440,7 +2454,7 @@ function session(init = {}) {
     if (S.menu) drawMenu(g, S);
     if (S.copiedUntil > Date.now()) drawCopied(g, S.rows);
     if (S.linkHover) CHIP.forEach((cell, c) => (g[S.rows - 1][c] = cell));
-    if (S.res) { const rect = resRectAt(S.res, S.rows); paste(g, resCells(S.res, sample(t), resCard, rect, S.resHeld), rect); }
+    if (S.res) { const rect = resRectAt(S.res, S.rows, S.host); paste(g, resCells(S.host, S.res, t, resCard, rect, S.resHeld, S.resPointer), rect); }
     else if (S.card != null) { const [frame, box] = cardFor(S.ws, S.card); overlay(g, frame, box, SW, box.left); }
     else if (S.gitHover && S.git !== "none") overlay(g, F.git, GIT_BOX, SW, GIT_BOX.left);
     return g;
@@ -2492,10 +2506,12 @@ function point(el, current, area, { touch, cards = null, touched = () => {} }) {
     if (can.has("ws")) S.wsHover = hit.ws(at);
     if (can.has("link")) S.linkHover = !!hit.link(at);
     if (can.has("res")) {
-      // On the card its rows hold still, and a heading sorts them.
-      const card = S.res && resRectAt(S.res, S.rows);
+      // On the card its rows hold still, a heading sorts them, and its
+      // history shows the moment under the pointer.
+      const card = S.res && resRectAt(S.res, S.rows, S.host);
       S.resHeld = !!card && card.contains(at.col, at.row) && !hit.res(at);
-      if (S.resHeld) return void (el.style.cursor = resourceTooltip.sortAt(card, at.col, at.row) ? "pointer" : "");
+      S.resPointer = S.resHeld ? at : null;
+      if (S.resHeld) return void (el.style.cursor = resourceTooltip.sortAt(card, at.col, at.row, resGpus(S.host)) ? "pointer" : "");
       const res = S.linkHover ? null : hit.res(at);
       if (res || cards !== "keep") S.res = res;
     }
@@ -2506,10 +2522,10 @@ function point(el, current, area, { touch, cards = null, touched = () => {} }) {
     const h = first(hit, at);
     el.style.cursor = (can.has("res") && hit.res(at)) || (h && h.kind !== "pane") ? "pointer" : "";
   });
-  el.addEventListener("mouseleave", () => Object.assign(current().S, { resHeld: false, wsHover: null, linkHover: false, gitHover: false }, cards === "keep" ? {} : { res: null, hover: null, card: null }));
+  el.addEventListener("mouseleave", () => Object.assign(current().S, { resHeld: false, resPointer: null, wsHover: null, linkHover: false, gitHover: false }, cards === "keep" ? {} : { res: null, hover: null, card: null }));
   el.addEventListener("click", (e) => {
     const s = current(), at = cellAt(e), h = first(s.hit, at);
-    if (s.S.res) return s.resCard.click(resRectAt(s.S.res, s.S.rows), at.col, at.row);
+    if (s.S.res) return s.resCard.click(resRectAt(s.S.res, s.S.rows, s.S.host), at.col, at.row);
     if (!h) return;
     touched();
     act(s, h, cards);
@@ -3127,12 +3143,14 @@ const FEATURES = {
     links: [{ ...SHOT, image: true }],
     rings: (g, s) => [withCard(find(g, SHOT.text, { c0: SW }), s)],
     lit: (g, s) => [{ r0: 1, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
-  // corgi's resource card, open beside its workspace's row over one empty
-  // pane. As in corgi, its rows hold still under the pointer, a click on a
-  // heading sorts by that column, and moonlander's row opens moonlander's.
-  resources: { init: { res: "C", tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, 24, 117], touch: "res", cards: "keep",
+  // moonlander's resource card on the GPU host, open beside its workspace's
+  // row over one empty pane, its autopilot training on all eight GPUs. As in
+  // corgi, its rows hold still under the pointer, a click on a heading sorts
+  // by that column, pointing at a graph's history shows that moment and who
+  // led it, and corgi's row opens corgi's.
+  resources: { init: { res: "M", host: "gpus", side: "res34", rows: 38, tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, 38, 117], touch: "res", cards: "keep",
     rings: (g, s) => {
-      const ws = s.S.res, card = resRectAt(ws, s.S.rows);
+      const ws = s.S.res, card = resRectAt(ws, s.S.rows, s.S.host);
       return [{ r0: RES_ROW[ws], r1: RES_ROW[ws], c0: 1, c1: SW - 3 }, { r0: card.y, r1: card.y + card.h - 1, c0: card.x, c1: card.x + card.w - 1 }];
     },
     wires: [[0, 1]] },

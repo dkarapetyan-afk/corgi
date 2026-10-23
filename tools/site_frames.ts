@@ -29,7 +29,7 @@ import * as reviewPanel from "../src/review/panel";
 import { Menu as LauncherMenu, option, type Row } from "../src/agent_launcher";
 import { historyEntry } from "../src/launcher_resume";
 import { Snapshot as PortsSnapshot } from "../src/trackers/ports";
-import { Process, Work, type Point } from "../src/trackers/resources";
+import * as resourceSamples from "../site/resource_samples";
 import { View as ContextView } from "../src/usage/context_window";
 import { Writer } from "../src/text";
 import { codepointWidths } from "../src/viewer_native";
@@ -53,8 +53,6 @@ Date.now = () => PINNED;
 // ---------------------------------------------------------------- the page
 const data = JSON.parse(readFileSync(FRAMES, "utf8")) as {
   styles: unknown[][];
-  /** The resource card's samples, for the page to draw it from. */
-  resources: unknown;
   /** Ghostty's codepoint widths, for the page's text.ts. */
   widths: unknown;
   /** What git answered about each of moonlander's checkouts, for the page's review panel. */
@@ -277,211 +275,11 @@ const PORTS = Object.assign(new PortsSnapshot(), {
 });
 
 // ---------------------------------------------------------------- processes
-/** The resource card samples once a second; the page loops these samples. */
-const SAMPLES = 12;
-type Proc = {
-  pid: number;
-  name: string;
-  provider?: Provider;
-  cpu: (number | null)[];
-  /** MiB. */
-  memory: number[];
-  /** MB/s. */
-  read?: number[];
-  written?: number[];
-};
-const same = (n: number) => Array<number>(SAMPLES).fill(n);
-/** corgi: "Fix sidebar flicker" edits (samples 2-3, zls re-reads the file),
- * runs `./scripts/zig build test -Dtest-filter=sidebar` (compile 4-7, link
- * writes the test binary, tests 8-1), and reads the result. Codex's verifier
- * downloads the release to check its checksums (1-3). The rest idle along. */
-const CORGI_PROCS: Proc[] = [
-  // Fix sidebar flicker, and the zls its LSP tool started.
-  {
-    pid: 51536,
-    name: "claude",
-    provider: "claude",
-    cpu: [7.1, 7.8, 9.6, 6.9, 7.4, 6.6, 6.2, 6.8, 7.6, 7.2, 6.9, 7.3],
-    memory: [406, 407, 409, 410, 404, 404, 405, 405, 406, 406, 406, 406],
-    written: [0.2, 0.3, 0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.2, 0.2, 0.1, 0.2],
-  },
-  {
-    pid: 51544,
-    name: "zls",
-    cpu: [1.3, 1.4, 1.2, 5.2, 1.6, 1.3, 1.2, 1.4, 1.3, 1.2, 1.4, 1.3],
-    memory: [347, 347, 347, 352, 351, 350, 350, 349, 349, 348, 348, 348],
-    read: [0, 0, 0, 0.4, 0, 0, 0, 0, 0, 0, 0, 0],
-  },
-  // Its Bash tool's shell, the zig build, the build runner, the compiler and the test binary.
-  { pid: 53975, name: "zsh", cpu: [0.0, 0.0, null, null, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], memory: same(3.1) },
-  {
-    pid: 53977,
-    name: "zig",
-    cpu: [0.2, 0.6, null, null, 0.9, 0.3, 0.2, 0.4, 0.3, 0.2, 0.2, 0.2],
-    memory: [41, 42, 0, 0, 38, 40, 40, 41, 41, 41, 41, 41],
-    read: [0, 0, 0, 0, 1.2, 0, 0, 0, 0, 0, 0, 0],
-    written: [0, 0.1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  },
-  {
-    pid: 53984,
-    name: "build",
-    cpu: [0.4, 0.8, null, null, 1.1, 0.4, 0.3, 0.5, 0.6, 0.4, 0.4, 0.4],
-    memory: [66, 66, 0, 0, 58, 63, 64, 64, 65, 65, 66, 66],
-    read: [0, 0, 0, 0, 2.6, 0.3, 0, 0, 0, 0, 0, 0],
-    written: [0, 0.2, 0, 0, 0.1, 0, 0, 0.1, 0, 0, 0, 0],
-  },
-  {
-    pid: 53989,
-    name: "zig",
-    cpu: [null, null, null, null, 41.3, 72.6, 66.1, 28.4, null, null, null, null],
-    memory: [0, 0, 0, 0, 412, 596, 758, 823, 0, 0, 0, 0],
-    read: [0, 0, 0, 0, 18.2, 6.4, 2.2, 1.1, 0, 0, 0, 0],
-    written: [0, 0, 0, 0, 2.1, 9.8, 21.5, 46.8, 0, 0, 0, 0],
-  },
-  {
-    pid: 53996,
-    name: "test",
-    cpu: [31.2, 12.4, null, null, null, null, null, null, 36.8, 44.1, 41.5, 38.0],
-    memory: [86, 88, 0, 0, 0, 0, 0, 0, 48, 72, 80, 84],
-    read: [0, 0, 0, 0, 0, 0, 0, 0, 0.6, 0, 0, 0],
-    written: [0.4, 0.2, 0, 0, 0, 0, 0, 0, 0.3, 0.8, 0.5, 0.6],
-  },
-  // Audit the install script: Codex runs both subagents; the verifier's curl.
-  {
-    pid: 52926,
-    name: "codex",
-    provider: "codex",
-    cpu: [4.4, 4.8, 4.6, 4.5, 4.8, 4.2, 4.0, 4.3, 4.6, 4.9, 4.5, 4.1],
-    memory: [133, 134, 135, 135, 134, 134, 133, 133, 132, 132, 133, 133],
-    written: [0.1, 0.1, 0.1, 0.1, 0.1, 0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
-  },
-  {
-    pid: 53958,
-    name: "zsh",
-    cpu: [null, 0.0, 0.0, 0.0, null, null, null, null, null, null, null, null],
-    memory: same(3.0),
-  },
-  {
-    pid: 53961,
-    name: "curl",
-    cpu: [null, 1.1, 2.6, 2.2, null, null, null, null, null, null, null, null],
-    memory: same(9.0),
-    written: [0, 3.1, 12.6, 8.9, 0, 0, 0, 0, 0, 0, 0, 0],
-  },
-  // Release notes, waiting for permission.
-  {
-    pid: 52431,
-    name: "claude",
-    provider: "claude",
-    cpu: [0.3, 0.2, 0.3, 0.3, 0.2, 0.3, 0.3, 0.2, 0.3, 0.3, 0.2, 0.3],
-    memory: same(268),
-  },
-  // Refactor the viewer, compacting a long context.
-  {
-    pid: 50873,
-    name: "claude",
-    provider: "claude",
-    cpu: [3.6, 3.9, 3.7, 3.9, 3.6, 3.4, 3.3, 3.5, 3.6, 3.8, 3.7, 3.5],
-    memory: [509, 510, 511, 512, 513, 513, 514, 514, 515, 515, 516, 516],
-    written: [0, 0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0],
-  },
-  // Ghostty keybindings, finished.
-  {
-    pid: 49817,
-    name: "codex",
-    provider: "codex",
-    cpu: [0.1, 0.0, 0.0, 0.1, 0.0, 0.0, 0.1, 0.0, 0.0, 0.1, 0.0, 0.0],
-    memory: same(74),
-  },
-];
-/** moonlander, a Bun site: "Tune the thruster physics" saves physics.ts (2),
- * the `bun --hot` dev server reloads and its `bun test --watch` reruns
- * (3-7), the e2e suite driving the game in its headless browser. */
-const MOON_PROCS: Proc[] = [
-  // Draw the lander sprite, idle.
-  {
-    pid: 48297,
-    name: "claude",
-    provider: "claude",
-    cpu: [0.3, 0.3, 0.4, 0.3, 0.3, 0.3, 0.4, 0.3, 0.3, 0.3, 0.4, 0.3],
-    memory: same(188),
-  },
-  // Tune the thruster physics, and the dev server and tests it left running.
-  {
-    pid: 52677,
-    name: "claude",
-    provider: "claude",
-    cpu: [7.4, 8.6, 6.9, 6.2, 8.1, 8.8, 8.6, 7.9, 7.8, 8.2, 7.6, 7.1],
-    memory: [278, 279, 281, 282, 281, 283, 283, 282, 281, 280, 279, 278],
-    written: [0.1, 0.2, 0.2, 0.1, 0.1, 0.2, 0.1, 0.1, 0.2, 0.1, 0.1, 0.1],
-  },
-  { pid: 52801, name: "zsh", cpu: same(0.0), memory: same(3.1) },
-  {
-    pid: 52803,
-    name: "bun",
-    cpu: [0.5, 0.6, 3.4, 1.1, 0.6, 0.5, 0.5, 0.5, 0.5, 0.6, 0.5, 0.5],
-    memory: [62, 62, 66, 65, 64, 64, 63, 63, 63, 62, 62, 62],
-    read: [0, 0, 1.4, 0.2, 0, 0, 0, 0, 0, 0, 0, 0],
-  },
-  { pid: 53088, name: "zsh", cpu: same(0.0), memory: same(3.0) },
-  {
-    pid: 53090,
-    name: "bun",
-    cpu: [0.2, 0.2, 0.3, 24.3, 58.7, 63.9, 41.2, 12.8, 0.2, 0.2, 0.2, 0.2],
-    memory: [74, 74, 74, 96, 118, 126, 128, 104, 76, 74, 74, 74],
-    read: [0, 0, 0, 6.2, 1.1, 0.2, 0, 0, 0, 0, 0, 0],
-    written: [0, 0, 0, 0, 0.3, 0.4, 0.2, 0.1, 0, 0, 0, 0],
-  },
-  {
-    pid: 53097,
-    name: "chrome-headless-shell",
-    cpu: [1.1, 1.0, 1.2, 1.3, 2.4, 3.1, 2.8, 1.6, 1.2, 1.1, 1.0, 1.1],
-    memory: same(72),
-    written: [0, 0, 0, 0, 0.1, 0.3, 0.2, 0, 0, 0, 0, 0],
-  },
-  {
-    pid: 53102,
-    name: "chrome-headless-shell",
-    cpu: [4.6, 4.9, 4.7, 5.1, 5.4, 7.9, 7.2, 5.6, 4.8, 4.6, 4.5, 4.7],
-    memory: [121, 121, 122, 124, 131, 134, 133, 126, 122, 121, 121, 121],
-    written: [0, 0, 0, 0, 0.2, 0.6, 0.4, 0.1, 0, 0, 0, 0],
-  },
-];
-/** Sample `s` of a workspace: its running processes and their sums. */
-function sampleWork(id: number, procs: Proc[], s: number): Work {
-  const work = Object.assign(new Work(), { id, known: true, cpu: 0, memory: 0n, read: 0n, written: 0n, count: 0 });
-  for (const p of procs) {
-    const cpu = p.cpu[s];
-    if (cpu === null) continue;
-    const proc = Object.assign(new Process(), {
-      pid: p.pid,
-      start: 1n,
-      name: p.name,
-      provider: p.provider ?? null,
-      cpu,
-      memory: BigInt(Math.trunc(p.memory[s] * MiB)),
-      read: BigInt(Math.trunc((p.read?.[s] ?? 0) * 1e6)),
-      written: BigInt(Math.trunc((p.written?.[s] ?? 0) * 1e6)),
-    });
-    work.cpu! += cpu;
-    work.memory! += proc.memory;
-    work.read! += proc.read!;
-    work.written! += proc.written!;
-    work.processes.push(proc);
-    work.count += 1;
-  }
-  return work;
-}
-const WORKSPACE_PROCS = [CORGI_PROCS, MOON_PROCS];
-/** Each workspace's totals at every sample, as the card's history. */
-const POINTS: Point[][] = WORKSPACE_PROCS.map((procs, wi) =>
-  Array.from({ length: SAMPLES }, (_, s) => {
-    const work = sampleWork(wi + 1, procs, s);
-    return { at: 0, cpu: work.cpu, memory: work.memory, io: work.read! + work.written! };
-  }),
-);
-/** The sidebar rows show the first sample; the page patches them from the card's samples as they loop. */
-const FIRST = WORKSPACE_PROCS.map((procs, wi) => Object.assign(sampleWork(wi + 1, procs, 0), { processes: [] }));
+/** The sidebar's resource rows, from the first second of the samples the
+ * page loops; it patches the figures as the loop runs. */
+const sidebarResources = (host: resourceSamples.Host) =>
+  resourceSamples.snapshot(host, 0).workspaces.map(w => sidebar.work({ ...w, processes: [], history: [] }));
+const FIRST = sidebarResources("laptop");
 
 // ---------------------------------------------------------------- state
 function layoutView(): LayoutView {
@@ -764,32 +562,6 @@ function cardCells(ansi: string, phone: boolean): Cell[][] {
   const g = grid(ansi, phone ? PHONE.cards : COLS, ROWS);
   return phone ? g : g.map(r => r.slice(CARD_LEFT));
 }
-/** The resource card's samples, one a second, as the viewer passes them to
- * it with bigints as numbers. The page draws the card from them with corgi's
- * own code, and the sidebar's totals with them. */
-const resources = JSON.parse(
-  JSON.stringify(
-    Array.from({ length: SAMPLES }, (_, f) => {
-      // Sample f is the latest point, after the 20 before it.
-      const works = WORKSPACE_PROCS.map((procs, wi) => {
-        const work = sampleWork(wi + 1, procs, f);
-        work.history = Array.from({ length: 21 }, (_, i) => POINTS[wi][(f + i + 2 * SAMPLES - 20) % SAMPLES]);
-        return work;
-      });
-      const busy = works.reduce((n, w) => n + w.cpu!, 0);
-      return {
-        interval_ms: 1000,
-        host_cpu: Math.round(24 + busy / 12),
-        cores: 12,
-        memory_pressure: "normal",
-        memory_kind: "footprint",
-        workspaces: works,
-      };
-    }),
-    (_, value) => (typeof value === "bigint" ? Number(value) : value),
-  ),
-);
-
 // ---------------------------------------------------------------- the picker
 const PICK = { cols: 150, rows: 21 };
 const HISTORY = [
@@ -1273,6 +1045,24 @@ function cleverFrame() {
     sidebar.worktreeBadge(side, s.workspaces, 2),
   ]);
 }
+/** The sidebar beside the resource band's card, on the GPU host: tall enough
+ * for the card's GPU graphs, with a GPU reading in each workspace's row, and
+ * corgi's first agent focused before "Refactor the viewer" compacts. */
+function resourceFrame() {
+  const rows = 38,
+    s = scene({ phone: false, corgi: true, unread: 1, ahead: true, focused: false, read: false, early: true });
+  s.entries.forEach((e, i) => (e.focused = i === 0));
+  sidebarResources("gpus").forEach((work, i) => (s.workspaces[i].resources = work));
+  const u = uiFor(s, 34, { resources: resourceSamples.snapshot("gpus", 0) });
+  // The agents start where keeps watch has them.
+  u.prefs.sidebar_split = 11;
+  const plain = frame(view, [], COLS, rows, u);
+  keep(
+    "res34",
+    grid(plain, COLS, rows).map(r => r.slice(0, 34)),
+    plain,
+  );
+}
 /** The narrow sidebar beside the review panel: moonlander's agents under
  * their worktrees, the thruster tuning idle now its turn is over, with no
  * tool counts to crowd the workspaces. */
@@ -1603,6 +1393,7 @@ pickerFrames();
 overviewFrames();
 worktreeFrames();
 cleverFrame();
+resourceFrame();
 reviewFrame();
 const review = [await thrustersFixture(), await spriteFixture()];
 // What each worktree's Review changes would show, as its heading's menu says
@@ -1714,7 +1505,6 @@ const missing = Object.keys(data.frames).filter(k => !made.has(k));
 console.log(`${made.size} frames, ${changed} changed${missing.length ? `; not made here: ${missing.join(", ")}` : ""}`);
 if (writes) {
   data.frames = Object.fromEntries(made);
-  data.resources = resources;
   data.widths = widthRanges();
   data.review = review;
   data.worktrees = overviews;
@@ -1725,7 +1515,6 @@ if (writes) {
     [
       "{",
       `  "styles": ${JSON.stringify(data.styles)},`,
-      `  "resources": ${JSON.stringify(data.resources)},`,
       `  "widths": ${JSON.stringify(data.widths)},`,
       `  "review": ${JSON.stringify(data.review)},`,
       `  "worktrees": ${JSON.stringify(data.worktrees)},`,
