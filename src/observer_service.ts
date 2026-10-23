@@ -239,7 +239,11 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     pane.releaseDetection();
   }
   const claim = pane.detection.claim;
-  const job = claim ? null : observedJob === undefined ? detection.foreground(pane.terminal.fd) : observedJob;
+  const job = claim
+    ? null
+    : observedJob === undefined
+      ? (detection.foreground(pane.terminal.fd)?.job ?? null)
+      : observedJob;
   const previous = pane.detection.pid;
   if (!claim) pane.resume_hint.observe(pane.agent());
   if (job) {
@@ -367,11 +371,16 @@ export async function tick(server: Server) {
   if (workers.settling || now - workers.detected >= 250) {
     workers.detected = now;
     const panes = runtime.panes.filter(pane => !pane.terminal.exited && (workers.settling || pane.detectionDue(now)));
-    const jobs = detection.foregroundJobs(
+    const fronts = detection.foregrounds(
       panes.filter(pane => !pane.detection.claim).map(pane => ({ fd: pane.terminal.fd, pid: pane.terminal.pid })),
     );
     for (const pane of panes) {
-      detectPane(server, pane, jobs.get(pane.terminal.fd));
+      const front = fronts.get(pane.terminal.fd);
+      detectPane(server, pane, front && front.job);
+      if (front !== undefined && pane.observeFront(front)) {
+        server.dirty = true;
+        runtime.refreshed();
+      }
       pane.detected = { output: pane.terminal.surface_revision, at: now };
     }
     for (const actor of runtime.conversations.items) actor.checkPause();

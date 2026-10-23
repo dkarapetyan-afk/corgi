@@ -607,6 +607,7 @@ function build(r: Runtime, viewer: boolean) {
       binding: p.attachment.generation,
       name: p.label,
       cwd: p.cwd,
+      command: p.command,
       pid: p.terminal.pid,
       cols: p.terminal.vt.cols,
       rows: p.terminal.vt.rows,

@@ -10,7 +10,7 @@ import * as accounts from "./accounts";
 import * as agentOptions from "./agent_options";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type ActorId } from "./conversations";
-import { Tracker, locate, process_buffer } from "./detection";
+import { Tracker, locate, process_buffer, type Foreground } from "./detection";
 import { ResumeHint } from "./resume_hint";
 import { waitpid, tcgetpgrp, systemCall } from "./native_bridge";
 import * as keys from "./keys";
@@ -203,6 +203,12 @@ export class Pane {
   /** The account the agent a saved command started reads from its own
    * environment, which can say what the command's text can't. */
   running_account: string | null = null;
+  /** The program in front of its shell, "" at a prompt. It shows on a second
+   * look, so a quick command doesn't flash. */
+  command = "";
+  /** The foreground group and program the last look saw. */
+  private seen_front = "";
+  private confirming = false;
   static quiet_detection_ms = 2000;
   constructor(
     public id: number,
@@ -229,8 +235,22 @@ export class Pane {
     if (launch?.command && this.running_account !== null && this.detection.pid > 0) return this.running_account;
     return launch?.account(provider, this.cwd) ?? "";
   }
+  /** Follows its foreground group; true when `command` changed. */
+  observeFront(front: Foreground | null) {
+    const command = front?.command ?? "",
+      seen = front && command ? `${front.pgid} ${command}` : "";
+    this.confirming = seen !== "" && seen !== this.seen_front;
+    this.seen_front = seen;
+    if (this.confirming || command === this.command) return false;
+    this.command = command;
+    return true;
+  }
   detectionDue(now: number) {
-    if (this.terminal.surface_revision !== this.detected.output || now - this.detected.at >= Pane.quiet_detection_ms)
+    if (
+      this.terminal.surface_revision !== this.detected.output ||
+      now - this.detected.at >= Pane.quiet_detection_ms ||
+      this.confirming
+    )
       return true;
     const a = this.agent();
     if (

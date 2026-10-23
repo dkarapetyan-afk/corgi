@@ -250,10 +250,11 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
   };
 }
 /** What an untitled tab shows for its focused pane: the pane's name, its
- * agent's, or the last part of its folder. */
+ * agent's, the program in front of its shell, or the last part of its folder. */
 export function untitledTab(p: Pane): string {
   if (p.label.length > 0) return p.label;
   if (p.agent.provider !== null) return cleanLabel(p.agent.name || providerName(p.agent));
+  if (p.command.length > 0) return cleanLabel(p.command);
   const folder = directoryLabel(p.cwd, process.env.HOME ?? null);
   return cleanLabel(folder === "/" ? folder : folder.slice(folder.lastIndexOf("/") + 1));
 }

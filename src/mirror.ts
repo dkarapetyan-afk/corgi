@@ -275,6 +275,8 @@ export interface Pane {
   id: number;
   label: string;
   cwd: string;
+  /** The program in front of its shell, "" at a prompt. */
+  command: string;
   agent: Agent;
   /** The provider account its agent runs in, "" for the default. */
   account: string;
@@ -459,6 +461,7 @@ export class Runtime {
           binding: BigInt(info.binding ?? 0n),
           label: info.name ?? "",
           cwd: info.cwd ?? "",
+          command: typeof info.command === "string" ? info.command : "",
           agent: agent(info.agent),
           account: typeof info.account === "string" ? info.account : "",
           terminal: term,

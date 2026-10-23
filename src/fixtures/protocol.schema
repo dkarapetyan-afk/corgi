@@ -691,6 +691,7 @@ $.snapshot.panes[].id: u32
 $.snapshot.panes[].workspace: u32
 $.snapshot.panes[].tab: u32
 $.snapshot.panes[].cwd: string
+$.snapshot.panes[].command: string
 $.snapshot.panes[].pid: i32
 $.snapshot.panes[].cols: u16
 $.snapshot.panes[].rows: u16

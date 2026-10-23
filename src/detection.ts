@@ -3,7 +3,8 @@ import { readdirSync } from "node:fs";
 import { Agent, Provider, Text, type State } from "./agents";
 import type { PaneMemory, PromptMemory } from "./providers/adapter";
 import { n, ptr, processArgs } from "./native_bridge";
-import { processJob, processTree } from "./os";
+import { processJob, processPath, processTree } from "./os";
+import * as processName from "./process_name";
 export type Job = { pid: number; provider: Provider };
 /** A local bridge owns the identity; the provider itself may run elsewhere. */
 export type Claim = { provider: Provider; owner: number; parent: number };
@@ -136,26 +137,40 @@ export class Tracker implements PaneMemory {
   }
 }
 
-export function foreground(fd: number): Job | null {
+/** A terminal's foreground group: the agent it runs, if one does, and what
+ * names the program in front. */
+export type Foreground = { pgid: number; command: string | null; job: Job | null };
+/** Reads one member of `front`'s group: the first readable one names it,
+ * and the first agent is its job. True once it has its job. */
+function inspect(front: Foreground, pid: number): boolean {
+  const info = processArgs(pid);
+  front.command ??= named(pid, info.argv);
+  const provider = info.complete ? identify(info.argv) : null;
+  if (provider) front.job = { pid, provider };
+  return provider !== null;
+}
+/** A process's name from its argv, or from its executable where macOS hides
+ * another user's argv, as sudo's; null once it's gone. */
+function named(pid: number, argv: string[]): string | null {
+  if (argv.length) return processName.name(argv);
+  const exe = processPath(pid);
+  return exe === null ? null : processName.name([exe]);
+}
+
+export function foreground(fd: number): Foreground | null {
   const pgid = n.probe_foreground(fd);
   if (pgid <= 0) return null;
-  const inspect = (pid: number) => {
-    const info = processArgs(pid);
-    return info.complete ? identify(info.argv) : null;
-  };
-  const leader = inspect(pgid);
-  if (leader) return { pid: pgid, provider: leader };
+  const front: Foreground = { pgid, command: null, job: null };
+  if (inspect(front, pgid)) return front;
   // The group's other members, found with getpgid rather than by reading
   // every process's /proc stat, as detection.zig does.
   const pids = new Int32Array(process.platform === "darwin" ? 128 : 4096);
   const count = n.probe_group_pids(pgid, ptr(pids), pids.length);
   for (let i = 0; i < Math.min(pids.length, count); i++) {
     const pid = pids[i];
-    if (pid <= 0 || pid === pgid) continue;
-    const provider = inspect(pid);
-    if (provider) return { pid, provider };
+    if (pid > 0 && pid !== pgid && inspect(front, pid)) break;
   }
-  return null;
+  return front;
 }
 
 /** A foreground group's members, found among the panes' own processes, or
@@ -169,40 +184,34 @@ function groupMembers(pgid: number, roots: number[]): number[] | null {
   return [...pids.subarray(0, count)];
 }
 
-export function foregroundJobs(terminals: { fd: number; pid: number }[]) {
-  const result = new Map<number, Job | null>();
+export function foregrounds(terminals: { fd: number; pid: number }[]) {
+  const result = new Map<number, Foreground | null>();
   if (process.platform === "darwin") {
     for (const { fd } of terminals) result.set(fd, foreground(fd));
     return result;
   }
-  const groups = new Map<number, number[]>();
-  for (const { fd } of terminals) {
+  // Terminals with one foreground group share its reading.
+  const fronts = new Map<number, Foreground>(),
+    groups = new Map<number, number[]>();
+  for (const { fd, pid } of terminals) {
     const pgid = n.probe_foreground(fd);
-    result.set(fd, null);
-    if (pgid <= 0) continue;
-    const argv = processArgs(pgid);
-    const provider = argv.complete ? identify(argv.argv) : null;
-    if (provider) {
-      result.set(fd, { pid: pgid, provider });
+    if (pgid <= 0) {
+      result.set(fd, null);
       continue;
     }
-    const members = groups.get(pgid) ?? [];
-    members.push(fd);
-    groups.set(pgid, members);
+    let front = fronts.get(pgid);
+    if (!front) {
+      front = { pgid, command: null, job: null };
+      fronts.set(pgid, front);
+      if (!inspect(front, pgid)) groups.set(pgid, []);
+    }
+    result.set(fd, front);
+    groups.get(pgid)?.push(pid);
   }
-  if (!groups.size) return result;
-  for (const [pgid, fds] of [...groups]) {
-    const roots = terminals.filter(t => fds.includes(t.fd)).map(t => t.pid);
+  for (const [pgid, roots] of [...groups]) {
     const members = groupMembers(pgid, roots);
     if (!members) continue;
-    for (const pid of members) {
-      if (pid <= 0 || pid === pgid) continue;
-      const argv = processArgs(pid);
-      const provider = argv.complete ? identify(argv.argv) : null;
-      if (!provider) continue;
-      for (const fd of fds) result.set(fd, { pid, provider });
-      break;
-    }
+    for (const pid of members) if (pid > 0 && pid !== pgid && inspect(fronts.get(pgid)!, pid)) break;
     groups.delete(pgid);
   }
   if (!groups.size) return result;
@@ -211,11 +220,7 @@ export function foregroundJobs(terminals: { fd: number; pid: number }[]) {
       if (!/^\d+$/.test(entry)) continue;
       const pid = Number(entry),
         job = processJob(pid);
-      if (!job || pid === job.pgid || !groups.has(job.pgid)) continue;
-      const argv = processArgs(pid),
-        provider = argv.complete ? identify(argv.argv) : null;
-      if (!provider) continue;
-      for (const fd of groups.get(job.pgid)!) result.set(fd, { pid, provider });
+      if (!job || pid === job.pgid || !groups.has(job.pgid) || !inspect(fronts.get(job.pgid)!, pid)) continue;
       groups.delete(job.pgid);
       if (!groups.size) break;
     }

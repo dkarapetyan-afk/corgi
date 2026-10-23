@@ -194,7 +194,7 @@ test("tabs show each number in a badge before the title, the active one's in the
   expect(out).not.toMatch(new RegExp(`48;2;${accent}m1`));
   // An untitled tab shows its focused pane's label.
   selection.active = 0;
-  const pane = { id: m.firstPane(m.tabs[2].root), label: "", cwd: "/w/claude", agent: agent() } as Pane;
+  const pane = { id: m.firstPane(m.tabs[2].root), label: "", cwd: "/w/claude", command: "", agent: agent() } as Pane;
   expect(tabs([pane])).toContain("▐3▌claude   ▐+▌");
   m.tabs[0].title = "past the usual sixteen";
   expect(tabs([pane])).toContain("▐1▌past the usual sixteen ▐2▌");
@@ -209,11 +209,16 @@ test("tabs show each number in a badge before the title, the active one's in the
   expect(out).not.toContain(fade(35));
 });
 
-test("an untitled tab shows its pane's name, its agent's, or its folder", () => {
-  const pane = (fields: Partial<Pane>) => ({ label: "", cwd: "/w/corgi", agent: agent(), ...fields }) as Pane;
+test("an untitled tab shows its pane's name, its agent's, its program or its folder", () => {
+  const pane = (fields: Partial<Pane>) =>
+    ({ label: "", cwd: "/w/corgi", command: "", agent: agent(), ...fields }) as Pane;
   expect(untitledTab(pane({ label: "build" }))).toBe("build");
   expect(untitledTab(pane({ agent: agent({ provider: "claude", name: "fix tabs" }) }))).toBe("fix tabs");
   expect(untitledTab(pane({ agent: agent({ provider: "codex" }) }))).toBe("Codex");
+  expect(untitledTab(pane({ command: "vim" }))).toBe("vim");
+  expect(untitledTab(pane({ command: "codex", agent: agent({ provider: "codex", name: "fix tabs" }) }))).toBe(
+    "fix tabs",
+  );
   expect(untitledTab(pane({}))).toBe("corgi");
   expect(untitledTab(pane({ cwd: "/" }))).toBe("/");
 });
@@ -605,6 +610,7 @@ test("the launcher dims the panes behind it", () => {
     id,
     label: "",
     cwd: "/w/corgi",
+    command: "",
     agent: agent(),
     restoring: "",
     terminal: {

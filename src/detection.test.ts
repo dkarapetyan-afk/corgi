@@ -1,7 +1,7 @@
 import { Terminal, closeReadiness } from "./pane/terminal";
 import { n, ptr } from "./native_bridge";
 import { test, expect } from "bun:test";
-import { identify, backgroundJob, Tracker, interruptKey, type Job } from "./detection";
+import { identify, backgroundJob, foreground, Tracker, interruptKey, type Job } from "./detection";
 import { Agent } from "./agents";
 import { adapter } from "./providers";
 import { screen as claudeScreen, interrupted } from "./providers/claude/screen";
@@ -244,6 +244,23 @@ test("a detached process is a background job and a terminal's foreground is not"
   } finally {
     detached.kill();
     await detached.exited;
+    terminal.destroy();
+    closeReadiness();
+  }
+});
+
+test("a terminal's foreground is named for the program in front", async () => {
+  const terminal = new Terminal(80, 24);
+  try {
+    await terminal.spawn("/tmp", "", 1, process.execPath, "exec sleep 60");
+    const deadline = Date.now() + 3000;
+    let front = foreground(terminal.fd);
+    while (Date.now() < deadline && front?.command !== "sleep") {
+      await Bun.sleep(10);
+      front = foreground(terminal.fd);
+    }
+    expect(front).toEqual({ pgid: terminal.pid, command: "sleep", job: null });
+  } finally {
     terminal.destroy();
     closeReadiness();
   }
