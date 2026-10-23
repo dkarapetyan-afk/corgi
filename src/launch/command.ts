@@ -7,39 +7,10 @@ import * as os from "../os";
 import * as settings from "../settings";
 import * as subprocess from "../subprocess";
 import * as errors from "../errors";
-export const capacity = 6,
-  max_length = 2048;
+import { Tokens, max_length } from "./tokens";
+export { Tokens, max_length } from "./tokens";
+export const capacity = 6;
 export type Command = string;
-export class Tokens {
-  pos = 0;
-  constructor(public source: string) {}
-  next() {
-    while (this.pos < this.source.length && /\s/.test(this.source[this.pos])) this.pos++;
-    if (this.pos === this.source.length) return null;
-    let quote = "",
-      out = "";
-    while (this.pos < this.source.length) {
-      const ch = this.source[this.pos];
-      if (!quote && /\s/.test(ch)) break;
-      this.pos++;
-      if (ch === quote) {
-        quote = "";
-        continue;
-      }
-      if (!quote && (ch === "'" || ch === '"')) {
-        quote = ch;
-        continue;
-      }
-      if (ch === "\\" && quote !== "'" && this.pos < this.source.length) out += this.source[this.pos++];
-      else {
-        if (!quote && ";|&<>()$`".includes(ch)) return null;
-        out += ch;
-      }
-      if (Buffer.byteLength(out) >= max_length) return null;
-    }
-    return quote ? null : out;
-  }
-}
 export const assignment = (w: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
 export function identify(source: string): Provider | null {
   const t = new Tokens(source);

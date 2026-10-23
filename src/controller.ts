@@ -2110,8 +2110,19 @@ export class Controller {
         return this.setWorkspaceShown(Row.of(action.agent.provider, action.agent.account), action.shown);
       case "here_command":
         return this.setWorkspaceShown(Row.ofCommand(action.index), action.shown);
-      case "rename":
-        return this.renameAccount(action.agent, action.name);
+      case "configure":
+        try {
+          accounts.configure(action.agent.provider, action.agent.account, action.name, action.options);
+          launch.manager.configured();
+          if (!action.agent.account) launch.preview.names[action.agent.provider] = action.name;
+          else
+            for (const option of launch.preview.accounts)
+              if (option.provider === action.agent.provider && option.account === action.agent.account)
+                option.name = action.name;
+        } catch (error) {
+          launch.manager.fail(signin.problem(error));
+        }
+        return;
       case "remove":
         if (action.agent.account) return this.removeAccount(action.agent, launch);
         try {
@@ -2134,30 +2145,6 @@ export class Controller {
       case "save":
         return this.saveInlineCommand();
     }
-  }
-  private renameAccount(a: agentManager.Agent, name: string): void {
-    const launch = this.launcherModel()!;
-    if (!a.account) {
-      try {
-        accounts.renameDefault(a.provider, name);
-      } catch (error) {
-        return launch.manager.fail(signin.problem(error));
-      }
-      launch.manager.renamed();
-      launch.preview.names[a.provider] = name;
-      return;
-    }
-    const known = accounts.find(a.provider, a.account);
-    if (!known) return launch.manager.fail("Corgi doesn't list this account any more.");
-    try {
-      accounts.rename(known, name);
-    } catch (error) {
-      return launch.manager.fail(signin.problem(error));
-    }
-    launch.manager.renamed();
-    // The launcher says so at once; the daemon's next read agrees.
-    for (const option of launch.preview.accounts)
-      if (option.provider === a.provider && option.account === a.account) option.name = name;
   }
   /** The slow logout and folder deletion must not hold up input or drawing. */
   private removeAccount(a: agentManager.Agent, launch: LauncherMenu): void {

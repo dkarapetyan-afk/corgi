@@ -38,6 +38,7 @@ function model(): agentManager.Model {
     add: ["codex", "claude"],
     account: () => "me@example.com",
     suggest: a => (a === work ? "acme" : "example"),
+    options: () => ({ flags: "", env: [] }),
   };
 }
 /** What `v` draws in a box like the launcher's card, as text. */
@@ -81,7 +82,7 @@ test("it lists what there is, then what can be added, and opens on the account i
     expect.stringMatching(/│ +\+ New Claude Code account +│/),
     expect.stringMatching(/│ +\+ Custom command +│/),
   ]);
-  expect(lines[b.h - 2]).toMatch(/↵ +rename +space +hide in corgi +hold ⌫ +delete/);
+  expect(lines[b.h - 2]).toMatch(/↵ +edit +space +hide in corgi +hold ⌫ +delete/);
   expect(b.h).toBe(19);
 });
 
@@ -110,54 +111,42 @@ test("typing searches names, accounts and commands, and the selection stays whil
   expect(screen(v, m).lines[6]).toContain('No added agents match "codex zz".');
 });
 
-test("Enter renames an account in place, and an empty name takes the one its email suggests", () => {
+test("Enter edits an account, preserving drafts on failure and suggesting an empty name", () => {
   const m = model(),
     v = new agentManager.View();
   v.open(agentManager.agentKey("claude", "/a/2"));
   v.key(9, m);
   expect(v.key(13, m)).toBeNull();
-  expect(v.rename?.name()).toBe("work");
-  let { lines, b } = screen(v, m);
-  expect(lines[8]).toMatch(/│› +Claude Code · work +me@acme.com/);
-  expect(lines[b.h - 2]).toMatch(/↵ +save +tab +use acme +esc +cancel/);
-  // The name starts selected, so typing replaces it.
+  expect(v.page).toBe("agent");
+  expect(v.agent_form.name.name()).toBe("work");
+  expect(screen(v, m).lines.join("\n")).toContain("Extra flags");
   type(v, m, "big");
-  expect(v.key(13, m)).toEqual({ kind: "rename", agent: work, name: "big" });
+  expect(v.key(13, m)).toEqual({ kind: "configure", agent: work, name: "big", options: { flags: "", env: [] } });
   v.fail("There's an account by that name already.");
-  ({ lines } = screen(v, m));
-  expect(lines[b.h - 2]).toContain("There's an account by that name already.");
+  expect(screen(v, m).lines.join("\n")).toContain("There's an account by that name already.");
   for (let i = 0; i < 3; i++) v.key(127, m);
-  expect(v.key(13, m)).toEqual({ kind: "rename", agent: work, name: "acme" });
-  v.key(9, m);
-  expect(v.rename?.name()).toBe("acme");
-  v.renamed();
-  expect(v.rename).toBeNull();
-  // Esc lets a rename go.
+  expect(v.key(13, m)).toEqual({ kind: "configure", agent: work, name: "acme", options: { flags: "", env: [] } });
+  v.configured();
+  expect(v.page).toBe("list");
   v.key(13, m);
   v.key(27, m);
-  expect(v.rename).toBeNull();
+  expect(v.page).toBe("list");
 });
 
-test("the default account renames too, and left empty goes by its agent's name", () => {
+test("an empty default name goes by its agent's name, without replacing it with a suggestion", () => {
   const m = model(),
     v = new agentManager.View(),
     claude = m.agents[1];
   v.open(agentManager.agentKey("claude", ""));
   v.key(9, m);
-  const before = screen(v, m);
-  expect(before.lines[before.b.h - 2]).toMatch(/↵ +rename/);
   expect(v.key(13, m)).toBeNull();
-  const { lines, b } = screen(v, m);
-  expect(lines[7]).toMatch(/│› +Claude Code · +me@example.com/);
-  expect(lines[b.h - 2]).toMatch(/↵ +no name +tab +use example +esc +cancel/);
-  expect(v.key(13, m)).toEqual({ kind: "rename", agent: claude, name: "" });
-  v.key(9, m);
-  expect(v.key(13, m)).toEqual({ kind: "rename", agent: claude, name: "example" });
-  // One that has a name starts with it.
-  v.renamed();
+  expect(v.key(13, m)).toEqual({ kind: "configure", agent: claude, name: "", options: { flags: "", env: [] } });
+  type(v, m, "example");
+  expect(v.key(13, m)).toEqual({ kind: "configure", agent: claude, name: "example", options: { flags: "", env: [] } });
+  v.configured();
   m.agents[1] = { ...claude, name: "example", label: "Claude Code · example" };
   v.key(13, m);
-  expect(v.rename?.name()).toBe("example");
+  expect(v.agent_form.name.name()).toBe("example");
 });
 
 /** Hold long enough to commit, returning the one removal action. */
@@ -205,7 +194,7 @@ test("Tab and Down leave search on the current result, and arrows wrap inside th
   v.key(9, m);
   v.key(13, m);
   expect(v.focus).toBe("list");
-  expect(v.rename).toBeNull();
+  expect(v.page).toBe("list");
   v.open();
   v.sequence("\x1b[A", m);
   expect([v.focus, v.at]).toEqual(["list", "custom"]);
@@ -379,7 +368,8 @@ test("arrows move past the sections, and clicks select, act again, and close", (
   expect(v.click(box, 20, 8, m)).toBeNull();
   expect(v.at).toBe(agentManager.agentKey("claude", "/a/2"));
   v.click(box, 20, 8, m);
-  expect(v.rename?.name()).toBe("work");
+  expect(v.agent_form.name.name()).toBe("work");
+  v.key(27, m);
   expect(v.click(box, 4, 6, m)).toBeNull();
   expect(v.at).toBe(agentManager.agentKey("codex", ""));
   expect(v.click(box, 20, 14, m)).toBeNull();
@@ -539,4 +529,37 @@ test("slow cleanup shows the moving worktree deletion bar after the corgi leaves
   v.removed();
   v.tick(m, 4500);
   expect(screen(v, m, 4500).lines.join("\n")).not.toContain("Deleting...");
+});
+
+test("the edit transition preserves its first frame, reverses smoothly and settles without draw-driven time", () => {
+  const m = model(),
+    v = new agentManager.View();
+  m.options = () => ({ flags: "--verbose", env: [["TIMEOUT", "60000"]] });
+  v.open(agentManager.agentKey("claude", work.account));
+  v.key(9, m, 0);
+  const before = screen(v, m, 0).lines;
+  v.key(13, m, 0);
+  expect(v.transition.active).toBe(true);
+  expect(screen(v, m, 0).lines).toEqual(before);
+  v.tick(m, 100);
+  const middle = screen(v, m, 100);
+  expect(screen(v, m, 100).raw).toBe(middle.raw);
+  expect(middle.lines).not.toEqual(before);
+  // A click cannot activate an action while it is moving under the pointer.
+  expect(v.click(middle.b, 75, 20, m)).toBeNull();
+  v.key(27, m, 100);
+  const reverse = screen(v, m, 100);
+  expect(reverse.lines.map(line => line.replaceAll("━", "─"))).toEqual(
+    middle.lines.map(line => line.replaceAll("━", "─")),
+  );
+  v.tick(m, 400);
+  expect(v.transition.active).toBe(false);
+  expect(screen(v, m, 400).lines).toEqual(before);
+  v.key(13, m, 400);
+  v.tick(m, 700);
+  const settled = screen(v, m, 700).lines.join("\n");
+  expect(settled).toContain("Extra flags");
+  expect(settled).toContain("--verbose");
+  expect(settled).toContain("TIMEOUT");
+  expect(v.tick(m, 800)).toBe(false);
 });

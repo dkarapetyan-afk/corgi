@@ -72,3 +72,27 @@ test("rapid reversals stay bounded and a resize settles at the new geometry", ()
   expect(draw(slide, small, "Resized", 30)).toBe(card(small, "Resized"));
   expect(slide.active).toBe(false);
 });
+
+test("an embedded settings slide clips to its area without adding a card border", () => {
+  const slide = new Slide(),
+    box = new Rect(8, 4, 36, 16),
+    text = (label: string) => `\x1b[5;9H${new Style({ fg: "text", bg: "surface" }).sgr()}${label}`;
+  slide.draw(new Writer(), text("Before"), box, 50, 24, false);
+  slide.start(1, 0);
+  slide.tick(100);
+  const w = new Writer();
+  slide.draw(w, text("After"), box, 50, 24, false);
+  const lines = screen(w.s).split("\n");
+  expect(w.s).not.toMatch(/[╭╰│━]/);
+  for (let y = 0; y < lines.length; y++) {
+    if (y < box.y || y >= box.y + box.h) expect(lines[y].trim()).toBe("");
+    else {
+      expect(lines[y].slice(0, box.x).trim()).toBe("");
+      expect(lines[y].slice(box.x + box.w).trim()).toBe("");
+    }
+  }
+  slide.tick(duration_ms);
+  const settled = new Writer();
+  slide.draw(settled, text("After"), box, 50, 24, false);
+  expect(settled.s).toBe(text("After"));
+});

@@ -49,6 +49,12 @@ sign-in, over SSH too, and names the account for who signed in;
 and Omarchy's accounts show up on their own. Each account gets its own
 launcher row and usage.
 
+In **Manage agents**, select an added agent and press **Enter** to edit its
+name, extra flags and environment variables. Launch settings are shared across
+workspaces for that account and apply to new launches, not running agents.
+Flags accept quoted arguments; environment values are literal, without shell
+expansion.
+
 ## Scripting
 
 `corgi` controls the running session from any shell. Commands print text

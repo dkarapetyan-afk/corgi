@@ -631,6 +631,7 @@ export class Menu {
       add: providers.filter(p => this.preview.installed[p]),
       account: info => this.account(info),
       suggest: a => accounts.suggest(a.provider, accounts.identity(a.provider, a.account), a.account),
+      options: a => accounts.launchOptions(a.provider, a.account),
     };
   }
   account(info: Semantics): string {
@@ -673,7 +674,7 @@ export class Menu {
     const m = this;
     const b = m.bounds(cols, rowsCount, side);
     if (m.managing) {
-      if (b.w >= 40 && b.h >= m.rowsHeight()) m.manager.draw(w, b, m.manageModel());
+      if (b.w >= 40 && b.h >= m.manager.minimumHeight()) m.manager.draw(w, b, m.manageModel());
       return;
     }
     if (b.w < 24 || b.h < m.rowsHeight()) return;

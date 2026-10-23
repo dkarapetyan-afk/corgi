@@ -7,6 +7,7 @@ import { Provider, byProvider, Text, validRef, adapter } from "./providers";
 import { Agent } from "./agents";
 import { Entry, capacity as command_capacity, commandLine, identify } from "./launch/command";
 import * as accounts from "./accounts";
+import * as agentOptions from "./agent_options";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type ActorId } from "./conversations";
 import { Tracker, locate, process_buffer } from "./detection";
@@ -118,7 +119,13 @@ export class Launch {
   }
   /** Starts `provider` in `account`. */
   static in(provider: Provider, account: string, yolo = false) {
-    return new Launch({ provider, yolo, ...(account ? { env: accounts.env(provider, account) } : {}) });
+    const options = accounts.launchOptions(provider, account),
+      args = agentOptions.args(options.flags),
+      env = [
+        ...options.env.filter(([key]) => key !== adapter(provider).accounts.env),
+        ...accounts.env(provider, account),
+      ];
+    return new Launch({ provider, yolo, ...(args.length ? { args } : {}), ...(env.length ? { env } : {}) });
   }
   toJSON() {
     return this.agent ? { agent: this.agent } : { command: this.command };

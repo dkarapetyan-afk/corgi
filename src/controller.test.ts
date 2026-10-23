@@ -1171,7 +1171,7 @@ test("an account's row starts its agent there, and resuming keeps a conversation
 });
 
 test.each(["launcher", "settings"] as const)(
-  "%s management renames the default account in the shared model",
+  "%s management saves names, flags and environment in the shared model",
   async source => {
     const saved = process.env.CORGI_ENV_BASE,
       base = realpathSync(mkdtempSync(join(tmpdir(), "corgi-manage-")));
@@ -1185,10 +1185,21 @@ test.each(["launcher", "settings"] as const)(
       await s.key(9);
       await s.key(13);
       for (const ch of "home") await s.key(ch.charCodeAt(0));
+      await s.key(9);
+      for (const ch of "--model sonnet") await s.key(ch.charCodeAt(0));
+      await s.key(9);
       await s.key(13);
+      for (const ch of "API_TIMEOUT_MS") await s.key(ch.charCodeAt(0));
+      await s.key(9);
+      for (const ch of "60000") await s.key(ch.charCodeAt(0));
+      await s.key(13);
+      expect(accounts.launchOptions("claude", "")).toEqual({
+        flags: "--model sonnet",
+        env: [["API_TIMEOUT_MS", "60000"]],
+      });
       expect(accounts.defaultName("claude")).toBe("home");
       expect(launch.label("claude")).toBe("Claude Code · home");
-      expect(launch.manager.rename).toBeNull();
+      expect(launch.manager.page).toBe("list");
       // It asks the daemon for nothing: the preview reads the name again.
       expect(sent).toEqual([]);
     } finally {

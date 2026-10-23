@@ -9,6 +9,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -384,4 +385,76 @@ test("deleting a folder yields and keeps account edits made during cleanup", asy
   expect(await pending).toBe(true);
   expect(accounts.defaultName("claude")).toBe("personal");
   expect(accounts.known()).toEqual([added]);
+});
+
+test("account edits persist privately and apply only to new launches of that account", async () => {
+  const dir = join(home, "work");
+  mkdirSync(dir);
+  const work = accounts.add("claude", "work", dir),
+    before = Launch.in("claude", dir),
+    options = {
+      flags: '--model sonnet --add-dir "two words"',
+      env: [
+        ["API_TIMEOUT_MS", "60000"],
+        ["EMPTY", ""],
+        ["LITERAL", "$(whoami)"],
+      ] as [string, string][],
+    };
+  accounts.configure("claude", dir, "acme", options);
+  expect(statSync(accounts.path()).mode & 0o777).toBe(0o600);
+  accounts.reset();
+  expect(accounts.find("claude", dir)?.name).toBe("acme");
+  expect(accounts.launchOptions("claude", dir)).toEqual(options);
+  const launch = Launch.in("claude", dir, true);
+  expect(launch.typed()).toBe("claude --dangerously-skip-permissions --model sonnet --add-dir 'two words'");
+  expect(launch.run("/corgi", launch.typed()).env).toEqual([...options.env, ["CLAUDE_CONFIG_DIR", dir]]);
+  expect(launch.account()).toBe(dir);
+  expect(before.typed()).toBe("claude");
+  expect(Launch.in("claude", "").typed()).toBe("claude");
+  expect(Launch.in("codex", dir).typed()).toBe("codex");
+  expect(Launch.from(JSON.parse(JSON.stringify(launch))).typed()).toBe(launch.typed());
+  accounts.configure("claude", dir, "acme", { flags: "", env: [] });
+  expect(Launch.in("claude", dir).typed()).toBe("claude");
+  expect(launch.typed()).toContain("--model sonnet");
+  accounts.configure("claude", dir, "acme", options);
+  await accounts.remove(work);
+  expect(accounts.launchOptions("claude", dir)).toEqual({ flags: "", env: [] });
+});
+
+test("default launch options stay with their provider across renames and reset", () => {
+  const options = {
+    flags: '--config "model=custom"',
+    env: [["HTTPS_PROXY", "http://localhost:8080"]] as [string, string][],
+  };
+  accounts.configure("codex", "", "personal", options);
+  accounts.renameDefault("codex", "home");
+  accounts.reset();
+  expect(accounts.launchOptions("codex", "")).toEqual(options);
+  expect(Launch.in("codex", "").agent?.env).toEqual(options.env);
+  const copy = accounts.launchOptions("codex", "");
+  copy.env[0][1] = "changed";
+  expect(accounts.launchOptions("codex", "")).toEqual(options);
+  accounts.configure("codex", "", "", { flags: "", env: [] });
+  expect(accounts.defaultName("codex")).toBe("");
+  expect(accounts.launchOptions("codex", "")).toEqual({ flags: "", env: [] });
+});
+
+test("invalid account edits are atomic, and old account files need no migration", () => {
+  accounts.renameDefault("claude", "home");
+  const before = readFileSync(accounts.path(), "utf8");
+  expect(() => accounts.configure("claude", "", "new", { flags: "'unfinished", env: [] })).toThrow(
+    "InvalidAgentOptions",
+  );
+  expect(() => accounts.configure("claude", "", "new", { flags: "", env: [["CLAUDE_CONFIG_DIR", "/other"]] })).toThrow(
+    "AccountEnvironmentOverride",
+  );
+  expect(() => accounts.configure("claude", "", "not a name", { flags: "", env: [] })).toThrow("InvalidAccountName");
+  expect(readFileSync(accounts.path(), "utf8")).toBe(before);
+  expect(accounts.defaultName("claude")).toBe("home");
+  writeFileSync(accounts.path(), JSON.stringify({ accounts: [], forgotten: [], defaults: { claude: "legacy" } }));
+  accounts.reset();
+  expect(accounts.defaultName("claude")).toBe("legacy");
+  expect(accounts.launchOptions("claude", "")).toEqual({ flags: "", env: [] });
+  accounts.configure("claude", "", "legacy", { flags: "--verbose", env: [] });
+  expect(accounts.launchOptions("claude", "").flags).toBe("--verbose");
 });

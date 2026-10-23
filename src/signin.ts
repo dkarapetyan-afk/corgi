@@ -680,6 +680,9 @@ const keycap = (k: string) => `${palette.keycap} ${k} ${reset}`;
 const problems: Record<string, string> = {
   InvalidAccountName: "A name is letters, digits, dots, dashes and underscores, up to 32.",
   AccountExists: "There's an account by that name already.",
+  AccountNotFound: "Corgi doesn't list this account any more.",
+  InvalidAgentOptions: "Check the extra flags and environment variables.",
+  AccountEnvironmentOverride: "The account's settings directory can't be overridden here.",
 };
 /** What went wrong making, naming or removing an account, as a sentence. */
 export const problem = (error: unknown) => problems[errors.name(error) ?? ""] ?? String(error);

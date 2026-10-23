@@ -71,7 +71,7 @@ export class Slide {
     if (this.progress === 1) this.from = null;
     return true;
   }
-  draw(w: Writer, text: string, box: Rect, cols: number, rows: number): void {
+  draw(w: Writer, text: string, box: Rect, cols: number, rows: number, framed = true): void {
     const size = `${cols}:${rows}`;
     if (size !== this.size) this.from = null;
     this.size = size;
@@ -86,7 +86,8 @@ export class Slide {
     const t = 1 - (1 - this.progress) ** 3,
       mix = (a: number, b: number) => Math.round(a + (b - a) * t),
       frame = new Rect(mix(from.box.x, box.x), mix(from.box.y, box.y), box.w, mix(from.box.h, box.h)),
-      width = box.w - 2,
+      inset = framed ? 1 : 0,
+      width = box.w - inset * 2,
       distance = Math.round(width * t),
       offsets = this.direction > 0 ? [-distance, width - distance] : [distance, distance - width],
       surface = new palette.Style({ fg: "text", bg: "surface" }).sgr(),
@@ -94,22 +95,24 @@ export class Slide {
       painted: Frame = { box: frame, cells: [] };
     for (let y = 0; y < frame.h; y++) {
       const line: (Cell | null)[] = Array.from({ length: frame.w }, () => ({ text: " ", style: surface, width: 1 }));
-      const edge = y === 0 || y === frame.h - 1;
+      const edge = framed && (y === 0 || y === frame.h - 1);
       if (edge) {
         for (const cell of line) {
           cell!.text = "─";
           cell!.style = border;
         }
       }
-      line[0] = { text: y === 0 ? "╭" : edge ? "╰" : "│", style: border, width: 1 };
-      line[frame.w - 1] = { text: y === 0 ? "╮" : edge ? "╯" : "│", style: border, width: 1 };
-      if (y < frame.h - 1) {
+      if (framed) {
+        line[0] = { text: y === 0 ? "╭" : edge ? "╰" : "│", style: border, width: 1 };
+        line[frame.w - 1] = { text: y === 0 ? "╮" : edge ? "╯" : "│", style: border, width: 1 };
+      }
+      if (y < frame.h - inset) {
         for (const [i, source] of [from, target].entries()) {
-          if (y >= source.box.h - 1) continue;
-          for (let x = 1; x < source.box.w - 1; x++) {
+          if (y >= source.box.h - inset) continue;
+          for (let x = inset; x < source.box.w - inset; x++) {
             const cell = source.cells[y]?.[x],
               dest = x + offsets[i];
-            if (!cell || dest < 1 || dest + cell.width > frame.w - 1) continue;
+            if (!cell || dest < inset || dest + cell.width > frame.w - inset) continue;
             line[dest] = cell;
             if (cell.width === 2) line[dest + 1] = null;
           }
@@ -126,7 +129,7 @@ export class Slide {
     }
     // A small highlight follows the seam along the bottom edge.
     const seam = this.direction > 0 ? width - distance : distance;
-    if (seam > 0 && seam < width) {
+    if (framed && seam > 0 && seam < width) {
       const glow = palette.fgRgb(palette.mix(palette.colors.line, palette.colors.accent, 65));
       w.write(`\x1b[${frame.y + frame.h};${frame.x + seam + 1}H${border}${glow}━`);
     }

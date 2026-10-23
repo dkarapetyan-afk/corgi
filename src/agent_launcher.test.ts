@@ -550,7 +550,7 @@ test("Manage agents takes the card with its own selection", () => {
   expect(lines[b.y + 8]).toMatch(/│ +Claude Code · work +work@example.com +(— +)?✓ +│/);
   // The picker's rows don't answer clicks under it.
   expect(m.hit(120, 40, side, b.x + 6, b.y + 8)).toBeNull();
-  expect(lines[b.y + b.h - 2]).toMatch(/↵ +rename +space +hide in workspace +hold ⌫ +remove/);
+  expect(lines[b.y + b.h - 2]).toMatch(/↵ +edit +space +hide in workspace +hold ⌫ +remove/);
   m.back();
   expect(m.selected).toBe(work);
 });

@@ -57,7 +57,7 @@ const args = process.argv.slice(2);
 if (args.includes('app-server')) { const p = Bun.spawn([process.execPath, ${JSON.stringify(harness)}, ...args], { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' }); process.exit(await p.exited); }
 if (args.includes('--version')) { console.log('codex fixture'); process.exit(0); }
 if (args[0] === 'auth' && args[1] === 'status') throw new Error('background preview must not invoke auth status');
-appendFileSync(${JSON.stringify(this.launches)}, JSON.stringify({cwd:process.cwd(),args}) + '\\n');
+appendFileSync(${JSON.stringify(this.launches)}, JSON.stringify({cwd:process.cwd(),args,custom:process.env.LAUNCH_TEST_VALUE}) + '\\n');
 if (args.at(-1) === 'refused') { console.log('That session is running in the background.'); process.exit(1); }
 if (args.at(-1) === 'quits') process.exit(0);
 console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
@@ -140,6 +140,40 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.until(async () => {
       if (this.viewers.length) await this.viewers.at(-1)!.poll();
       return (await this.session()).agent_commands[index].command === source;
+    });
+  }
+
+  async test_agent_edits_reach_the_next_launch_as_literal_flags_and_environment() {
+    const view = await Viewer.create(this, 120, 30);
+    await view.input("\x02A");
+    await this.clickText(view, "Manage agents");
+    await this.managerOpen(view, "Codex");
+    await view.advance(0.3);
+    this.assertIn("Extra flags", (await view.poll()).data);
+    await view.input('local\t--model custom --label "two words"\t\rLAUNCH_TEST_VALUE\ttwo words = $literal\r');
+    const file = join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json");
+    await this.until(() => existsSync(file) && json(file).launch?.some((a: any) => a.provider === "codex"));
+    this.assertEqual(json(file).launch, [
+      {
+        provider: "codex",
+        account: "",
+        options: { flags: '--model custom --label "two words"', env: [["LAUNCH_TEST_VALUE", "two words = $literal"]] },
+      },
+    ]);
+    this.assertFalse(existsSync(this.launches), "editing must not start an agent");
+    await view.advance(0.3);
+    await this.managerOpen(view, "Codex");
+    await view.advance(0.3);
+    const screen = (await view.poll()).data;
+    this.assertIn('--model custom --label "two words"', screen);
+    this.assertIn("LAUNCH_TEST_VALUE", screen);
+    await view.input("\x1b");
+    await this.command("agent.create", { workspace: this.ws, cwd: this.launchDir, provider: "codex" });
+    await this.until(() => existsSync(this.launches));
+    this.assertEqual(json(this.launches), {
+      cwd: this.launchDir,
+      args: ["--model", "custom", "--label", "two words"],
+      custom: "two words = $literal",
     });
   }
 

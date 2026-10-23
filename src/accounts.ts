@@ -26,6 +26,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Provider, adapter } from "./providers";
 import type { Login } from "./providers/adapter";
 import { atomicWrite } from "./os";
+import * as agentOptions from "./agent_options";
 
 /** An account Corgi knows. `managed` when Corgi made its folder. */
 export type Known = { provider: Provider; dir: string; name: string; managed: boolean };
@@ -36,6 +37,7 @@ type Saved = {
   accounts: (Known & { created?: string })[];
   forgotten: string[];
   defaults: Partial<Record<Provider, string>>;
+  launch: { provider: Provider; account: string; options: agentOptions.Options }[];
 };
 
 /** Where the user's accounts are listed. Like integrations.json it sits under
@@ -105,7 +107,7 @@ function load(): Saved {
     stamp = `${s.ino}:${s.size}:${s.mtimeMs}`;
   } catch {}
   if (saved?.stamp === stamp) return saved.value;
-  const value: Saved = { accounts: [], forgotten: [], defaults: {} };
+  const value: Saved = { accounts: [], forgotten: [], defaults: {}, launch: [] };
   if (stamp)
     try {
       const raw = JSON.parse(readFileSync(path(), "utf8"));
@@ -119,6 +121,12 @@ function load(): Saved {
           managed: a.managed === true,
           ...(typeof a.created === "string" ? { created: a.created } : {}),
         });
+      }
+      for (const entry of Array.isArray(raw?.launch) ? raw.launch : []) {
+        const provider = Provider.parse(entry?.provider),
+          options = agentOptions.read(entry?.options);
+        if (provider && typeof entry.account === "string" && (!entry.account || isAbsolute(entry.account)) && options)
+          value.launch.push({ provider, account: entry.account, options });
       }
       for (const dir of Array.isArray(raw?.forgotten) ? raw.forgotten : [])
         if (typeof dir === "string") value.forgotten.push(dir);
@@ -259,6 +267,37 @@ export function renameDefault(provider: Provider, name: string) {
   if (name) unused(provider, name, "");
   const value = load();
   store({ ...value, defaults: { ...value.defaults, [provider]: name || undefined } });
+}
+/** Extra launch settings for an account, shared by every workspace and environment. */
+export function launchOptions(provider: Provider, account: string): agentOptions.Options {
+  const options = load().launch.find(a => a.provider === provider && a.account === account)?.options;
+  return options
+    ? { flags: options.flags, env: options.env.map(([key, value]) => [key, value]) }
+    : agentOptions.empty();
+}
+/** Save the edit form as one private, atomic accounts.json update. */
+export function configure(provider: Provider, account: string, name: string, options: agentOptions.Options): void {
+  const clean = agentOptions.read(options);
+  if (!clean) throw Error("InvalidAgentOptions");
+  if (clean.env.some(([key]) => key === adapter(provider).accounts.env)) throw Error("AccountEnvironmentOverride");
+  if (account || name) unused(provider, name, account);
+  const known = account ? find(provider, account) : null;
+  if (account && !known) throw Error("AccountNotFound");
+  const value = load(),
+    listed = value.accounts.find(a => a.provider === provider && canonical(a.dir) === account);
+  store({
+    ...value,
+    accounts: known
+      ? listed
+        ? value.accounts.map(a => (a === listed ? { ...a, name } : a))
+        : [...value.accounts, { ...known, name }]
+      : value.accounts,
+    defaults: account ? value.defaults : { ...value.defaults, [provider]: name || undefined },
+    launch: [
+      ...value.launch.filter(a => a.provider !== provider || a.account !== account),
+      ...(clean.flags || clean.env.length ? [{ provider, account, options: clean }] : []),
+    ],
+  });
 }
 /** Mail hosts whose addresses are people's own, which name an account by
  * the mailbox rather than the company. */
@@ -513,6 +552,7 @@ export async function remove(account: Known): Promise<boolean> {
       a => !(a.provider === account.provider && (a.dir === account.dir || canonical(a.dir) === dir)),
     ),
     forgotten: owned || value.forgotten.includes(dir) ? value.forgotten : [...value.forgotten, dir],
+    launch: value.launch.filter(a => a.provider !== account.provider || a.account !== account.dir),
   });
   return owned;
 }

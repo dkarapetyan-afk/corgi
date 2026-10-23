@@ -17,6 +17,9 @@ import { KeyHold } from "./key_hold";
 import { milliTimestamp } from "./clock";
 import * as worktreeRemoval from "./worktree_removal";
 import * as launcherUsage from "./launcher_usage";
+import * as agentForm from "./agent_form";
+import type { Options } from "./agent_options";
+import { Slide } from "./card_transition";
 
 /** An account an agent starts in, as the list shows it. */
 export type Agent = {
@@ -52,6 +55,7 @@ export type Model = {
   account(info: Semantics): string;
   /** A name for an account, from who signed in to it. */
   suggest(agent: Agent): string;
+  options(agent: Agent): Options;
 };
 /** What a key or click asks the host to do. */
 export type Action =
@@ -61,7 +65,7 @@ export type Action =
   | { kind: "show_command"; index: number }
   | { kind: "here"; agent: Agent; shown: boolean }
   | { kind: "here_command"; index: number; shown: boolean }
-  | { kind: "rename"; agent: Agent; name: string }
+  | { kind: "configure"; agent: Agent; name: string; options: Options }
   | { kind: "remove"; agent: Agent }
   | { kind: "remove_command"; index: number }
   | { kind: "add"; provider: Provider }
@@ -274,19 +278,17 @@ function field(
   w.write(new Style({ fg: "text", bg: "surface" }).sgr());
 }
 
-/** The list, or a saved command's form. */
+/** The list and its agent and saved-command editors. */
 export class View {
-  page: "list" | "command" = "list";
+  page: "list" | "command" | "agent" = "list";
+  agent_form = new agentForm.Form();
+  transition = new Slide();
   back_label = "New tab";
   private first = 0;
   focus: "search" | "list" = "search";
   query = Dialog.init({ rename: 0 }, "");
   /** The selected row's key. */
   at = "";
-  /** The selected account's new name while it's renamed. */
-  rename: Dialog | null = null;
-  /** The name a rename that's left empty takes. */
-  suggestion = "";
   /** The row being buried, kept until the corgi has left. */
   removal: Removal | null = null;
   private hold = new KeyHold(worktreeRemoval.hold_ms, worktreeRemoval.heal_ms);
@@ -301,7 +303,7 @@ export class View {
     this.focus = "search";
     this.query = Dialog.init({ rename: 0 }, "");
     this.at = at;
-    this.rename = null;
+    this.transition = new Slide();
     this.removal = null;
     this.hold = new KeyHold(worktreeRemoval.hold_ms, worktreeRemoval.heal_ms);
     this.error = "";
@@ -347,32 +349,34 @@ export class View {
   }
   height(model: Model): number {
     if (this.page === "command") return this.form.height();
+    if (this.page === "agent") return this.agent_form.height();
     const { have, add } = this.items(model);
     return 9 + Math.max(1, have.length) + (add.length > 0 ? 2 + add.length : 0);
   }
   minimumHeight(): number {
-    return this.page === "command" ? this.form.height() : 10;
+    return this.page === "command" ? this.form.height() : this.page === "agent" ? 20 : 10;
   }
   /** The field that has the keyboard, which takes pastes. */
   input(): Dialog {
     if (this.page === "command") return this.form.input();
-    return this.rename ?? this.query;
+    return this.page === "agent" ? this.agent_form.input() : this.query;
   }
   typing(): boolean {
-    return this.page === "command" || this.rename !== null || this.focus === "search";
+    return this.page === "agent" ? this.agent_form.typing() : this.page === "command" || this.focus === "search";
   }
   paste(byte: number, model: Model): void {
     if (!this.typing()) return;
     if (this.page === "command" && this.form.name_focused) this.form.name_customized = true;
     this.input().pasteByte(byte);
-    if (this.page === "list" && !this.rename) this.searched(model);
+    if (this.page === "list") this.searched(model);
   }
-  /** A rename didn't take: why, in place of the keys. */
+  /** An action didn't take: retain its draft and show why. */
   fail(message: string): void {
-    this.error = message;
+    if (this.page === "agent") this.agent_form.error = message;
+    else this.error = message;
   }
-  renamed(): void {
-    this.rename = null;
+  configured(now = milliTimestamp()): void {
+    this.cancelAgent(now);
     this.error = "";
   }
   /** Back on the list once a command saved, on its row. */
@@ -398,7 +402,6 @@ export class View {
     }
     const now = all.findIndex(i => itemKey(i) === this.at);
     this.at = itemKey(all[(Math.max(0, now) + delta + all.length) % all.length]);
-    this.rename = null;
   }
   /** After the search changed, the selected row stays while it's listed;
    * else the first row takes it, what there is before what can be added. */
@@ -427,12 +430,13 @@ export class View {
     if (item.kind === "agent") return { kind: "here", agent: item.agent, shown: !item.agent.here };
     return item.kind === "command" ? { kind: "here_command", index: item.index, shown: !model.here(item.index) } : null;
   }
-  private act(item: Item, model: Model): Action | null {
+  private act(item: Item, model: Model, now = milliTimestamp()): Action | null {
     switch (item.kind) {
       case "agent": {
         if (!item.agent.shown) return { kind: "show", agent: item.agent };
-        this.suggestion = model.suggest(item.agent);
-        this.rename = Dialog.init({ rename: 0 }, item.agent.name);
+        this.transition.start(1, now);
+        this.agent_form.open(item.agent, model.options(item.agent), model.suggest(item.agent));
+        this.page = "agent";
         return null;
       }
       case "command":
@@ -518,8 +522,11 @@ export class View {
   }
   /** Advances release/healing and keeps the ending on screen after removal. */
   tick(model: Model, now = milliTimestamp()): boolean {
+    const slide = this.transition.tick(now),
+      row = this.agent_form.tick(now),
+      motion = slide || row;
     const r = this.removal;
-    if (!r) return false;
+    if (!r) return motion;
     if (r.phase === "held") {
       if (!this.sameRemoval(this.selected(model), model)) this.cancelRemoval(now);
       else {
@@ -538,18 +545,9 @@ export class View {
   key(byte: number, model: Model, now = milliTimestamp()): Action | null {
     this.tick(model, now);
     if (this.page === "command") return this.formKey(byte);
+    if (this.page === "agent") return this.agentResult(this.agent_form.key(byte, now), now);
     const item = this.selected(model);
     this.error = "";
-    if (this.rename) {
-      const agent = item?.kind === "agent" ? item.agent : null;
-      // Left empty, a default goes by its agent's name again; another takes the suggestion.
-      if (byte === 13 && agent)
-        return { kind: "rename", agent, name: this.rename.name() || (agent.account ? this.suggestion : "") };
-      if (byte === 27) this.rename = null;
-      else if (byte === 9 && this.suggestion) this.rename = Dialog.init({ rename: 0 }, this.suggestion);
-      else this.rename.key(byte);
-      return null;
-    }
     if (byte === 27 && this.removal?.phase === "held") {
       this.cancelRemoval(now);
       return null;
@@ -564,7 +562,7 @@ export class View {
           return null;
         }
         if (this.removal) return null;
-        return item ? this.act(item, model) : null;
+        return item ? this.act(item, model, now) : null;
       case 9:
         this.toggleFocus();
         return null;
@@ -589,6 +587,19 @@ export class View {
     this.query.key(byte);
     this.searched(model);
     return null;
+  }
+  private cancelAgent(now: number): null {
+    this.transition.start(-1, now);
+    this.page = "list";
+    this.focus = "list";
+    return null;
+  }
+  private agentResult(result: "save" | "cancel" | null, now: number): Action | null {
+    if (result === "cancel") return this.cancelAgent(now);
+    const form = this.agent_form;
+    return result === "save" && form.agent
+      ? { kind: "configure", agent: form.agent, name: form.label(), options: form.options() }
+      : null;
   }
   private formKey(byte: number): Action | null {
     const f = this.form;
@@ -615,23 +626,27 @@ export class View {
   sequence(seq: string, model: Model, now = milliTimestamp()): Action | null {
     this.tick(model, now);
     const key = keys.parse(seq);
-    if (this.page === "list" && !this.rename && this.focus === "list" && key === "delete")
+    if (this.page === "agent") {
+      this.agent_form.sequence(seq);
+      return null;
+    }
+    if (this.page === "list" && this.focus === "list" && key === "delete")
       return this.remove(this.selected(model), model, now);
     this.cancelRemoval(now);
-    if (this.page === "list" && !this.rename && (key === "up" || key === "down")) {
+    if (this.page === "list" && (key === "up" || key === "down")) {
       this.move(model, key === "up" ? -1 : 1);
       return null;
     }
-    if (this.page === "list" && !this.rename && key === "shift_tab") {
+    if (this.page === "list" && key === "shift_tab") {
       this.toggleFocus();
       return null;
     }
-    if (this.page === "list" && !this.rename && key === "left" && (this.focus === "list" || this.query.len === 0))
+    if (this.page === "list" && key === "left" && (this.focus === "list" || this.query.len === 0))
       return { kind: "back" };
     if (!this.typing()) return null;
     const before = this.query.name();
     this.input().sequence(seq);
-    if (this.page === "list" && !this.rename && this.query.name() !== before) this.searched(model);
+    if (this.page === "list" && this.query.name() !== before) this.searched(model);
     return null;
   }
   /** A click at (`x`, `y`) in the box `b`. */
@@ -639,7 +654,13 @@ export class View {
     if (y === b.y && this.page === "list" && x >= b.x + 2 && x < b.x + 2 + this.backLabel(b).length)
       return { kind: "back" };
     if (y === b.y && x >= View.closeX(b) && x < View.closeX(b) + 13)
-      return this.page === "command" ? this.cancelCommand() : { kind: "close" };
+      return this.page === "command"
+        ? this.cancelCommand()
+        : this.page === "agent"
+          ? this.cancelAgent(milliTimestamp())
+          : { kind: "close" };
+    if (this.transition.active) return null;
+    if (this.page === "agent") return this.agentResult(this.agent_form.click(b, x, y), milliTimestamp());
     if (this.page === "command") {
       const hit = this.form.click(b, x, y);
       if (hit === "save") return { kind: "save" };
@@ -649,7 +670,6 @@ export class View {
     if (y === b.y + 2 && x >= b.x + 3 && x < b.x + b.w - 4) {
       this.cancelRemoval();
       this.focus = "search";
-      this.rename = null;
       const offset = DialogView.scroll(this.query, sat(b.w, 7));
       this.query.position(this.query.byteAtColumn(offset, x - b.x - 3));
       return null;
@@ -657,12 +677,11 @@ export class View {
     const row = this.rows(b, model).find(r => r.y === y);
     if (!row || x <= b.x || x >= b.x + b.w - 1) return null;
     const key = itemKey(row.item),
-      again = this.focus === "list" && key === this.at && !this.rename && !this.removal,
+      again = this.focus === "list" && key === this.at && !this.removal,
       here = View.here(b, model);
     this.cancelRemoval();
     this.focus = "list";
     this.at = key;
-    this.rename = null;
     this.error = "";
     if (this.removal) return null;
     const toggle = x >= here.x && x < here.x + displayWidth(here.label) ? this.toggleHere(row.item, model) : null;
@@ -720,6 +739,17 @@ export class View {
     now = milliTimestamp(),
     presentation: { framed?: boolean; focused?: boolean } = {},
   ): void {
+    const body = new Writer();
+    this.drawContent(body, b, model, now, presentation);
+    this.transition.draw(w, body.s, b, b.w, 0, presentation.framed !== false);
+  }
+  private drawContent(
+    w: Writer,
+    b: Rect,
+    model: Model,
+    now = milliTimestamp(),
+    presentation: { framed?: boolean; focused?: boolean } = {},
+  ): void {
     const at = (x: number, y: number) => `\x1b[${y + 1};${x + 1}H`,
       panel = new Style({ fg: "text", bg: "surface" }).sgr(),
       faint = new Style({ fg: "faint", bg: "surface" }).sgr(),
@@ -733,9 +763,11 @@ export class View {
     const title =
       this.page === "list"
         ? "Manage agents"
-        : this.form.edit_index !== null
-          ? `Edit ${model.commands[this.form.edit_index]?.label() ?? "command"}`
-          : "New command";
+        : this.page === "agent"
+          ? "Edit agent"
+          : this.form.edit_index !== null
+            ? `Edit ${model.commands[this.form.edit_index]?.label() ?? "command"}`
+            : "New command";
     if (this.page === "list") w.write(at(b.x + 2, b.y) + faint + this.backLabel(b));
     w.write(
       at(b.x + (this.page === "list" ? 3 + this.backLabel(b).length : 2), b.y) +
@@ -743,13 +775,7 @@ export class View {
         ` ${title} `,
     );
     w.write(
-      at(View.closeX(b), b.y) +
-        faint +
-        " " +
-        keycap +
-        " esc " +
-        faint +
-        (this.page === "command" ? " back " : " close "),
+      at(View.closeX(b), b.y) + faint + " " + keycap + " esc " + faint + (this.page !== "list" ? " back " : " close "),
     );
     let caret: { x: number; y: number };
     if (this.page === "command") {
@@ -760,6 +786,14 @@ export class View {
         ["esc", "back"],
       ]);
       caret = this.form.caret(b);
+    } else if (this.page === "agent") {
+      this.agent_form.draw(w, b, now);
+      View.footer(w, b, [
+        ["tab", "next"],
+        ["↵", this.agent_form.typing() ? "save" : "activate"],
+        ["esc", "cancel"],
+      ]);
+      caret = this.agent_form.caret(b);
     } else caret = this.drawList(w, b, model, now, presentation.focused !== false);
     w.write(
       `\x1b[0m${at(caret.x, caret.y)}${this.typing() && presentation.focused !== false ? "\x1b[?25h" : "\x1b[?25l"}`,
@@ -776,7 +810,7 @@ export class View {
       chosen = this.selected(model),
       search_w = sat(b.w, 7);
     // The search, a placeholder until something's typed.
-    const searching = focused && this.focus === "search" && !this.rename;
+    const searching = focused && this.focus === "search";
     field(
       w,
       this.query,
@@ -796,7 +830,7 @@ export class View {
       writeEllipsis(w, "Usage (used) · resets in", here.x - 2 - usage_x);
     }
     w.write(at(b.x + 3, b.y + 5) + rule + "─".repeat(sat(b.w, 6)));
-    let caret = { x: b.x + 3 + this.queryColumn(search_w), y: b.y + 2 };
+    const caret = { x: b.x + 3 + this.queryColumn(search_w), y: b.y + 2 };
     const first = this.listOffset(b, model);
     if (have.length === 0 && first === 0) {
       w.write(at(name_x, b.y + 6) + faint);
@@ -848,24 +882,8 @@ export class View {
         }
         case "agent": {
           const a = item.agent;
-          if (on && this.rename) {
-            // The name edits in place, after its agent's.
-            const prefix = `${adapter(a.provider).label} · `,
-              field_x = name_x + displayWidth(prefix),
-              width = sat(who_x - 1, field_x);
-            w.write(at(name_x, y) + palette.fg("muted") + prefix);
-            // The placeholder is what Enter saves: a default goes nameless.
-            field(w, this.rename, a.account ? this.suggestion : "", field_x, y, width, true, "line", "muted");
-            const offset = DialogView.scroll(this.rename, width);
-            caret = {
-              x: field_x + Math.min(sat(width, 1), displayWidth(this.rename.bytes(offset, this.rename.cursor))),
-              y,
-            };
-            w.write(style);
-          } else {
-            w.write(at(name_x, y));
-            writeEllipsis(w, a.label, sat(who_x, name_x + 2));
-          }
+          w.write(at(name_x, y));
+          writeEllipsis(w, a.label, sat(who_x, name_x + 2));
           w.write(at(who_x, y) + (a.signed_out ? palette.fg("warm") : ""));
           writeEllipsis(w, cleanControls(a.who), usage_x === null ? who_w : usage_x - who_x - 2);
           if (usage_x !== null) {
@@ -908,14 +926,6 @@ export class View {
   }
   /** The keys the selected row takes. */
   private hints(item: Item | null, model: Model): Hint[] {
-    if (this.rename)
-      return [
-        ["↵", this.rename.len > 0 || (item?.kind === "agent" && item.agent.account) ? "save" : "no name"],
-        ...(this.suggestion && this.rename.name() !== this.suggestion
-          ? [["tab", `use ${this.suggestion}`] as Hint]
-          : []),
-        ["esc", "cancel"],
-      ];
     if (this.focus === "search")
       return [
         ["tab / ↓", "list"],
@@ -938,7 +948,7 @@ export class View {
             ["tab", "search"],
           ];
         return [
-          ["↵", item.kind === "agent" ? "rename" : "edit"],
+          ["↵", "edit"],
           ["space", `${this.hereOf(item, model) ? "hide" : "show"} in ${ellipsis(View.workspace(model), 16)}`],
           ["hold ⌫", item.kind === "agent" && !item.agent.account ? "remove" : "delete"],
           ["tab", "search"],
