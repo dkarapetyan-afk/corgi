@@ -112,7 +112,7 @@ test("sleeping corgi keeps a still face and fits its width while puffing", () =>
     expect(puffed).toBe(width > 7);
   }
 });
-test("activities finish whole loops within budget and rest for at least ten seconds", () => {
+test("activities finish whole loops within budget and stay idle afterward", () => {
   for (let seed = 0; seed < 100; seed++)
     for (const routine of ["sniff", "fetch", "bone"] as const) {
       const x = playback(seed);
@@ -126,33 +126,46 @@ test("activities finish whole loops within budget and rest for at least ten seco
       const end = x.deadline_ms;
       x.update(true, end);
       expect(x.routine).toBe("idle");
-      x.update(true, end + a.Playback.minimum_idle_ms - 1);
-      expect(x.routine).toBe("idle");
+      const random = structuredClone(x.random);
+      for (let ms = end; ms <= end + 600000; ms += 2000) {
+        x.update(true, ms);
+        expect(x.routine).toBe("idle");
+      }
+      expect(x.random).toEqual(random);
     }
 });
-test("random starts cover all routines and redraws do not reroll decisions", () => {
+test("random starts cover all routines without rerolling while idle", () => {
   const seen = new Set();
-  let resumed = false,
-    stayed = false;
   for (let seed = 0; seed < 100; seed++) {
     const x = playback(seed);
     x.update(true, 0);
     seen.add(x.routine);
     x.enter("idle", 0);
-    x.update(true, 10000);
-    resumed ||= x.routine !== "idle";
-    stayed ||= x.routine === "idle";
-    const sparse = playback(0);
-    Object.assign(sparse, structuredClone(x));
-    sparse.random = Object.assign(new a.Random(), structuredClone(x.random));
-    for (let ms = 1; ms < 2000; ms++) x.update(true, 10000 + ms);
-    sparse.update(true, 11999);
-    expect(x).toEqual(sparse);
+    const random = structuredClone(x.random);
+    for (let ms = 0; ms <= 600000; ms += 2000) {
+      x.update(true, ms);
+      expect(x.routine).toBe("idle");
+    }
+    expect(x.random).toEqual(random);
   }
   expect([...seen].sort()).toEqual(["bone", "fetch", "idle"]);
-  expect(resumed && stayed).toBe(true);
 });
-test("each chance to play fetches or digs up a bone five times in a hundred", () => {
+test("a corgi gets a fresh chance to play when it reappears", () => {
+  const x = playback(3),
+    seen = new Set();
+  for (let n = 0; n < 100; n++) {
+    const now = n * 20000;
+    x.update(false, now);
+    const random = Object.assign(new a.Random(), structuredClone(x.random)),
+      expected = a.Playback.choose(random.float() * 100);
+    x.update(true, now + 1);
+    expect(x.routine).toBe(expected);
+    expect(x.started_ms).toBe(now + 1);
+    seen.add(x.routine);
+  }
+  expect([...seen].sort()).toEqual(["bone", "fetch", "idle"]);
+});
+test("each spawn fetches or digs up a bone five times in a hundred", () => {
   const counts = new Map<string, number>();
   for (let roll = 0; roll < 100; roll++) {
     const routine = a.Playback.choose(roll);
@@ -206,13 +219,16 @@ test("a second try digs past a pebble when the row has room, and every dig fits 
   for (let n = 0; n < 20; n++) tries.add(a.Bone.random(r).tries);
   expect([...tries].sort()).toEqual([1, 2]);
 });
-test("delayed activity transition still gets a full idle rest", () => {
+test("a delayed activity transition stays idle without another roll", () => {
   const x = playback(0);
   x.active = true;
   x.enter("fetch", 0);
   x.update(true, 100000);
   expect(x.routine).toBe("idle");
-  expect(x.deadline_ms).toBe(110000);
+  const random = structuredClone(x.random);
+  x.update(true, 10000000);
+  expect(x.routine).toBe("idle");
+  expect(x.random).toEqual(random);
 });
 test("every throw fits the row, bounces off its walls, and keeps clear of the corgi", () => {
   const r = new a.Random(7n);

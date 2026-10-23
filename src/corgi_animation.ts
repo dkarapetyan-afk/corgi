@@ -541,9 +541,7 @@ export function writeBone(room: number, value: Bone, tick: number, background = 
 }
 export type Routine = "idle" | "sniff" | "fetch" | "bone";
 export class Playback {
-  static minimum_idle_ms = 10000;
-  static retry_ms = 2000;
-  /** Out of 100 at each chance to play; the rest stay idle. Sniff is out of the rotation for now. */
+  /** Out of 100 when the corgi appears; the rest stay idle. Sniff is out of the rotation for now. */
   static odds: [Routine, number][] = [
     ["fetch", 5],
     ["bone", 5],
@@ -573,7 +571,7 @@ export class Playback {
   private duration(routine: Routine): number {
     switch (routine) {
       case "idle":
-        return Playback.minimum_idle_ms;
+        return Infinity;
       case "sniff":
         return (1 + this.random.int(2)) * frames.sniff.length * 200;
       case "fetch":
@@ -590,13 +588,7 @@ export class Playback {
       this.enter(Playback.choose(this.random.float() * 100), now);
       return;
     }
-    if (now < this.deadline_ms) return;
-    if (this.routine !== "idle") this.enter("idle", now);
-    else {
-      const routine = Playback.choose(this.random.int(100));
-      if (routine === "idle") this.deadline_ms = now + Playback.retry_ms;
-      else this.enter(routine, now);
-    }
+    if (this.routine !== "idle" && now >= this.deadline_ms) this.enter("idle", now);
   }
   write(room: number, now: number, background = palette.colors.bg): string {
     const elapsed = Math.max(0, now - this.started_ms);
