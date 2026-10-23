@@ -4,6 +4,7 @@ import { registerCase, TestCase, run, quote, sleep } from "./support";
 import { screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
 import { ImportFixture } from "./import_fixture";
+import * as tmux_layout from "../src/import/tmux_layout";
 
 const TMUX = Bun.which("tmux");
 const TIG = Bun.which("tig");
@@ -131,9 +132,10 @@ class TmuxImport extends TestCase {
       await this.tmux("display-message", "-p", "-t", "tmux-fixture:0", "#{window_zoomed_flag}"),
       zoomedPane ? "1" : "0",
     );
+    // The same panes in the same places; tmux 3.8's layout also marks the active pane, which zooming moves.
     this.assertEqual(
-      await this.tmux("display-message", "-p", "-t", "tmux-fixture:0", "#{window_layout}"),
-      this.savedLayout,
+      tmux_layout.parse(await this.tmux("display-message", "-p", "-t", "tmux-fixture:0", "#{window_layout}")).panes,
+      tmux_layout.parse(this.savedLayout).panes,
     );
     this.assertEqual(await this.tmux(...listArgs), before);
   }
