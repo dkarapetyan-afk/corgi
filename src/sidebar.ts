@@ -1112,7 +1112,7 @@ export class View {
       : napping && e.attention !== "finished"
         ? "\x1b[22m" + nap_fg
         : "\x1b[22m" + fg("faint");
-    const provider = e.name.length > 0 ? directoryLabel(e.name, null, 160) : (e.provider ?? "");
+    const name = e.name.length > 0 ? directoryLabel(e.name, null, 160) : e.provider ? adapter(e.provider).name : "";
     const figure = contextFigure(e, compacting, background);
     const figure_width = figure ? displayWidth(figure.text) : 0;
     const notes = e.notes > 0 ? `${e.notes} note${e.notes === 1 ? "" : "s"}` : "";
@@ -1120,7 +1120,7 @@ export class View {
     w.write(
       `\x1b[${y + 1};${x + 5}H${dot.unread || (grouped && e.focused) ? "\x1b[1m" + fg("strong") : "\x1b[22m" + fg("text")}`,
     );
-    writeEllipsis(w, provider, sat(room, right));
+    writeEllipsis(w, name, sat(room, right));
     w.write("\x1b[22m");
     // Unsent review notes wait for the user, so they take warm.
     if (notes.length > 0 && room > right + 4)

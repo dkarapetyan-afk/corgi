@@ -358,7 +358,7 @@ class ViewerScenarios extends Viewers {
     const headless = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -652,7 +652,7 @@ class ViewerScenarios extends Viewers {
     const ident = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -962,7 +962,7 @@ class ViewerScenarios extends Viewers {
       ],
     ];
     for (const [command, error] of invalid) {
-      this.assertEqual((await this.raw_rpc({ op: "session.command", protocol: 2, command })).err, error);
+      this.assertEqual((await this.raw_rpc({ op: "session.command", protocol: 3, command })).err, error);
       this.assertEqual((await this.session()).workspaces, before);
     }
   }
@@ -1168,7 +1168,7 @@ process.stdin.resume();
       second = await this.new();
     const client = await JsonSocket.connect(this.path);
     try {
-      const call = (request: any) => client.request({ protocol: 2, viewer_protocol: 3, ...request });
+      const call = (request: any) => client.request({ protocol: 3, viewer_protocol: 3, ...request });
       await call({ op: "viewer.open", cwd: this.temp.name });
       await call({
         op: "viewer.sync",

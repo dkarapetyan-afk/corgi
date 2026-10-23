@@ -18,6 +18,7 @@ import { checkpoint_version, handoff_version } from "./persist/migrations";
 import { validateCheckpoint } from "./persist/schema";
 import { Preview } from "./launch/preview";
 import { preview as restorePreview } from "./agent_launcher";
+import { Option } from "./inference/models";
 
 const schemas = Object.fromEntries(
   ["protocol", "viewer", "handoff"].map(name => [
@@ -84,8 +85,18 @@ function fixture() {
   const pane = new Pane(1, terminal, "/tmp");
   workspace.model.newTab("schema");
   server.runtime.panes.push(pane);
+  server.runtime.inference.available.push(
+    Object.assign(new Option(), {
+      provider: "opencode2",
+      model: "openai/gpt-6-luna",
+      name: "GPT-6 Luna",
+      plan: "Pro 500",
+      subscription: true,
+    }),
+  );
   const actor = server.runtime.conversations.get("codex", "schema-session");
   actor.workspace = 1;
+  actor.model.price = { label: "catalog", input: 1250n, output: 5000n };
   pane.attachment.select(actor);
   const loop = (server as any).loop;
   const client = new Client(
@@ -134,9 +145,9 @@ function fixture() {
 }
 
 test("the runtime wire matches protocol.version", () => {
-  expect(protocol.version).toBe(2);
+  expect(protocol.version).toBe(3);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "fa86571caa0f68f5f6d7c34a13b772215f8f61d2d8fd1cc7c1d46f0c6fe10f55",
+    "e88f897c92092c396d2eeee90bcefe3c9254e3027567606817b82106a3ca7400",
   );
   const { server, client, dispose } = fixture();
   try {
@@ -149,6 +160,7 @@ test("the runtime wire matches protocol.version", () => {
     delete preview.options.claude.spend;
     expect(restorePreview(preview).options.claude.spend).toBeNull();
     expect(snapshot.panes[0].agent.session).toBe("schema-session");
+    expect(snapshot.conversations[0].model_price).toEqual({ label: "catalog", input: 1250, output: 5000 });
     const wrong = structuredClone(snapshot);
     wrong.panes[0].id = -1;
     expect(() => validate(schemas.protocol, { snapshot: wrong })).toThrow();
@@ -210,7 +222,7 @@ test("saved handoff format matches its version", async () => {
   expect(handoff_version).toBe(5);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "8ad9c1533e2ed352c904ca1c346d986114d14c8232ca256320be0fd185fded76",
+    "8c6d782bfe85dc3846ae7e43b26ebfa2104198d05e67cae7733af6f1a65755f9",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();

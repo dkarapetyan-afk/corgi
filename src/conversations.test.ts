@@ -522,6 +522,39 @@ test("terminal compaction supplements protocol state without clearing hook compa
   expect(actor.state.compacting).toBe(false);
 });
 
+test("protocol compaction preserves activity and rejects stale endings", () => {
+  const actor = new Actor({ id: 1, state: new Agent({ provider: "opencode2" }) });
+  const first = snapshot("working", 1000);
+  actor.observeSnapshot(first, true, 1000);
+  actor.state.setActivity("Running unit tests");
+  const compact = snapshot("working", 2000);
+  compact.compacting = true;
+  actor.observeSnapshot(compact, true, 2000);
+  expect(actor.state.compacting).toBe(true);
+  expect(actor.state.compacting_since).toBe(2000);
+  expect(actor.state.activity.text()).toBe("Running unit tests");
+  expect(actor.activity_timeline.points[0].label.text()).toBe("Compacting context");
+  compact.observed_at = 3000;
+  actor.observeSnapshot(compact, true, 3000);
+  actor.observeCompactionScreen(false, 3500);
+  expect(actor.state.compacting_since).toBe(2000);
+  expect(actor.activity_timeline.len).toBe(1);
+  const end = snapshot("working", 2500);
+  end.compacting = false;
+  actor.observeSnapshot(end, true, 4000);
+  expect(actor.state.compacting).toBe(true);
+  end.observed_at = 5000;
+  actor.observeSnapshot(end, true, 5000);
+  expect(actor.state.compacting).toBe(false);
+  expect(actor.state.compacting_since).toBe(0);
+  expect(actor.activity_timeline.points[1].label.text()).toBe("Running unit tests");
+  compact.observed_at = 6000;
+  actor.observeSnapshot(compact, true, 6000);
+  actor.observeSnapshot(snapshot("idle", 7000), true, 7000);
+  expect(actor.state.compacting).toBe(false);
+  expect(actor.state.compacting_since).toBe(0);
+});
+
 test("a restored compaction keeps its start, and one that ends with the turn clears it", () => {
   const actor = new Actor({
     id: 1,

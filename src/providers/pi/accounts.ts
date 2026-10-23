@@ -5,6 +5,7 @@ import type { Accounts, Login, Signin } from "../adapter";
 import { cached } from "../command_line";
 import { field, str } from "../common";
 import { configDir } from "./integration";
+import * as codexPlan from "../codex/plan";
 
 /** Pi keeps credentials for several model providers in each account folder. */
 export function credential(root: string) {
@@ -19,23 +20,47 @@ export function credential(root: string) {
   }
   return null;
 }
+function oauth(value: unknown) {
+  let claims: unknown;
+  try {
+    claims = JSON.parse(Buffer.from(str(value, "access").split(".")[1] ?? "", "base64url").toString());
+  } catch {}
+  const email = (
+    str(value, "email") ||
+    str(claims, "email") ||
+    str(field(claims, "https://api.openai.com/profile"), "email")
+  )
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    .slice(0, 160);
+  return { claims, email };
+}
+/** Display metadata carried by this provider's own cached OAuth credential. */
+export function profile(value: unknown): { email: string; plan: string } {
+  const { claims, email } = oauth(value),
+    code = str(field(claims, "https://api.openai.com/auth"), "chatgpt_plan_type");
+  return {
+    email,
+    plan: code
+      ? codexPlan
+          .label(code)
+          .text()
+          .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+          .slice(0, 160)
+      : "",
+  };
+}
 export function identity(root: string): Login | null {
   const c = credential(root);
   if (!c) return null;
   const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16);
   if (c.type === "api_key")
     return { email: `${c.provider} API key`, id: `${c.provider}:key:${hash(str(c.value, "key"))}` };
-  let claims: unknown;
-  try {
-    claims = JSON.parse(Buffer.from(str(c.value, "access").split(".")[1] ?? "", "base64url").toString());
-  } catch {}
-  const email =
-    str(c.value, "email") || str(claims, "email") || str(field(claims, "https://api.openai.com/profile"), "email");
+  const { claims, email: user } = oauth(c.value);
   const workspace =
     str(c.value, "accountId") || str(field(claims, "https://api.openai.com/auth"), "chatgpt_account_id");
   return {
-    email: email || `${c.provider} OAuth`,
-    id: `${c.provider}:${str(claims, "sub") || email || workspace || hash(str(c.value, "refresh"))}/${workspace}`,
+    email: user || `${c.provider} OAuth`,
+    id: `${c.provider}:${str(claims, "sub") || user || workspace || hash(str(c.value, "refresh"))}/${workspace}`,
   };
 }
 export const signin: Signin = {

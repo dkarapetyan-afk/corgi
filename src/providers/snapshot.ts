@@ -6,6 +6,9 @@ import { Text as SummaryText } from "../activity/summary";
 import type { Text } from "./common";
 import type { State } from "../agents";
 import type { Location } from "../worktrees";
+import type { Tokens } from "../usage/live";
+import type { Reading } from "../usage/context_window";
+import type { Model } from "./model";
 export class Name extends BoundedText(160) {}
 export class Role extends BoundedText(80) {}
 export class Turn extends BoundedText(128) {}
@@ -27,6 +30,15 @@ export class Child {
   updated_at = 0;
 }
 export class Snapshot {
+  model = "";
+  model_info: Model | null = null;
+  tool_active: boolean | null = null;
+  /** Whether the provider reports an active compaction; null when it can't tell. */
+  compacting: boolean | null = null;
+  tool = "";
+  usage: { total: Tokens; last: Tokens | null } | null = null;
+  /** How full the context window was at the model's last call. */
+  context: Reading | null = null;
   background_tasks = new Inventory();
   children: Child[] = [];
   children_complete = false;

@@ -1,9 +1,11 @@
 import { BoundedText } from "../bounded_text";
+import type { Price } from "../usage/prices";
 const Text = BoundedText(160);
 export class Model {
   id = new Text();
   name = new Text();
   window = 0n;
+  price: Price | null = null;
   constructor(fields: Partial<Model> = {}) {
     Object.assign(this, fields);
   }
@@ -11,6 +13,13 @@ export class Model {
     return this.name.len ? this.name.text() : this.id.text();
   }
   static resolve(reported: string): Model {
+    const variant = /^([^#]+)#([^#]+)$/.exec(reported);
+    if (variant) {
+      const model = Model.resolve(variant[1]);
+      model.id = Text.ascii(reported);
+      if (model.name.len) model.name = new Text(`${model.name.text()} (${variant[2]})`);
+      return model;
+    }
     let id = reported;
     const million = id.endsWith("[1m]");
     if (million) id = id.slice(0, -4);

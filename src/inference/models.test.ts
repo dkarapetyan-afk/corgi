@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Option, Selection, compare, options } from "./models";
+import { Option, Selection, automatic, compare, options } from "./models";
 const option = (model: string, subscription: boolean, input_cost: number | null, output_cost = input_cost) =>
   Object.assign(new Option(), { model, subscription, input_cost, output_cost });
 test("subscription models precede paid APIs, then known summary prices sort cheapest first", () => {
@@ -29,4 +29,21 @@ test("wire and saved model selections normalize defaults and reject malformed ID
       { ...selected, provider: "unknown", name: "Bad" },
     ]),
   ).toHaveLength(1);
+  expect(options([{ ...selected, name: "Haiku" }])[0].ready).toBeNull();
+  expect(options([{ ...selected, name: "Haiku", ready: false }])[0].ready).toBe(false);
+  expect(options([{ ...selected, name: "Haiku" }])[0].plan).toBe("");
+  expect(options([{ ...selected, name: "Haiku", plan: "Pro 500\x1b" }])[0].plan).toBe("Pro 500");
+});
+
+test("Auto chooses the cheapest checked subscription, never failed or untested access", () => {
+  const failed = Object.assign(option("github/cheap", true, 0.1), { ready: false }),
+    untested = option("unknown/cheap", true, 0),
+    active = Object.assign(option("openai/luna", true, 1), { ready: true }),
+    expensive = Object.assign(option("openai/sol", true, 5), { ready: true }),
+    api = Object.assign(option("api/free", false, 0), { ready: true });
+  const ranked = [failed, untested, expensive, api, active].sort(compare);
+  expect(automatic(ranked)).toBe(active);
+  expect(automatic([failed, untested])).toBeUndefined();
+  expect(automatic([untested])).toBe(untested);
+  expect(automatic([])).toBeUndefined();
 });

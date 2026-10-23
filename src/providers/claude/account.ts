@@ -109,6 +109,15 @@ export class Client {
    * resolves "default"; empty until read. */
   default_model = new Text();
   default_checked = false;
+  /** The read-only initialization catalog, without starting a model turn. */
+  async models(quit: Quit): Promise<{ info: Info; models: unknown }> {
+    const executable = await this.resolve(),
+      { account: info } = await this.auth(executable, quit);
+    if (info.signed_in !== true) return { info, models: [] };
+    this.session = new Control(executable, this.env);
+    const initialized = await this.session.ready({ quit, deadline: Date.now() + 5000 });
+    return { info, models: field(initialized, "models") };
+  }
   close() {
     this.session?.close();
     this.session = null;

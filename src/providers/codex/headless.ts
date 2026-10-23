@@ -98,6 +98,7 @@ export class Codex implements Client {
   static start(at: Place, summary: Inference | null, args: string[] = []) {
     const io = Stdio.spawn([at.executable, "app-server", "--listen", "stdio://", ...args], {
         cwd: summary ? "/tmp" : at.cwd,
+        env: at.account ? { ...process.env, CODEX_HOME: at.account } : undefined,
       }),
       client = new Codex(io, at.cwd, summary);
     client.request(

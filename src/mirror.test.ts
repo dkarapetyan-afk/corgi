@@ -4,6 +4,25 @@ import { transport } from "./fixtures/transport";
 import * as json from "./json";
 import * as mirror from "./mirror";
 import * as viewer from "./viewer";
+import * as sim from "./providers/sim";
+
+test("provider names use the registered display name, not the wire id", () => {
+  const unregister = sim.register();
+  try {
+    for (const [provider, name] of [
+      ["codex", "Codex"],
+      ["claude", "Claude"],
+      ["pi", "Pi"],
+      ["opencode2", "OpenCode"],
+      [sim.sim, "Sim"],
+      [null, "agent"],
+    ] as const) {
+      expect(mirror.providerName(mirror.agent({ provider }))).toBe(name);
+    }
+  } finally {
+    unregister();
+  }
+});
 
 test("viewer scalars retain their bigint type after small and large wire replies", async () => {
   let value = 1n;

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Option, Worker, active_every, idle_every } from "./preview";
@@ -7,7 +7,14 @@ import { Info, Window } from "../usage/account";
 import { Text } from "../providers";
 import * as accounts from "../accounts";
 
-const variables = ["CORGI_ENV_BASE", "XDG_STATE_HOME", "CORGI_CODEX_BIN", "CORGI_CLAUDE_BIN", "CORGI_PI_BIN"] as const;
+const variables = [
+  "CORGI_ENV_BASE",
+  "XDG_STATE_HOME",
+  "CORGI_CODEX_BIN",
+  "CORGI_CLAUDE_BIN",
+  "CORGI_PI_BIN",
+  "CORGI_OPENCODE2_BIN",
+] as const;
 let saved: NodeJS.ProcessEnv, root: string;
 beforeEach(() => {
   saved = { ...process.env };
@@ -17,6 +24,7 @@ beforeEach(() => {
   process.env.CORGI_CODEX_BIN = process.execPath;
   process.env.CORGI_CLAUDE_BIN = process.execPath;
   process.env.CORGI_PI_BIN = process.execPath;
+  process.env.CORGI_OPENCODE2_BIN = "/nonexistent/opencode";
   accounts.reset();
 });
 afterEach(() => {
@@ -59,6 +67,34 @@ test("a launch preview prefers the provider's model name and keeps its launch id
     expect(o.model.text()).toBe("custom/private-v2");
     expect(o.modelLabel()).toBe("My coding model");
     expect(o.source.text()).toBe("Pi settings");
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("a launch preview reads a provider again as soon as a file it reads changes", async () => {
+  const worker = new Worker(),
+    file = join(root, "picked.json");
+  writeFileSync(file, JSON.stringify({ model: "first" }));
+  worker.launcher = async () => ({
+    account: async () => new Info(),
+    model: async () => ({ model: JSON.parse(readFileSync(file, "utf8")).model, source: "test" }),
+    watches: () => [file],
+    close() {},
+  });
+  try {
+    worker.preview(root);
+    await worker.pump();
+    expect(worker.preview(root).options.pi.model.text()).toBe("first");
+    // Replaced, as editors and atomic writers do, rather than written in place.
+    writeFileSync(file + ".tmp", JSON.stringify({ model: "second" }));
+    renameSync(file + ".tmp", file);
+    const deadline = Date.now() + 3000;
+    while (worker.preview(root).options.pi.model.text() !== "second" && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await worker.pump();
+    }
+    expect(worker.preview(root).options.pi.model.text()).toBe("second");
   } finally {
     await worker.stop();
   }

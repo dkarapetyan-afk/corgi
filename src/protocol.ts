@@ -31,7 +31,7 @@ export interface View<Session = unknown, Resources = unknown> {
   /** Always false; retained for older viewers. Detach uses an action control. */
   detach: boolean;
 }
-export const version = 2;
+export const version = 3;
 export const management_version = 1;
 export const viewer_version = 3;
 export type Op = (typeof operations)[number];

@@ -110,7 +110,7 @@ class HerdrHandoff extends TestCase {
     }
   }
   corgi(message: any) {
-    return this.exchange(this.corgiSocket, { protocol: 2, ...message });
+    return this.exchange(this.corgiSocket, { protocol: 3, ...message });
   }
   async herdr(method: string, params: any = {}) {
     return (

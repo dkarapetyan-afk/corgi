@@ -126,6 +126,9 @@ export const adapter: Adapter = {
   },
   inference: {
     model: "claude-haiku-5-5",
+    catalog: "native",
+    source: "Anthropic",
+    models: (account, quit) => import("./models").then(m => m.read(account, quit)),
     start: (r, at) => Claude.start({ ...at, cwd: "/tmp" }, summaryArgs(r), { schema: r.schema !== null }),
     restore: Claude.restore,
   },

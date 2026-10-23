@@ -44,6 +44,20 @@ export async function launch(provider: Provider, args: string[], _executable: st
   const binary = await discovery.resolve(provider),
     path = binary.includes("/") ? binary : discovery.onPath(binary);
   if (path === null) throw Error("ProviderNotFound");
+  const prepared = await adapter(provider).launch.prepare?.(args, path);
+  if (prepared) {
+    args = prepared.args;
+    for (const [key, value] of prepared.env ?? []) process.env[key] = value;
+    if (prepared.event)
+      await rpc.request(process.env.CORGI_SOCKET!, "hook", {
+        provider,
+        event: prepared.event,
+        pane: Number(process.env.CORGI_PANE),
+        seq: Date.now() * 1000,
+        background: false,
+        pid: process.pid,
+      });
+  }
   process.execve!(path, [binary, ...args], process.env as Record<string, string>);
   throw Error("ExecFailed");
 }

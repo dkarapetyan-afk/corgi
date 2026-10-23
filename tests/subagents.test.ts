@@ -182,7 +182,7 @@ class HeadlessUsage extends Runtime {
     const headless = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -255,7 +255,7 @@ class HeadlessUsage extends Runtime {
     const headless = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,

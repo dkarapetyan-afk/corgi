@@ -113,7 +113,7 @@ class SummaryCases extends Summaries {
     const rows = async () => screen_text((await viewer.poll()).data.replace(/\x1b_G.*?\x1b\\/gs, ""), 100, 30);
     try {
       const initial = await rows();
-      const y = initial.findIndex((r, i) => i > 15 && r.includes("codex"));
+      const y = initial.findIndex((r, i) => i > 15 && r.includes("Codex"));
       await viewer.input(`\x1b[<35;6;${y + 1}M`);
       await viewer.advance(0.6);
       this.assertTrue((await rows()).some(r => r.includes("now  ●  Compacting context")));
@@ -241,7 +241,7 @@ class SummaryCases extends Summaries {
     await this.until(async () => (await this.session()).inference.locked);
     let reply = await this.rpc({
       op: "inference.configure",
-      protocol: 2,
+      protocol: 3,
       choice: "claude",
     });
     this.assertTrue(reply.saved);
@@ -255,10 +255,10 @@ class SummaryCases extends Summaries {
     // A new harness starts a new conversation, so the agent's history comes along.
     this.assertIn("Tracing pane focus", JSON.parse(this.calls().at(-1)!).history[0]);
     // An older client's "off" turns every use off and keeps the model.
-    const off = (await this.rpc({ op: "inference.configure", protocol: 2, choice: "off" })).inference;
+    const off = (await this.rpc({ op: "inference.configure", protocol: 3, choice: "off" })).inference;
     this.assertEqual(off.provider, "claude");
     this.assertTrue(Object.values(off.uses).every(on => on === false));
-    status = (await this.rpc({ op: "inference.configure", protocol: 2, choice: "auto" })).inference;
+    status = (await this.rpc({ op: "inference.configure", protocol: 3, choice: "auto" })).inference;
     this.assertEqual([status.choice, status.provider], ["auto", "codex"]);
     this.assertGreaterEqual(status.launches.codex, 1);
     this.assertEqual(status.launches.claude, 0);
@@ -318,7 +318,7 @@ class SummaryCases extends Summaries {
     await sleep(1);
     this.assertEqual((await this.state()).activity, "");
     await this.attach();
-    const screen = await this.frame_with("codex", 13);
+    const screen = await this.frame_with("Codex", 13);
     this.assertTrue(screen[14].slice(4, 27).trim());
     this.assertNotIn("This label has far too many words", screen.join("\n"));
     this.assertEqual(this.calls().length, 1);
@@ -442,7 +442,7 @@ class SummaryCases extends Summaries {
     const viewer = await Viewer.create(this, 100, 30);
     const hover = async (cols: number, rows: number) => {
       const screen = screen_text((await viewer.poll()).data, cols, rows);
-      const y = screen.findIndex((r, i) => i > Math.floor(rows / 2) && r.includes("codex"));
+      const y = screen.findIndex((r, i) => i > Math.floor(rows / 2) && r.includes("Codex"));
       await viewer.input(`\x1b[<35;6;${y + 1}M`);
       await viewer.advance(0.6);
       return (await viewer.poll()).data;
@@ -479,9 +479,9 @@ class SummaryCases extends Summaries {
         this.assertIn(t, overview);
       rows = screen_text(overview.replace(/\x1b_G.*?\x1b\\/gs, ""), 100, 30);
       const systemRow = rows.find(r => r.includes("Corgi (Activity summarizer"))!;
-      const agentRow = rows.find(r => r.includes("codex ·"))!;
+      const agentRow = rows.find(r => r.includes("Codex ·"))!;
       this.assertRegex(systemRow, /Corgi \(Activity summarizer\)\s+GPT-6 Luna\s+1\.2k\s+1\.8k\s+1\.2k/);
-      this.assertRegex(agentRow, /codex · \S+\s+—\s+6\.9k\s+7\.8k/);
+      this.assertRegex(agentRow, /Codex · \S+\s+—\s+6\.9k\s+7\.8k/);
       this.assertNotIn("tracked sessions", overview);
       await viewer.request({ op: "badge", visible: false });
       frame = await hover(100, 30);

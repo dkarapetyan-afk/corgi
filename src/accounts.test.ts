@@ -44,6 +44,13 @@ const signIn = (dir: string, email: string, id = email) => {
   );
 };
 
+test("default-only providers reject account creation before creating a folder", () => {
+  expect(() => accounts.stage("opencode2", "work")).toThrow("AccountManagementUnsupported");
+  expect(() => accounts.add("opencode2", "work", home)).toThrow("AccountManagementUnsupported");
+  expect(accounts.known().filter(a => a.provider === "opencode2")).toEqual([]);
+  expect(existsSync(accounts.path())).toBe(false);
+});
+
 test("an account is its settings folder, and the default's is none", () => {
   expect(accounts.normalize("claude", join(home, ".claude"))).toBe("");
   expect(accounts.normalize("claude", "~/.claude-work")).toBe(join(home, ".claude-work"));

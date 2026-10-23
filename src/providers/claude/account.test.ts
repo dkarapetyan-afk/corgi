@@ -6,6 +6,8 @@ import * as log from "../../log";
 import { timestampMs } from "../common";
 import { Info } from "../../usage/account";
 import { Text } from "../../providers";
+import { Control } from "./control";
+import { Quit } from "../../subprocess";
 test("account lookup logs failures per account, ignores cancellation, and reports recovery once", async () => {
   const resolve = spyOn(discovery, "resolve").mockRejectedValue(Error("ProviderNotFound")),
     output = spyOn(process.stderr, "write").mockImplementation(() => true),
@@ -90,6 +92,30 @@ test("Claude initialize names the default model", () => {
     }),
   ).toBe("claude-sonnet-5-5");
   expect(defaultModel(null)).toBe("");
+});
+
+test("Claude model discovery reads auth and initialization without sending any model prompt", async () => {
+  const quit = new Quit(),
+    client = new Client({ CLAUDE_CONFIG_DIR: "/claude/nvidia" }),
+    info = Object.assign(new Info(), { signed_in: true, limits: "metered" }),
+    catalog = [{ value: "haiku", resolvedModel: "claude-haiku-5-5", displayName: "Haiku 5.5" }],
+    executable = spyOn(discovery, "resolve").mockResolvedValue("/fake/claude"),
+    auth = spyOn(client as any, "auth").mockResolvedValue({ account: info, d: {} }),
+    ready = spyOn(Control.prototype, "ready").mockResolvedValue({ models: catalog }),
+    request = spyOn(Control.prototype, "request");
+  try {
+    expect(await client.models(quit)).toEqual({ info, models: catalog });
+    expect(auth).toHaveBeenCalledWith("/fake/claude", quit);
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+    expect(client.session?.env.CLAUDE_CONFIG_DIR).toBe("/claude/nvidia");
+  } finally {
+    client.close();
+    executable.mockRestore();
+    auth.mockRestore();
+    ready.mockRestore();
+    request.mockRestore();
+  }
 });
 
 test("Enterprise usage reads monthly spend without quota windows or session estimates", () => {

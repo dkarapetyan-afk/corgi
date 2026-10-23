@@ -1,3 +1,5 @@
+import { watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 import { Quit } from "../subprocess";
 import { Provider, adapter, byProvider, Text } from "../providers";
 import type { Launcher } from "../providers/adapter";
@@ -114,6 +116,9 @@ export class Worker {
   every = idle_every;
   private checked = 0;
   private sampling = false;
+  /** The folder of each file a launcher reads, watched by file. */
+  watching = new Map<string, FSWatcher>();
+  private settle: ReturnType<typeof setTimeout> | null = null;
   static start() {
     return new Worker();
   }
@@ -121,7 +126,45 @@ export class Worker {
     this.stopping = true;
     this.quit.signal();
     for (const launcher of this.launchers.values()) void launcher.then(l => l?.close());
+    for (const watcher of this.watching.values()) watcher.close();
+    this.watching.clear();
+    if (this.settle) clearTimeout(this.settle);
     await this.pending;
+  }
+  /** Watches the files `launcher` reads. A file can be replaced rather than
+   * written in place, so its folder is watched. */
+  private watch(launcher: Launcher) {
+    for (const file of launcher.watches?.() ?? []) {
+      if (this.watching.has(file)) continue;
+      try {
+        const watcher = watch(dirname(file), (_event, name) => {
+          if (name && name.toString() !== basename(file)) return;
+          if (this.settle) clearTimeout(this.settle);
+          this.settle = setTimeout(() => {
+            this.settle = null;
+            this.reread();
+          }, 100);
+        });
+        watcher.on("error", () => {
+          watcher.close();
+          this.watching.delete(file);
+        });
+        this.watching.set(file, watcher);
+      } catch {}
+    }
+  }
+  /** Reads the rows of folders shown in the last minute again now, and the
+   * others when next asked. */
+  private reread() {
+    if (this.stopping) return;
+    const now = Date.now();
+    for (const job of this.jobs) {
+      job.updated = 0;
+      if (now - job.used > 60000) continue;
+      job.queued = true;
+      job.preview = Object.assign(new Preview(), job.preview, { pending: true });
+    }
+    void this.pump();
   }
   launcher(p: Provider, account = "") {
     const key = p + "\0" + account;
@@ -394,6 +437,7 @@ export class Worker {
   private async option(p: Provider, account: string, cwd: string, group: Group): Promise<Option | null> {
     const launcher = await this.launcher(p, account);
     if (!launcher) return null;
+    this.watch(launcher);
     await this.read(group);
     if (this.stopping) return null;
     const out = this.shown(p, account, new Option());

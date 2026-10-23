@@ -647,36 +647,36 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
   async test_headless_handshake_retained_approvals_and_event_rotation() {
     for (const provider of ["codex", "claude"]) {
       const ident = (
-        await this.rpc({ op: "headless.start", protocol: 2, prompt: "test/init", provider, cwd: this.temp.name })
+        await this.rpc({ op: "headless.start", protocol: 3, prompt: "test/init", provider, cwd: this.temp.name })
       ).session;
       await this.until(async () =>
-        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+        (await this.rpc({ op: "headless.list", protocol: 3 })).sessions.some(
           (s: any) => s.session === ident && s.ready,
         ),
       );
       await this.headless_command(ident, "test/approval", provider);
       await this.until(async () =>
-        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+        (await this.rpc({ op: "headless.list", protocol: 3 })).sessions.some(
           (s: any) => s.session === ident && s.pending_requests === 1,
         ),
       );
       await this.headless_command(ident, "test/flood", provider);
       await this.until(async () =>
-        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+        (await this.rpc({ op: "headless.list", protocol: 3 })).sessions.some(
           (s: any) => s.session === ident && s.next_seq > 150,
         ),
       );
-      const events = await this.rpc({ op: "headless.events", protocol: 2, provider, session: ident });
+      const events = await this.rpc({ op: "headless.events", protocol: 3, provider, session: ident });
       this.assertLessEqual(events.events.length, 128);
       this.assertEqual(events.pending_requests.length, 1);
       this.assertGreater(events.first_seq, 1);
       await this.headless_answer(ident, provider, false);
       await this.until(async () =>
-        (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some(
+        (await this.rpc({ op: "headless.list", protocol: 3 })).sessions.some(
           (s: any) => s.session === ident && s.state === "idle" && s.pending_requests === 0,
         ),
       );
-      await this.rpc({ op: "headless.stop", protocol: 2, provider, session: ident });
+      await this.rpc({ op: "headless.stop", protocol: 3, provider, session: ident });
     }
   }
   async test_headless_acknowledgement_clears_attention_without_dropping_requests() {
@@ -686,7 +686,7 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     const ident = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -694,10 +694,10 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     ).session;
     await this.headless_command(ident, "test/approval");
     await this.until(
-      async () => (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].attention === "needs_input",
+      async () => (await this.rpc({ op: "headless.list", protocol: 3 })).sessions[0].attention === "needs_input",
     );
-    await this.rpc({ op: "headless.events", protocol: 2, provider: "codex", session: ident });
-    const session = (await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0];
+    await this.rpc({ op: "headless.events", protocol: 3, provider: "codex", session: ident });
+    const session = (await this.rpc({ op: "headless.list", protocol: 3 })).sessions[0];
     this.assertEqual(session.attention, "none");
     this.assertEqual(session.pending_requests, 1);
   }
@@ -711,9 +711,9 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     this.env.PATH = binDir + ":" + (this.env.PATH ?? "");
     const ident = JSON.parse(await this.run_cli("headless", "start", "codex", "test/init", "--json")).session;
     await this.until(async () =>
-      (await this.rpc({ op: "headless.list", protocol: 2 })).sessions.some((s: any) => s.session === ident && s.ready),
+      (await this.rpc({ op: "headless.list", protocol: 3 })).sessions.some((s: any) => s.session === ident && s.ready),
     );
-    this.assertGreater((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].pid, 0);
+    this.assertGreater((await this.rpc({ op: "headless.list", protocol: 3 })).sessions[0].pid, 0);
   }
   async checkRealClientExit(keys: string | ((pty: Pty) => Promise<void>), remainingPanes: number) {
     const pty = new Pty(80, 24);
@@ -838,14 +838,14 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     const ident = (
       await this.rpc({
         op: "headless.start",
-        protocol: 2,
+        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
       })
     ).session;
     await this.checkRealClientStaysAfterLastPane("\x02X");
-    this.assertEqual((await this.rpc({ op: "headless.list", protocol: 2 })).sessions[0].session, ident);
+    this.assertEqual((await this.rpc({ op: "headless.list", protocol: 3 })).sessions[0].session, ident);
   }
 }
 

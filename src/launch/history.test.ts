@@ -84,7 +84,9 @@ test("an account that shares the default's history lists each session once, as t
     CORGI_ENV_BASE: join(home, "state"),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     CODEX_HOME: join(home, ".codex"),
+    XDG_STATE_HOME: join(home, ".local/state"),
     CORGI_CODEX_BIN: "/nonexistent/codex",
+    CORGI_OPENCODE2_BIN: "/nonexistent/opencode",
   });
   accounts.reset();
   const project = join(home, ".claude", "projects", "app");
@@ -106,7 +108,15 @@ test("an account that shares the default's history lists each session once, as t
     ]);
   } finally {
     await w.stop();
-    for (const key of ["HOME", "CORGI_ENV_BASE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CORGI_CODEX_BIN"])
+    for (const key of [
+      "HOME",
+      "CORGI_ENV_BASE",
+      "CLAUDE_CONFIG_DIR",
+      "CODEX_HOME",
+      "XDG_STATE_HOME",
+      "CORGI_CODEX_BIN",
+      "CORGI_OPENCODE2_BIN",
+    ])
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     accounts.reset();
@@ -121,7 +131,9 @@ test("an account added later lists its sessions once it has any, and takes them 
     CORGI_ENV_BASE: join(home, "state"),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     CODEX_HOME: join(home, ".codex"),
+    XDG_STATE_HOME: join(home, ".local/state"),
     CORGI_CODEX_BIN: "/nonexistent/codex",
+    CORGI_OPENCODE2_BIN: "/nonexistent/opencode",
   });
   accounts.reset();
   mkdirSync(join(home, ".claude", "projects"), { recursive: true });
@@ -147,7 +159,15 @@ test("an account added later lists its sessions once it has any, and takes them 
     expect(w.snapshot().entries).toEqual([]);
   } finally {
     await w.stop();
-    for (const key of ["HOME", "CORGI_ENV_BASE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CORGI_CODEX_BIN"])
+    for (const key of [
+      "HOME",
+      "CORGI_ENV_BASE",
+      "CLAUDE_CONFIG_DIR",
+      "CODEX_HOME",
+      "XDG_STATE_HOME",
+      "CORGI_CODEX_BIN",
+      "CORGI_OPENCODE2_BIN",
+    ])
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     accounts.reset();

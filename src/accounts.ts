@@ -178,6 +178,7 @@ export function known(): Known[] {
   if (found && found.stamp === value && now - found.at < 5000) return found.accounts;
   const accounts: Known[] = [];
   for (const provider of Provider.all) {
+    if (!adapter(provider).accounts.signin) continue;
     const taken = new Set<string>(defaultName(provider) ? [defaultName(provider)] : []),
       add = (dir: string, name: string, managed: boolean) => {
         const account = normalize(provider, dir);
@@ -402,6 +403,7 @@ function list(account: Known, created?: string) {
 }
 /** Lists `dir`, a folder the user has, as an account called `name`. */
 export function add(provider: Provider, name: string, dir: string): Known {
+  if (!adapter(provider).accounts.signin) throw Error("AccountManagementUnsupported");
   unused(provider, name);
   const folder = canonical(dir);
   if (!existsSync(folder)) throw Error("FileNotFound");
@@ -459,6 +461,7 @@ function folderIdentity(dir: string): string | null {
  * which the caller then signs in to. Its number is the first free one; a
  * cancelled sign-in's leftover link, whose folder is gone, frees its own. */
 export function stage(provider: Provider, name: string | null = null): Staged {
+  if (!adapter(provider).accounts.signin) throw Error("AccountManagementUnsupported");
   if (name !== null) unused(provider, name);
   const parent = made(provider);
   mkdirSync(parent, { recursive: true, mode: 0o700 });

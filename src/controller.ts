@@ -1093,8 +1093,8 @@ export class Controller {
   private noticeHeadlessSession(session: Headless): void {
     this.notice(
       session.session
-        ? ` ${session.provider} session ${session.session}: ${session.state}. Inspect: corgi headless events ${session.provider} ${session.session}`
-        : ` ${session.provider}: waiting for a session ID`,
+        ? ` ${adapter(session.provider).name} session ${session.session}: ${session.state}. Inspect: corgi headless events ${session.provider} ${session.session}`
+        : ` ${adapter(session.provider).name}: waiting for a session ID`,
     );
     this.headless_notice = session.id;
   }
@@ -3195,9 +3195,6 @@ export class Controller {
         return this.toggleGhostty();
       case "smart_links":
         return this.configureSmartLinks(apply.on);
-      case "inference_models":
-        void call(this.connection, "inference.configure", {}).catch(() => {});
-        return;
       case "summaries":
         return this.configureSummaries(apply.choice, apply.model, apply.account);
       case "inference_use":

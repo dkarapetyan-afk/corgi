@@ -5,6 +5,7 @@ import type { Client } from "./peer";
 import type { Request } from "./protocol";
 import { Provider, adapter } from "./providers";
 import { Selection } from "./inference/models";
+import * as accounts from "./accounts";
 /** Sets who answers, what they are asked for, or both; each part it names is saved. */
 export async function configure(server: Server, client: Client, query: Request<"inference.configure">) {
   const worker = server.summaries;
@@ -16,18 +17,34 @@ export async function configure(server: Server, client: Client, query: Request<"
     query.choice === null && query.model === null && query.account === null && Object.keys(uses).length === 0;
   let selected: Selection | undefined;
   if (refresh) void worker.catalog.refresh();
-  if (query.model !== null || query.account !== null || (provider && adapter(provider).inference.models)) {
+  if (
+    query.model !== null ||
+    query.account !== null ||
+    (provider && adapter(provider).inference.models && adapter(provider).inference.catalog !== "native")
+  ) {
     if (!provider) throw Error("InvalidModel");
-    const option = worker.catalog.available.find(
-      m =>
-        m.provider === provider && (!query.model || (m.model === query.model && m.account === (query.account ?? ""))),
-    );
-    if (!option) throw Error("ModelUnavailable");
-    selected = Object.assign(new Selection(), {
-      provider,
-      model: query.model ? option.model : "",
-      account: query.model ? option.account : "",
-    });
+    if (!adapter(provider).inference.models || adapter(provider).inference.catalog === "native") {
+      selected = Selection.parse({
+        provider,
+        model: query.model || setup.model(provider),
+        account: query.account ?? "",
+      });
+      if (!selected.provider || (selected.account && !accounts.find(provider, selected.account)))
+        throw Error("ModelUnavailable");
+    } else {
+      const option = worker.catalog.available.find(
+        m =>
+          m.provider === provider && (!query.model || (m.model === query.model && m.account === (query.account ?? ""))),
+      );
+      if (!option) throw Error("ModelUnavailable");
+      selected = Object.assign(new Selection(), {
+        provider,
+        model: query.model ? option.model : "",
+        account: query.model ? option.account : "",
+      });
+    }
+  } else if (provider && worker.selected.provider !== null) {
+    selected = new Selection();
   }
   if (!refresh) worker.configure(query.choice, uses, selected);
   let saved = false;

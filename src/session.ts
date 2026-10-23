@@ -528,6 +528,7 @@ function build(r: Runtime, viewer: boolean) {
           background_tasks: a.background_tasks?.view?.() ?? {},
           model: text(a.model?.id),
           model_name: text(a.model?.name),
+          model_price: a.model?.price ?? null,
           usage,
           context: a.context?.view?.(r.conversations.compaction_points) ?? {},
           timeline: {

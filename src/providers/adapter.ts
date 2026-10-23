@@ -21,6 +21,8 @@ export interface Launcher {
   /** The model it would start with in `cwd`, and the setting that chose it.
    * Corgi asks after `account`, whose sign-in may name the default. */
   model(cwd: string, quit: Quit): Promise<{ model: string; model_name?: string; source: string }>;
+  /** Files whose changes change what it reads; Corgi reads it again when one does. */
+  watches?(): string[];
   close(): void;
 }
 /** What core asks of a headless client. A prompt or interrupt without a
@@ -266,7 +268,8 @@ export type Accounts = {
   /** What a directory Corgi makes links to in the default one: folders,
    * and files the default has. */
   shared: { dirs: string[]; files: string[] };
-  signin: Signin;
+  /** Null when the provider only supports its existing default account. */
+  signin: Signin | null;
 };
 /** What a provider is called. */
 export type Info = {
@@ -296,9 +299,15 @@ export type Inference = { instructions: string; model: string | null; schema: st
 export type InferenceModel = {
   id: string;
   name: string;
+  /** The signed-in user for this model's provider, when available. */
+  user?: string;
+  /** A known subscription tier, not inferred from model prices. */
+  plan?: string;
   subscription: boolean;
   input_cost: number | null;
   output_cost: number | null;
+  /** A successful or failed tool-less probe; null/absent means untested. */
+  ready?: boolean | null;
 };
 export type Fork = {
   args: string[];
@@ -358,6 +367,13 @@ export interface Adapter extends Info {
    * the pane then shows the conversation its title names. */
   titleSession?(title: string): Text | null;
   launch: {
+    /** Prepares a terminal session before exec, reporting its identity when
+     * the provider's UI cannot report it itself, and variables the session
+     * needs that the pane's shell does not set. */
+    prepare?(
+      args: string[],
+      executable: string,
+    ): Promise<{ args: string[]; event?: unknown; env?: [string, string][] }>;
     /** Arguments that start an agent. */
     start(s: Settings): string[];
     /** Arguments, after the ones it started with, that resume `session`. */
@@ -383,7 +399,11 @@ export interface Adapter extends Info {
   };
   inference: {
     model: string;
-    /** Available models for private inference, without starting a model turn. */
+    /** Native catalogs share one model provider across account folders. */
+    catalog?: "native";
+    /** The model provider's display name for a native inference choice. */
+    source?: string;
+    /** Models for private inference; a provider may probe tool-less access. */
     models?(account: string, quit: Quit): Promise<InferenceModel[]>;
     /** A private, tool-less client for `r`'s conversations. Its answer to a
      * prompt is the last message before the turn ends. */

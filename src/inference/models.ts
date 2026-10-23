@@ -27,9 +27,11 @@ export class Option {
   name = "";
   account = "";
   account_name = "";
+  plan = "";
   subscription = false;
   input_cost: number | null = null;
   output_cost: number | null = null;
+  ready: boolean | null = null;
 }
 export function options(value: unknown): Option[] {
   if (!Array.isArray(value)) return [];
@@ -42,9 +44,11 @@ export function options(value: unknown): Option[] {
         provider: selection.provider,
         name: v.name.slice(0, 160),
         account_name: typeof v.account_name === "string" ? v.account_name : "",
+        plan: typeof v.plan === "string" ? v.plan.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 160) : "",
         subscription: v.subscription === true,
         input_cost: price(v.input_cost),
         output_cost: price(v.output_cost),
+        ready: typeof v.ready === "boolean" ? v.ready : null,
       }),
     ];
   });
@@ -54,10 +58,16 @@ export function cost(model: Option) {
   return model.input_cost === null || model.output_cost === null ? Infinity : 4 * model.input_cost + model.output_cost;
 }
 export function compare(a: Option, b: Option) {
+  const readiness = (model: Option) => (model.ready === true ? 0 : model.ready === null ? 1 : 2);
   return (
+    readiness(a) - readiness(b) ||
     Number(b.subscription) - Number(a.subscription) ||
     (cost(a) === cost(b) ? 0 : cost(a) < cost(b) ? -1 : 1) ||
     a.model.localeCompare(b.model) ||
     a.account.localeCompare(b.account)
   );
+}
+/** Once access has been probed, Auto never guesses from untested credentials. */
+export function automatic(models: readonly Option[]) {
+  return models.some(m => m.ready !== null) ? models.find(m => m.ready === true) : models[0];
 }

@@ -218,7 +218,9 @@ export class Signin {
     return this.provider ? adapter(this.provider).label : "";
   }
   get signin() {
-    return adapter(this.provider!).accounts.signin;
+    const signin = adapter(this.provider!).accounts.signin;
+    if (!signin) throw Error("AccountManagementUnsupported");
+    return signin;
   }
   get check() {
     const check = this.signin.check;
@@ -574,8 +576,9 @@ export class Signin {
     this.changed();
   }
   offer() {
-    const offered = Provider.all.filter(p => discovery.installed(p));
-    this.stage = { kind: "agent", offered: offered.length ? offered : [...Provider.all], choice: 0 };
+    const supported = Provider.all.filter(p => adapter(p).accounts.signin !== null),
+      offered = supported.filter(p => discovery.installed(p));
+    this.stage = { kind: "agent", offered: offered.length ? offered : supported, choice: 0 };
     this.changed();
   }
   async pick(provider: Provider) {
@@ -690,6 +693,7 @@ export class Signin {
 }
 const keycap = (k: string) => `${palette.keycap} ${k} ${reset}`;
 const problems: Record<string, string> = {
+  AccountManagementUnsupported: "Manage this agent's login in the agent itself.",
   InvalidAccountName: "A name is letters, digits, dots, dashes and underscores, up to 32.",
   AccountExists: "There's an account by that name already.",
   AccountNotFound: "Corgi doesn't list this account any more.",
@@ -703,7 +707,8 @@ export const problem = (error: unknown) => problems[errors.name(error) ?? ""] ??
  * knows the agent; it asks for one it isn't told. Its name is `name`, or
  * comes from the login. */
 export function adding(provider: Provider | null, name: string | null, host: Host): Signin {
-  const installed = Provider.all.filter(p => discovery.installed(p)),
+  if (provider && !adapter(provider).accounts.signin) throw Error("AccountManagementUnsupported");
+  const installed = Provider.all.filter(p => adapter(p).accounts.signin !== null && discovery.installed(p)),
     chosen = provider ?? (installed.length === 1 ? installed[0] : null),
     s = new Signin(true, chosen === null, host);
   s.provider = chosen;
@@ -716,6 +721,7 @@ export function adding(provider: Provider | null, name: string | null, host: Hos
 export async function signOut(account: accounts.Known): Promise<void> {
   const a = adapter(account.provider),
     env: Record<string, string | undefined> = { ...process.env, [a.accounts.env]: account.dir };
+  if (!a.accounts.signin) throw Error("AccountManagementUnsupported");
   a.unnest?.(env);
   let agent = await discovery.resolve(account.provider);
   if (!agent.includes("/")) agent = Bun.which(agent) ?? agent;
@@ -738,6 +744,7 @@ async function run(agent: string, args: string[], env: Record<string, string>, m
 }
 /** A sign-in to an account there is. */
 export function signingIn(account: accounts.Known, host: Host): Signin {
+  if (!adapter(account.provider).accounts.signin) throw Error("AccountManagementUnsupported");
   const s = new Signin(false, false, host);
   s.provider = account.provider;
   s.name = account.name;

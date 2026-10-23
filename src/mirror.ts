@@ -14,7 +14,7 @@ import type { Entry as CommandEntry } from "./launch/command";
 import { status as setupStatus, type Status as SetupStatus } from "./corgi_setup";
 import { status as shellStatus } from "./shell_picker";
 import type { ShellStatus } from "./launch/command";
-import { Provider, byProvider } from "./providers";
+import { Provider, byProvider, adapter } from "./providers";
 import { type Conversation, conversation, usageView } from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as errors from "./errors";
@@ -268,7 +268,7 @@ export function agent(value: any = {}): Agent {
   };
 }
 export function providerName(a: Agent): string {
-  return a.provider ?? "agent";
+  return a.provider === null ? "agent" : adapter(a.provider).name;
 }
 export interface Pane {
   binding: bigint;

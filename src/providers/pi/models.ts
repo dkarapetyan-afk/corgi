@@ -3,6 +3,7 @@ import { Stdio } from "../stdio";
 import { field, str } from "../common";
 import { cached } from "../command_line";
 import { directory } from "./integration";
+import { profile } from "./accounts";
 import * as discovery from "../../discovery";
 import { run, type Quit } from "../../subprocess";
 
@@ -14,7 +15,8 @@ function price(value: unknown): number | null {
 export function parse(value: unknown, auth: unknown, ready?: ReadonlySet<string>): InferenceModel[] {
   const models = field(value, "models");
   if (!Array.isArray(models)) throw Error("InvalidModels");
-  const seen = new Set<string>();
+  const seen = new Set<string>(),
+    identities = new Map<string, { user: string; plan: string; subscription: boolean }>();
   return models.flatMap(v => {
     const provider = str(v, "provider"),
       id = str(v, "id"),
@@ -33,7 +35,20 @@ export function parse(value: unknown, auth: unknown, ready?: ReadonlySet<string>
     const key = provider + "/" + id;
     if (Buffer.byteLength(key) > 512 || seen.has(key)) return [];
     seen.add(key);
-    const input_cost = price(field(cost, "input")),
+    let login = identities.get(provider);
+    if (!login) {
+      const credential = field(auth, provider),
+        who = profile(credential),
+        subscription = subscriptions.has(provider) && str(credential, "type") === "oauth";
+      login = {
+        user: who.email,
+        subscription,
+        plan: subscription && (provider === "openai" || provider === "openai-codex") ? who.plan : "",
+      };
+      identities.set(provider, login);
+    }
+    const { user, subscription, plan } = login,
+      input_cost = price(field(cost, "input")),
       output_cost = price(field(cost, "output"));
     // Unpriced custom models also report zeros; don't advertise those as free.
     const priced =
@@ -41,11 +56,13 @@ export function parse(value: unknown, auth: unknown, ready?: ReadonlySet<string>
     return [
       {
         id: key,
+        ...(user ? { user } : {}),
+        ...(plan ? { plan } : {}),
         name:
           str(v, "name")
             .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
             .slice(0, 160) || id,
-        subscription: subscriptions.has(provider) && str(field(auth, provider), "type") === "oauth",
+        subscription,
         input_cost: priced ? input_cost : null,
         output_cost: priced ? output_cost : null,
       },

@@ -30,6 +30,7 @@ import * as sidebar from "./sidebar";
 import { Terminal } from "./pane/terminal";
 import { microTimestamp } from "./clock";
 import type { Agent } from "./mirror";
+import { Model as ProviderModel } from "./providers/model";
 
 const base = new palette.Style({ fg: "text", bg: "bg" }).sgr();
 const usage = (
@@ -194,6 +195,25 @@ test("both agent rows open one safe card before a session is bound and exiting r
   expect(text).not.toContain("No subagents");
   entries[0].exit = { frame_ms: 1, progress: 0.5 };
   expect(sidebar.agentAt(view, entries, 5, top)).toBeNull();
+});
+
+test("agent details show provider and model names with the selected variant", () => {
+  const model = ProviderModel.resolve("openai/gpt-6.1-sol#high");
+  const root = convo({
+    id: 1,
+    agent: agent({ provider: "opencode2", name: "Align UI elements" }),
+    model: model.id.text(),
+    model_name: model.name.text(),
+  });
+  const e = entry({ conversation: 1, name: root.agent.name, provider: "opencode2", state: "working" });
+  const frame = render(w => draw(w, [root], e, 100, 30, 5, 10));
+  expect(frame).toContain("OpenCode · GPT-6.1 Sol (high)");
+  expect(frame).not.toContain("opencode2");
+  expect(frame).not.toContain("openai/gpt-6.1-sol#high");
+  e.name = root.agent.name = "";
+  const unnamed = render(w => draw(w, [root], e, 100, 30, 5, 10));
+  expect(count(unnamed, "OpenCode")).toBe(1);
+  expect(unnamed).toContain("GPT-6.1 Sol (high)");
 });
 
 test("total shares one set of timeline columns with compact child rows", () => {
@@ -449,7 +469,7 @@ function testAccounts(now: number): Accounts {
     usage_fetched_at: now,
     limits: { windows: [{ minutes: 10080, used: 84, reset_at: now + 5 * 86400 + 14 * 3600 }, null] },
   });
-  return new Accounts({ system: "codex", now, options: { codex, claude, pi: codex } });
+  return new Accounts({ system: "codex", now, options: { codex, claude, pi: codex, opencode2: option({}) } });
 }
 
 test("wide terminals put each account's limits beside its agents", () => {
@@ -700,6 +720,37 @@ test("a finished agent the user has not seen shows a dot", () => {
   expect(finished.tone).toBe("working");
   finished_agent.state = "working";
   expect(status(finished_agent, false).label).toBe("Working");
+});
+
+test("overview uses live catalog prices for unknown models and qualified fallback rates", () => {
+  const all = [
+    convo({
+      id: 1,
+      attachments: 1,
+      agent: agent({ provider: "opencode2", name: "Catalog model" }),
+      model: "custom/future#high",
+      model_price: { label: "future", input: 10000n, output: 50000n },
+      usage: usage({ input: 5000, output: 1000 }),
+    }),
+    convo({
+      id: 2,
+      attachments: 1,
+      agent: agent({ provider: "opencode2", name: "Fallback model" }),
+      model: "openai/gpt-6.1-sol#high",
+      usage: usage({ input: 5000, output: 1000 }),
+    }),
+  ];
+  const frame = unstyled(
+    render(w => drawOverview(w, all, new UsageView(), false, "", "", {}, new Accounts(), 100, 30)),
+  );
+  expect(frame).toContain("≈future");
+  expect(frame).toContain("6k");
+  expect(frame).toContain("1.2k");
+  expect(frame).not.toContain("?");
+  expect(frame.indexOf("Catalog model")).toBeLessThan(frame.indexOf("Fallback model"));
+  expect(conversation({ model_price: { label: "future", input: 10000, output: 50000 } }).model_price).toEqual(
+    all[0].model_price,
+  );
 });
 
 test("overview ranks by tokens of the priciest listed model", () => {
@@ -964,7 +1015,7 @@ test("the subtitle pairs provider and model with the context meter, and activity
 
   // No timeline: the activity keeps a whole line under the subtitle.
   let lines = screenLines(all, e, 100);
-  let subtitle = lineWith(lines, "codex · GPT-6 Astra")!;
+  let subtitle = lineWith(lines, "Codex · GPT-6 Astra")!;
   expect(lines[subtitle]).toContain("context ━━━━━");
   expect(lines[subtitle]).toContain("33%");
   expect(lines[subtitle + 1]).toContain(activity_text);
@@ -973,7 +1024,7 @@ test("the subtitle pairs provider and model with the context meter, and activity
   // With a timeline, the activity is its "now" row and the card keeps its height.
   all[0].timeline = { points: [{ at: 1000, activity: activity_text, usage: usage() }], pending: usage() };
   lines = screenLines(all, e, 100);
-  subtitle = lineWith(lines, "codex · GPT-6 Astra")!;
+  subtitle = lineWith(lines, "Codex · GPT-6 Astra")!;
   expect(lines[subtitle + 1]).toContain("Tokens");
 
   // The narrowest card keeps the figure and drops the bar.
@@ -1016,17 +1067,17 @@ test("an agent in another account names it beside its model, its email fainter",
     panes: [{ id: 1, agent: agent({ conversation: 1 }), account: side }],
   });
   const lines = screenLines(all, e, 100, accounts);
-  const subtitle = lineWith(lines, "claude · Opus 5.5 · side · tal@side.dev")!;
+  const subtitle = lineWith(lines, "Claude · Opus 5.5 · side · tal@side.dev")!;
   expect(lines[subtitle]).toContain("context ━━━━━");
   expect(render(w => draw(w, all, e, 100, 30, 0, 2, accounts))).toContain(Tone.ansi("faint") + " · tal@side.dev");
   // A narrow card keeps the account's name and drops the email.
   const narrow = screenLines(all, e, 64, accounts);
-  expect(lineWith(narrow, "claude · Opus 5.5 · side")).not.toBeNull();
+  expect(lineWith(narrow, "Claude · Opus 5.5 · side")).not.toBeNull();
   expect(lineWith(narrow, "tal@side.dev")).toBeNull();
   // The default account changes nothing else.
   accounts.panes = [{ id: 1, agent: agent({ conversation: 1 }), account: "" }];
   const default_lines = screenLines(all, e, 100, accounts);
-  expect(default_lines[subtitle]).toContain("claude · Opus 5.5");
+  expect(default_lines[subtitle]).toContain("Claude · Opus 5.5");
   expect(default_lines[subtitle]).not.toContain("side");
   expect(default_lines.filter((_, i) => i !== subtitle)).toEqual(lines.filter((_, i) => i !== subtitle));
 });

@@ -192,7 +192,7 @@ export class Menu {
   /** The account a row signs in to instead of starting its agent: one signed out. */
   signsIn(row: Row): AccountOption | null {
     const a = this.accountOf(row);
-    return a !== null && a.option.signed_in === false ? a : null;
+    return a !== null && a.option.signed_in === false && adapter(a.provider).accounts.signin !== null ? a : null;
   }
   /** A provider's or an account's row's name, such as `Claude Code · work`,
    * or for a default account that has no name, its provider's. Short of
@@ -636,7 +636,7 @@ export class Menu {
       commands: this.commands,
       workspace: this.workspace_name,
       here: index => !this.workspace_hidden.includes(Row.ofCommand(index)),
-      add: providers.filter(p => this.preview.installed[p]),
+      add: providers.filter(p => this.preview.installed[p] && adapter(p).accounts.signin !== null),
       account: info => this.account(info),
       suggest: a => accounts.suggest(a.provider, accounts.identity(a.provider, a.account), a.account),
       options: a => accounts.launchOptions(a.provider, a.account),

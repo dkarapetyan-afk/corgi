@@ -211,6 +211,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       codex: true,
       claude: false,
       pi: false,
+      opencode2: false,
     });
     await this.newCommand(view);
     const source = "FOO=123 claude code --whatever 'two words' --prompt '" + "x".repeat(100) + "'\n";
@@ -240,6 +241,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       codex: true,
       claude: false,
       pi: false,
+      opencode2: false,
     });
     const entry = (await this.session()).agent_commands[0];
     this.assertEqual(entry.command, changed);
@@ -376,7 +378,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 2,
+          protocol: 3,
           workspace: ws,
           cwd: this.launchDir,
         })
@@ -399,7 +401,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     writeFileSync(auth, "{}");
     writeFileSync(control, JSON.stringify({ account: null }));
     const preview = async () =>
-      (await this.rpc({ op: "agent.preview", protocol: 2, workspace: this.ws, cwd: this.launchDir })).preview;
+      (await this.rpc({ op: "agent.preview", protocol: 3, workspace: this.ws, cwd: this.launchDir })).preview;
     const first = await Viewer.create(this, 160, 30);
     await this.until(async () => !(await preview()).pending, 12);
     this.assertFalse((await preview()).options.codex.signed_in);
@@ -630,6 +632,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       codex: true,
       claude: false,
       pi: false,
+      opencode2: false,
     });
     this.assertEqual((await this.session()).panes.length, 1);
     this.assertIn("New agent", (await view.poll()).data);
@@ -639,12 +642,14 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       codex: true,
       claude: true,
       pi: false,
+      opencode2: false,
     });
     await view.input("y");
     this.assertEqual((await this.session()).agent_yolo, {
       codex: true,
       claude: false,
       pi: false,
+      opencode2: false,
     });
     await view.input("k");
     await view.input("a");
@@ -655,6 +660,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       codex: true,
       claude: false,
       pi: false,
+      opencode2: false,
     });
     await this.command("agent.yolo", { provider: "claude", enabled: true });
     await this.command("agent.create", {
@@ -689,7 +695,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     try {
       client.send({
         op: "agent.subscribe",
-        protocol: 2,
+        protocol: 3,
         workspace: this.ws,
         cwd: this.launchDir,
       });
@@ -716,7 +722,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       mkdirSync(other);
       client.send({
         op: "agent.subscribe",
-        protocol: 2,
+        protocol: 3,
         workspace: this.ws,
         cwd: other,
       });
@@ -745,7 +751,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     writeFileSync(join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json"), JSON.stringify({ accounts: saved }));
     const client = await JsonSocket.connect(this.path);
     try {
-      client.send({ op: "agent.subscribe", protocol: 2, workspace: this.ws, cwd: this.launchDir });
+      client.send({ op: "agent.subscribe", protocol: 3, workspace: this.ws, cwd: this.launchDir });
       let message = await client.read(12000);
       this.assertEqual(
         message.preview.accounts.map((a: any) => a.name),
@@ -911,7 +917,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await this.until(async () => (await this.session()).panes.length === before + 1);
     this.assertEqual((await this.session()).last_agent, "claude");
     await this.command("agent.visibility", {
-      hidden: { codex: true, claude: false },
+      hidden: { codex: true, claude: false, opencode2: false },
     });
     await this.command("agent.command", {
       index: 0,
@@ -1066,7 +1072,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const directory = join(this.temp.name, name);
     mkdirSync(directory, { recursive: true });
     const preview = async () =>
-      (await this.rpc({ op: "agent.preview", protocol: 2, workspace: this.ws, cwd: directory })).preview;
+      (await this.rpc({ op: "agent.preview", protocol: 3, workspace: this.ws, cwd: directory })).preview;
     await this.until(async () => !(await preview()).pending, 12);
     return (await preview()).options[provider];
   }
@@ -1451,7 +1457,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 2,
+          protocol: 3,
           workspace: this.ws,
           cwd: project,
         })

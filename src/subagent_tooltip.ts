@@ -140,6 +140,7 @@ export interface Conversation {
   model: string;
   /** Its display name, such as "Opus 5.5"; empty for an unknown shape. */
   model_name: string;
+  model_price: prices.Price | null;
   parent: number | null;
   workspace: number;
   observed_at: number;
@@ -195,6 +196,7 @@ export function conversation(value: any = {}): Conversation {
     },
     model: value.model ?? "",
     model_name: value.model_name ?? "",
+    model_price: prices.parse(value.model_price),
     parent: value.parent == null ? null : Number(value.parent),
     workspace: Number(value.workspace ?? 0),
     observed_at: Number(value.observed_at ?? 0),
@@ -719,6 +721,7 @@ interface Ranked {
   /** The id prices are found by, and the name the column shows. */
   model: string;
   model_name: string;
+  price: prices.Price | null;
   // Uncached input plus output in reference-model tokens; raw for unknown models.
   equivalent: bigint;
 }
@@ -752,7 +755,7 @@ function overviewAgent(
       ? ""
       : !ranked_row.value.known
         ? "—"
-        : prices.lookup(ranked_row.model) === null
+        : ranked_row.price === null
           ? "?"
           : `${ranked_row.value.partial ? "≥" : ""}${compact(ranked_row.equivalent)}`;
   // Corgi's own row keeps a muted name; only a working arrow is lit.
@@ -811,6 +814,7 @@ export function drawOverview(
       value: system_usage,
       model: system_model,
       model_name: system_model_name,
+      price: prices.lookup(system_model),
       equivalent: 0n,
     },
   ];
@@ -826,13 +830,14 @@ export function drawOverview(
         value: item.usage,
         model: item.model,
         model_name: item.model_name,
+        price: item.model_price ?? prices.lookup(item.model),
         equivalent: 0n,
       });
   }
   // Rank by spend: express every row in tokens of the priciest listed model.
   let reference: prices.Price | null = null;
   for (const row of ranked) {
-    const price = prices.lookup(row.model);
+    const price = row.price;
     if (price === null) continue;
     if (
       reference === null ||
@@ -843,7 +848,7 @@ export function drawOverview(
   }
   for (const row of ranked) {
     const uncached = satSub(row.value.tokens.input, row.value.tokens.cached_input);
-    const price = prices.lookup(row.model);
+    const price = row.price;
     row.equivalent =
       reference !== null && price !== null
         ? prices.equivalent(price, reference, uncached, row.value.tokens.output)

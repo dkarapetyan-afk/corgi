@@ -9,6 +9,7 @@ import * as keys from "./keys";
 import * as forkMotion from "./fork_motion";
 import { milliTimestamp } from "./clock";
 import { identify, shell } from "./launch/command";
+import { adapter } from "./providers";
 import { Writer, writeEllipsis, codepointWidth } from "./text";
 import { TextArea, byte_edits, key_edits, type Edit } from "./text_area";
 
@@ -611,7 +612,7 @@ export class View {
     }
     if (kind === "agent_command" && !d.failed && !d.overflow && v.height >= 7) {
       const provider = identify(d.name());
-      const text = `${basename(shell())} · ${provider ?? "resolved at launch"} · empty saves delete`;
+      const text = `${basename(shell())} · ${provider ? adapter(provider).name : "resolved at launch"} · empty saves delete`;
       w.write(`\x1b[${v.title_y + 2};${left + 1}H` + new Style({ fg: "muted", bg: "surface" }).sgr());
       writeEllipsis(w, text, room);
     }

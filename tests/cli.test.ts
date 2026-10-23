@@ -275,7 +275,7 @@ class AgentCli extends Runtime {
       (
         await this.raw_rpc({
           op: "session.command",
-          protocol: 2,
+          protocol: 3,
           command: { "pane.move": { target: one.pane } },
         })
       ).err,
@@ -379,7 +379,7 @@ class AgentCli extends Runtime {
         await this.raw_rpc({
           op: "session.command",
           command: { "workspace.create": { cwd: this.temp.name } },
-          protocol: 3,
+          protocol: 999,
         })
       ).err,
       "UnsupportedProtocol",
@@ -400,7 +400,7 @@ class AgentCli extends Runtime {
       (
         await this.raw_rpc({
           op: "session.command",
-          protocol: 2,
+          protocol: 3,
           command: { "pane.create": {} },
         })
       ).err,
@@ -427,7 +427,7 @@ class AgentCli extends Runtime {
       (
         await this.raw_rpc({
           op: "session.command",
-          protocol: 2,
+          protocol: 3,
           command: { "pane.create": {} },
         })
       ).err,

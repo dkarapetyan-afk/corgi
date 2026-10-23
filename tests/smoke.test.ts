@@ -34,7 +34,7 @@ class Smoke extends Runtime {
     this.assertIn("pane.surface", hello.capabilities);
     this.assertNotIn("handoff", hello.capabilities);
     const ws = (await this.workspaces())[0].id;
-    for (const protocol of [0, 1, 3, 4, -1, "2"])
+    for (const protocol of [0, 1, 2, 999, -1, "3"])
       this.assertEqual(
         (
           await this.raw_rpc({
@@ -49,10 +49,10 @@ class Smoke extends Runtime {
     this.assertEqual((await this.session()).panes, []);
     const socket = await JsonSocket.connect(this.path);
     try {
-      this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol: 2 })).protocol, 2);
+      this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol: 3 })).protocol, 3);
       this.assertEqual((await socket.request({ op: "session.snapshot" })).type, "session");
       for (const runtime_protocol of [1, 999, undefined]) {
-        this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol })).protocol, 2);
+        this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol })).protocol, 3);
         this.assertEqual((await socket.request({ op: "session.snapshot" })).err, "ProtocolRequired");
       }
     } finally {
@@ -128,7 +128,7 @@ class Smoke extends Runtime {
       { "pane.input": { data: 42, target: pane } },
       { "tab.rename": { name: "missing target" } },
     ])
-      this.assertIn("err", await this.raw_rpc({ op: "session.command", protocol: 2, command }));
+      this.assertIn("err", await this.raw_rpc({ op: "session.command", protocol: 3, command }));
     const after = await this.session();
     this.assertEqual(after.workspaces, before.workspaces);
     this.assertEqual(
@@ -156,7 +156,7 @@ class Smoke extends Runtime {
     );
     const response = await this.rpc({
         op: "pane.surface",
-        protocol: 2,
+        protocol: 3,
         pane: first,
       }),
       surface = response.surface;
@@ -174,7 +174,7 @@ class Smoke extends Runtime {
     try {
       const initial = await socket.request({
         op: "session.subscribe",
-        protocol: 2,
+        protocol: 3,
       });
       this.assertEqual(initial.type, "session");
       await sleep(5.2);
@@ -421,7 +421,7 @@ class Smoke extends Runtime {
     const original = (await this.workspaces())[0].id;
     await this.rpc({
       op: "headless.start",
-      protocol: 2,
+      protocol: 3,
       prompt: "test/init",
       provider: "codex",
       cwd: this.temp.name,

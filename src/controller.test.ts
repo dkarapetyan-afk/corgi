@@ -1504,7 +1504,7 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.account === "/accounts/work"),
   });
   expect(sent.at(-1)).toEqual({
-    "agent.visibility": { hidden: { codex: false, claude: false, pi: false }, hidden_accounts: [] },
+    "agent.visibility": { hidden: { codex: false, claude: false, pi: false, opencode2: false }, hidden_accounts: [] },
   });
   expect([s.agent_launcher.hiddenOf(work), s.agent_launcher.hiddenOf("claude")]).toEqual([false, false]);
   s.agent_launcher.manager.at = agentManager.agentKey("claude", "");
@@ -1512,7 +1512,9 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     kind: "remove",
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude" && !a.account),
   });
-  expect(sent.at(-1)).toEqual({ "agent.visibility": { hidden: { codex: false, claude: true, pi: false } } });
+  expect(sent.at(-1)).toEqual({
+    "agent.visibility": { hidden: { codex: false, claude: true, pi: false, opencode2: false } },
+  });
 });
 
 test("the launcher lights the checkout it starts agents in, as the overview lights a worktree", () => {
@@ -1787,7 +1789,7 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
   }
 });
 
-test("setup requests models only when editing Clever Corgi and does not wait for discovery", async () => {
+test("setup requests models as soon as Clever Corgi is visible without waiting for discovery", async () => {
   const requests: protocol.Op[] = [],
     s = new Controller({
       socket: "",
@@ -1803,11 +1805,12 @@ test("setup requests models only when editing Clever Corgi and does not wait for
   s.height = 30;
   try {
     s.openSetup();
-    expect(requests).not.toContain("inference.configure");
     expect(s.frame()).toContain("Corgi setup");
+    await s.corgi_setup.poll(s.rpc(), s.width, s.height);
+    expect(requests.filter(op => op === "inference.configure")).toHaveLength(1);
     await s.key(13);
-    expect(requests).not.toContain("inference.configure");
     await s.key(13);
+    await s.corgi_setup.poll(s.rpc(), s.width, s.height);
     expect(requests.filter(op => op === "inference.configure")).toHaveLength(1);
     expect(s.frame()).toContain("Search models");
     await s.input(bytes("\x1b[D"));

@@ -12,18 +12,18 @@ test("every op decodes a sample request", () => {
 });
 test("a client's envelope writes what the hand-written requests did", () => {
   for (const [op, payload, expected] of [
-    ["hello", {}, { op: "hello", protocol: 1, runtime_protocol: 2 }],
+    ["hello", {}, { op: "hello", protocol: 1, runtime_protocol: 3 }],
     ["shutdown", {}, { op: "shutdown" }],
     ["server.reload", { executable: "/bin/corgi" }, { op: "server.reload", protocol: 1, executable: "/bin/corgi" }],
     [
       "session.command",
       { command: { "pane.close": { target: 3 } } },
-      { op: "session.command", protocol: 2, command: { "pane.close": { target: 3 } } },
+      { op: "session.command", protocol: 3, command: { "pane.close": { target: 3 } } },
     ],
     [
       "viewer.open",
       { cwd: "/tmp", onboarding: true },
-      { op: "viewer.open", protocol: 2, viewer_protocol: 3, cwd: "/tmp", theme: null, onboarding: true },
+      { op: "viewer.open", protocol: 3, viewer_protocol: 3, cwd: "/tmp", theme: null, onboarding: true },
     ],
     ["focus", { pane: 3, viewer: 2 }, { op: "focus", pane: 3, viewer: 2 }],
     ["workspace.switch", { workspace: 1, viewer: null }, { op: "workspace.switch", workspace: 1 }],
@@ -32,9 +32,9 @@ test("a client's envelope writes what the hand-written requests did", () => {
 });
 test("management and runtime versions are checked independently", () => {
   expect(() => protocol.require({ protocol: 1 }, null, "management")).not.toThrow();
-  expect(() => protocol.require({ protocol: 2 }, null)).not.toThrow();
-  expect(() => protocol.require({}, 2)).not.toThrow();
-  expect(() => protocol.require({ protocol: 1 }, 2)).toThrow("UnsupportedProtocol");
+  expect(() => protocol.require({ protocol: 3 }, null)).not.toThrow();
+  expect(() => protocol.require({}, 3)).not.toThrow();
+  expect(() => protocol.require({ protocol: 1 }, 3)).toThrow("UnsupportedProtocol");
   for (const version of [0, 2, 999, -1, "1", null])
     expect(() => protocol.require({ protocol: version }, null, "management")).toThrow("UnsupportedManagementProtocol");
   expect(() => protocol.require({}, null, "management")).toThrow("ProtocolRequired");
@@ -234,7 +234,7 @@ test("command defaults normalize nested semantics and tagged destinations", () =
     },
   });
   expect(protocol.decodeCommand({ "agent.visibility": { hidden: { codex: true } } })).toEqual({
-    "agent.visibility": { hidden: { codex: true, claude: false, pi: false }, hidden_accounts: null },
+    "agent.visibility": { hidden: { codex: true, claude: false, pi: false, opencode2: false }, hidden_accounts: null },
   });
   // An older viewer sends no account, which picks the provider's own row.
   expect(protocol.decodeCommand({ "agent.yolo": { provider: "claude", enabled: true } })).toEqual({

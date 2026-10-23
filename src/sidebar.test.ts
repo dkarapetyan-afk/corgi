@@ -243,6 +243,18 @@ test("a dragged workspace takes the selected tint and a strong bar", () => {
   expect(has(out, "\x1b[6;2H" + active_bar)).toBe(true);
 });
 
+test("unnamed agent rows show the provider name and keep explicit session names", () => {
+  const entries = [
+    entry({ target: { pane: 1 }, provider: "opencode2", state: "idle" }),
+    entry({ target: { pane: 2 }, provider: "opencode2", name: "Align UI elements", state: "idle" }),
+  ];
+  const view = View.init(100, 30, true, 0, entries.length).withEntries(entries);
+  const out = hostText(draw(view, entries, []));
+  expect(out).toContain("OpenCode");
+  expect(out).toContain("Align UI elements");
+  expect(out).not.toContain("opencode2");
+});
+
 test("agent rows take the workspace bars: active when focused outside groups, strong when dragged", () => {
   const group = entry({
     target: { group: 1 },

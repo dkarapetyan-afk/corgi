@@ -42,6 +42,89 @@ test("Pi inference defaults to the cheapest subscription and pins an explicit mo
   }
 });
 
+test("OpenCode Auto requires a working probe while explicit picks stay pinned", () => {
+  const worker = new Worker("opencode2"),
+    failed = Object.assign(new Option(), { provider: "opencode2", model: "github/cheap", ready: false }),
+    active = Object.assign(new Option(), { provider: "opencode2", model: "openai/luna", ready: true });
+  worker.catalog.refresh = async () => {};
+  try {
+    worker.catalog.available = [failed, active].sort(compare);
+    worker.applyChoice();
+    expect(worker.status().model).toBe("openai/luna");
+    Object.assign(active, { ready: null });
+    worker.applyChoice();
+    expect(worker.status().model).toBe("");
+    expect(worker.implementation.pool.config.disabled).toBe(true);
+    worker.configure("opencode2", {}, Object.assign(new Selection(), { provider: "opencode2", model: "github/cheap" }));
+    worker.applyChoice();
+    expect(worker.status().model).toBe("github/cheap");
+  } finally {
+    worker.stop();
+  }
+});
+
+test("native inference keeps its explicit model and named account through handoff", () => {
+  for (const provider of ["codex", "claude"] as const) {
+    const worker = new Worker(provider),
+      selected = Object.assign(new Selection(), { provider, model: "nvidia/kimi-k3", account: "/accounts/nvidia" });
+    worker.configure(provider, {}, selected);
+    worker.applyChoice();
+    expect(worker.implementation.pool.config.model).toBe("nvidia/kimi-k3");
+    expect(worker.implementation.pool.config.account).toBe("/accounts/nvidia");
+    worker.paused = true;
+    const restored = Worker.restore(clone(worker.capture()));
+    try {
+      restored.applyChoice();
+      expect(restored.selection(provider)).toEqual(selected);
+      expect(restored.implementation.pool.config.account).toBe("/accounts/nvidia");
+      restored.configure(provider, {}, new Selection());
+      restored.applyChoice();
+      expect(restored.implementation.pool.config.account).toBe("");
+      expect(restored.implementation.pool.config.model).not.toBe("nvidia/kimi-k3");
+    } finally {
+      worker.stop();
+      restored.stop();
+    }
+  }
+});
+
+test("native Auto uses the cheapest default-account catalog model, never another metered login", async () => {
+  for (const provider of ["codex", "claude"] as const) {
+    const worker = new Worker(provider);
+    let reads = 0;
+    worker.catalog.refresh = async () => {
+      reads++;
+    };
+    worker.catalog.available = [
+      Object.assign(new Option(), {
+        provider,
+        model: "other/cheap",
+        account: "/metered",
+        input_cost: 0,
+        output_cost: 0,
+      }),
+      Object.assign(new Option(), { provider, model: "default/cheap", input_cost: 1, output_cost: 5 }),
+      Object.assign(new Option(), { provider, model: "default/heavy", input_cost: 10, output_cost: 50 }),
+    ].sort(compare);
+    try {
+      await worker.run();
+      expect(reads).toBe(0);
+      expect(worker.status().model).toBe("default/cheap");
+      expect(worker.status().account).toBe("");
+      worker.configure(
+        provider,
+        {},
+        Object.assign(new Selection(), { provider, model: "other/cheap", account: "/metered" }),
+      );
+      worker.applyChoice();
+      expect(worker.implementation.pool.config.account).toBe("/metered");
+      expect(worker.implementation.pool.config.model).toBe("other/cheap");
+    } finally {
+      worker.stop();
+    }
+  }
+});
+
 test("applying Pi inference never enumerates the model catalogue", () => {
   const worker = new Worker("pi");
   let reads = 0;

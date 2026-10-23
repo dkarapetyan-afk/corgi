@@ -12,6 +12,7 @@ import { Worker, pane, workspace } from "./import/catalog";
 import { Writer } from "./text";
 import * as releaseLabel from "./release_label";
 import type { Connection } from "./rpc";
+import { Style } from "./palette";
 
 /** The screen's text after replaying the cursor moves in `ansi`. */
 function screen(ansi: string, cols: number, rows: number): string[] {
@@ -49,12 +50,79 @@ function hits(menu: Menu, cols = 100, rows = 30, s = status(), prefs = new Prefe
   }
   return out;
 }
+function choiceHit(
+  menu: Menu,
+  match: RegExp,
+  s: ReturnType<typeof status>,
+  prefs: Preferences,
+  cols = 100,
+  rows = 30,
+): Hit {
+  const y = draw(menu, cols, rows, 0, s, prefs).findIndex(row => match.test(row));
+  expect(y).toBeGreaterThanOrEqual(0);
+  for (let x = 0; x < cols; x++) {
+    const hit = menu.hit(cols, rows, x, y, s, prefs);
+    if (hit && "choice" in hit) return hit;
+  }
+  throw Error("No choice on matching row");
+}
 
 const no_setup_rpc: Pick<Connection, "call"> = {
   call: async () => {
     throw new Error("Unexpected setup RPC");
   },
 };
+
+test("entering a visible Clever Corgi pane starts discovery asynchronously, not on each picker open", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences(),
+    requests: string[] = [],
+    conn = {
+      async call(op: string, ..._args: unknown[]) {
+        requests.push(op);
+        return new Promise<never>(() => {});
+      },
+    };
+  await menu.poll(conn, 100, 30);
+  expect(requests).toEqual(["inference.configure"]);
+  await menu.poll(conn, 100, 30);
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  await menu.poll(conn, 100, 30);
+  menu.back();
+  menu.enter(s, prefs);
+  await menu.poll(conn, 100, 30);
+  expect(requests).toHaveLength(1);
+  menu.back();
+  menu.item = "keyboard";
+  await menu.poll(conn, 100, 30);
+  menu.item = "clever_corgi";
+  await menu.poll(conn, 100, 30);
+  expect(requests).toHaveLength(2);
+});
+
+test("narrow setup doesn't discover models until Clever Corgi's options are actually visible", async () => {
+  const menu = Menu.open(),
+    s = status(),
+    prefs = new Preferences(),
+    requests: string[] = [],
+    conn = {
+      async call(op: string, ..._args: unknown[]) {
+        requests.push(op);
+        return new Promise<never>(() => {});
+      },
+    };
+  await menu.poll(conn, 50, 30);
+  expect(requests).toHaveLength(0);
+  menu.item = "keyboard";
+  menu.openOptions(s, prefs);
+  await menu.poll(conn, 50, 30);
+  expect(requests).toHaveLength(0);
+  menu.item = "clever_corgi";
+  await menu.poll(conn, 50, 30);
+  expect(requests).toEqual(["inference.configure"]);
+});
 
 test("setup keeps its options while aiming diagonally across list rows and gaps", async () => {
   const menu = Menu.open(),
@@ -332,14 +400,14 @@ test("the top border says when the build was made and links its commit", () => {
 test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   const menu = Menu.open(),
     prefs = new Preferences(),
-    s = status({ choice: "claude" });
+    s = status({ choice: "opencode2" });
   expect(menu.enter(s, prefs)).toBeNull();
   expect(menu.focus).toBe("options");
   expect(menu.cursor).toBe(0);
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("enter change");
-  expect(menu.enter(s, prefs)).toEqual({ kind: "inference_models" });
+  expect(menu.enter(s, prefs)).toBeNull();
   let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
-  expect(text).toMatch(/│ ✓ Claude /);
+  expect(text).toMatch(/│\s+✓ Auto\s+Sign in first/);
   // Turning things off is up to each use's own switch.
   expect(text).not.toContain("No summaries");
   expect(text).toContain("enter use");
@@ -348,21 +416,19 @@ test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   // Keys wrap past either end; the wheel stops there.
   menu.enter(s, prefs);
   menu.move(true, s, prefs);
-  menu.move(true, s, prefs);
   expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "auto" });
   menu.enter(s, prefs);
   menu.move(true, s, prefs, false);
   menu.move(true, s, prefs, false);
-  expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "pi" });
+  expect(menu.enter(s, prefs)).toBeNull();
   menu.enter(s, prefs);
-  menu.move(true, s, prefs);
   menu.move(true, s, prefs);
   menu.move(true, s, prefs);
   expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
   // Clicks open it and choose.
   const row = hits(menu, 100, 30, s, prefs).find(hit => "option" in hit && hit.option === 0)!;
-  expect(menu.click(row, s, prefs)).toEqual({ kind: "inference_models" });
-  const codex = hits(menu, 100, 30, s, prefs).find(hit => "choice" in hit && hit.choice === 1)!;
+  expect(menu.click(row, s, prefs)).toBeNull();
+  const codex = choiceHit(menu, /GPT-6 Luna/, s, prefs);
   expect(menu.click(codex, s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
   // Left closes the dropdown, then returns to the list.
   menu.enter(s, prefs);
@@ -393,7 +459,7 @@ test("Pi shows fetching in the model picker and keeps cached choices usable", ()
     prefs = new Preferences(),
     s = status({ loading: true });
   expect(menu.enter(s, prefs)).toBeNull();
-  expect(menu.enter(s, prefs)).toEqual({ kind: "inference_models" });
+  expect(menu.enter(s, prefs)).toBeNull();
   let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
   expect(text).toContain("Pi");
   expect(text).toContain("Fetching models…");
@@ -401,7 +467,8 @@ test("Pi shows fetching in the model picker and keeps cached choices usable", ()
   const available = [{ provider: "pi", model: "custom/cached", name: "Cached model", account: "" }];
   const cached = status({ loading: true, available });
   text = draw(menu, 100, 30, 0, cached, prefs).join("\n");
-  expect(text).toContain("Fetching models…");
+  expect(text).toMatch(/Pi\s+1 model ◌/);
+  expect(text).not.toMatch(/Cached model.*Fetching|Pi\s+Fetching/);
   expect(text).toContain("Cached model");
   // Auto, Codex, Claude, Pi Auto, then its cached model.
   for (let i = 0; i < 4; i++) menu.move(true, cached, prefs);
@@ -436,27 +503,77 @@ test("Pi's grouped models scroll inside the frame and selection carries the exac
   });
   menu.enter(s, prefs);
   menu.enter(s, prefs);
-  let rows = draw(menu, 100, 24, 0, s, prefs),
+  let rows = draw(menu, 100, 40, 0, s, prefs),
     text = rows.join("\n");
-  expect(text).toContain("Auto (Model 0)");
+  expect(text).toMatch(/Model 0\s+\(auto choice\)/);
   expect(text).not.toMatch(/cheapest/i);
   expect(text).toContain("Model 4");
   expect(text).not.toContain("Model 5");
   expect(text).toContain("Show 75 more");
+  const model_column = rows.find(row => /Model 0\s+\(auto choice\)/.test(row))!.indexOf("Model 0");
   for (let i = 0; i < 5; i++) menu.move(true, s, prefs, false);
-  const more = hits(menu, 100, 24, s, prefs).find(hit => "choice" in hit && hit.choice === 10)!;
+  const more = choiceHit(menu, /Show 75 more/, s, prefs, 100, 24);
   expect(menu.click(more, s, prefs)).toBeNull();
   expect(menu.modelSearch()).not.toBeNull();
   for (let i = 0; i < 65; i++) menu.move(true, s, prefs, false);
   rows = draw(menu, 100, 24, 0, s, prefs);
   text = rows.join("\n");
   expect(text).toContain("Model 70");
-  expect(text).not.toContain("Model 0");
+  expect(text).toMatch(/Model 0\s+\(auto choice\)/);
+  expect(rows.find(row => row.includes("Model 70"))!.indexOf("Model 70")).toBe(model_column);
   expect(menu.enter(s, prefs)).toEqual({
     kind: "summaries",
     choice: "pi",
     model: "custom/model-70",
     account: "/pi/work",
+  });
+});
+
+test("scrolling keeps agent and provider headers sticky and mouse choices mapped to the visible model", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "pi",
+      provider: "pi",
+      model: "openai-codex/model-0",
+      account: "/personal",
+      selection: { provider: "pi", model: "openai-codex/model-0", account: "/personal" },
+      available: Array.from({ length: 40 }, (_, i) => ({
+        provider: "pi",
+        model: `${i === 0 ? "openai-codex" : "github-copilot"}/model-${i}`,
+        name: `Model ${i}`,
+        account: i === 0 ? "/personal" : "/work",
+        account_name: i === 0 ? "personal@example.com" : "work@example.com",
+        plan: i === 0 ? "Pro 500" : "Business",
+        subscription: true,
+      })),
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  for (let i = 0; i < 5; i++) menu.move(true, s, prefs, false);
+  menu.click(choiceHit(menu, /Show 35 more/, s, prefs, 100, 24), s, prefs);
+  for (let i = 0; i < 25; i++) menu.move(true, s, prefs, false);
+  const rows = draw(menu, 100, 24, 0, s, prefs),
+    search = rows.findIndex(row => row.includes("Search models")),
+    agent = rows[search + 1],
+    account = rows[search + 2];
+  expect(agent).toMatch(/Pi\s+40 models/);
+  expect(account).toContain("OpenAI Codex");
+  expect(account).toContain("Pro 500");
+  expect(account).toContain("personal@example.com");
+  expect(rows.some(row => /│   Codex\s/.test(row))).toBe(false);
+  expect(rows.join("\n")).toContain("Model 30");
+  expect(rows[search + 3]).toMatch(/Model 0\s+\(auto choice\)/);
+  expect(rows[search + 3].indexOf("(auto choice)")).toBe(account.indexOf("personal@example.com"));
+  expect(rows[search + 4]).toContain("GitHub Copilot");
+  expect(rows[search + 4]).toContain("Business");
+  expect(menu.hit(100, 24, agent.indexOf("Pi"), search + 1, s, prefs)).toBeNull();
+  expect(menu.hit(100, 24, account.indexOf("OpenAI"), search + 2, s, prefs)).toBeNull();
+  expect(menu.click(choiceHit(menu, /Model 29\b/, s, prefs, 100, 24), s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "pi",
+    model: "github-copilot/model-29",
+    account: "/work",
   });
 });
 
@@ -492,6 +609,509 @@ test("model search filters the complete list like Manage Agents, including colla
   expect(text).toContain("Show 25 more");
 });
 
+test("the auto choice is visible outside the collapsed shortlist and stays as non-selectable context during search", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "pi",
+      provider: "pi",
+      model: "basic/model-0",
+      selection: { provider: "pi", model: "basic/model-0", account: "" },
+      available: Array.from({ length: 30 }, (_, i) => ({
+        provider: "pi",
+        model: `${i === 7 ? "priority" : "basic"}/model-${i}`,
+        name: `Model ${i}`,
+        account: "",
+        account_name: "work@example.com",
+        subscription: true,
+        ready: i === 7 ? true : null,
+        plan: "Pro 500",
+      })),
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  let rows = draw(menu, 100, 40, 0, s, prefs);
+  expect(rows.join("\n")).toMatch(/Model 7\s+\(auto choice\)/);
+  expect(rows.join("\n")).not.toContain("Model 6");
+  const candidate = rows.findIndex(row => /Model 7\s+\(auto choice\)/.test(row));
+  expect(rows[candidate - 1]).toMatch(/priority\s+work@example.com\s+Pro 500/);
+  for (const byte of Buffer.from("Model 29")) menu.key(byte);
+  rows = draw(menu, 100, 24, 0, s, prefs);
+  const context = rows.findIndex(row => /Model 7\s+\(auto choice\)/.test(row));
+  expect(context).toBeGreaterThanOrEqual(0);
+  expect(menu.hit(100, 24, rows[context].indexOf("Model 7"), context, s, prefs)).toBeNull();
+  expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "pi", model: "basic/model-29", account: "" });
+});
+
+test("narrow pickers preserve the aligned auto-choice label even when a model name is clipped", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      available: [
+        {
+          provider: "pi",
+          model: "custom/long",
+          name: "A very long custom model name that cannot fit",
+          account: "",
+          subscription: true,
+        },
+      ],
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 44, 30, 0, s, prefs),
+    candidate = rows.find(row => row.includes("(auto choice)"))!;
+  expect(candidate).toBeDefined();
+  expect(candidate).toContain("…");
+  expect(candidate).toContain("│ ");
+});
+
+test("a wider plan table captures clicks over the settings list instead of selecting a setting", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({ models: { codex: "gpt-6-luna" } });
+  menu.agents = new LauncherMenu();
+  menu.agents.preview = preview({
+    options: {
+      codex: {
+        account: "very.long.account@example.com",
+        plan: "Enterprise (Automation)",
+        signed_in: true,
+        limits: { windows: [null, null] },
+      },
+    },
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 100, 30, 0, s, prefs),
+    y = rows.findIndex(row => /[├╰]  GPT-6 Luna/.test(row)),
+    x = rows[y].indexOf("GPT-6 Luna"),
+    hit = menu.hit(100, 30, x, y, s, prefs);
+  expect(x).toBeLessThan(30);
+  expect(hit).toHaveProperty("choice");
+  expect(menu.click(hit!, s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
+});
+
+test("model picker nests models under provider accounts with aligned identities", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "codex",
+      models: { codex: "gpt-6-luna", claude: "claude-haiku-5-5" },
+      available: [
+        {
+          provider: "pi",
+          model: "openai-codex/luna",
+          name: "GPT-6 Luna",
+          account: "",
+          account_name: "Personal",
+          plan: "Pro 500",
+          subscription: true,
+        },
+        {
+          provider: "pi",
+          model: "openai-codex/sol",
+          name: "GPT-6.1 Sol",
+          account: "",
+          account_name: "Personal",
+          plan: "Pro 500",
+          subscription: true,
+        },
+        {
+          provider: "opencode2",
+          model: "github-copilot/haiku",
+          name: "Claude Haiku 5.5",
+          account: "",
+          account_name: "Work",
+          plan: "Business",
+          subscription: true,
+        },
+        {
+          provider: "opencode2",
+          model: "github-copilot/flash",
+          name: "MAI-Code-1.1-Flash",
+          account: "",
+          account_name: "Work",
+          plan: "Business",
+          subscription: true,
+        },
+      ],
+    });
+  menu.agents = new LauncherMenu();
+  menu.agents.preview = preview({
+    options: {
+      codex: { account: "Personal", plan: "Pro 500", signed_in: true, limits: { windows: [null, null] } },
+      claude: { account: "Work", signed_in: true, limits: "metered" },
+    },
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 100, 40, 0, s, prefs),
+    roots = ["Codex", "Claude", "Pi", "OpenCode"].map(name =>
+      rows.findIndex(row => new RegExp(`│   ${name}\\s`).test(row)),
+    ),
+    root_column = rows[roots[0]].indexOf("Codex"),
+    account_column = rows[roots[0] + 1].indexOf("Personal");
+  for (const [i, name] of ["Codex", "Claude", "Pi", "OpenCode"].entries()) {
+    expect(rows[roots[i]].indexOf(name)).toBe(root_column);
+    expect(menu.hit(100, 40, root_column, roots[i], s, prefs)).toBeNull();
+  }
+  const billing_column = rows[roots[0] + 1].indexOf("Pro 500");
+  for (const [label, user, billing] of [
+    ["OpenAI", "Personal", "Pro 500"],
+    ["Anthropic", "Work", "Metered"],
+    ["OpenAI Codex", "Personal", "Pro 500"],
+    ["GitHub Copilot", "Work", "Business"],
+  ]) {
+    const y = rows.findIndex(row => row.slice(root_column).startsWith(label + " "));
+    expect(rows[y].indexOf(label)).toBe(root_column);
+    expect(rows[y].indexOf(user)).toBe(account_column);
+    expect(rows[y].indexOf(billing)).toBe(billing_column);
+    expect(rows[y]).not.toContain("…");
+    expect(menu.hit(100, 40, root_column, y, s, prefs)).toBeNull();
+  }
+  const models = rows.filter(row =>
+    /[├╰]  (?:GPT-6 Luna|Haiku 5.5|GPT-6.1 Sol|Claude Haiku 5.5|MAI-Code-1.1-Flash)/.test(row),
+  );
+  expect(models).toHaveLength(6);
+  for (const [i, name] of [
+    "GPT-6 Luna",
+    "Haiku 5.5",
+    "GPT-6 Luna",
+    "GPT-6.1 Sol",
+    "Claude Haiku 5.5",
+    "MAI-Code-1.1-Flash",
+  ].entries()) {
+    expect(models[i].indexOf(name)).toBe(root_column + 3);
+    expect(models[i]).not.toMatch(/Personal|Work|Sub|Tokens|…/);
+  }
+  expect(models[0]).toContain("✓ ╰  GPT-6 Luna");
+  expect(models[2].indexOf("├")).toBe(root_column);
+  expect(models[3].indexOf("╰")).toBe(root_column);
+  expect(models[2]).toContain("(auto choice)");
+  expect(models[4]).toContain("(auto choice)");
+  expect(models[2].indexOf("(auto choice)")).toBe(account_column);
+  expect(models[4].indexOf("(auto choice)")).toBe(account_column);
+  expect(rows.find(row => /Pi\s+2 models/.test(row))!.indexOf("2 models")).toBe(account_column);
+  const text = rows.join("\n");
+  expect(text).not.toMatch(/included|checked|login|\(Sub\)/);
+  expect(rows.find(row => row.includes("Search models"))!.indexOf("Billing")).toBe(billing_column);
+  for (const root of roots.slice(1)) expect(rows[root - 1].slice(root_column, root_column + 12)).toBe(" ".repeat(12));
+  const writer = new Writer(),
+    harness = new Style({ fg: "accent", bg: "surface", bold: true }).sgr(),
+    account = new Style({ fg: "muted", bg: "surface", bold: true }).sgr();
+  menu.drawAt(writer, s, prefs, 100, 40, 0);
+  for (const name of ["Codex", "Claude", "Pi", "OpenCode"]) expect(writer.s).toContain(harness + name);
+  expect(writer.s).toContain(account + "OpenAI");
+});
+
+test("native named accounts are listed and searchable with their exact inference account", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "claude",
+      provider: "claude",
+      model: "haiku",
+      account: "/claude/nvidia",
+      models: { claude: "haiku", codex: "gpt-6-luna" },
+    });
+  menu.agents = new LauncherMenu();
+  menu.agents.preview = preview({
+    accounts: [
+      {
+        provider: "claude",
+        account: "/claude/nvidia",
+        name: "nvidia",
+        option: { account: "Work", plan: "API", limits: "metered", signed_in: true },
+      },
+      {
+        provider: "codex",
+        account: "/codex/nvidia",
+        name: "nvidia",
+        option: { account: "Personal", plan: "API", limits: "metered", signed_in: true, model: "nvidia/kimi-k3" },
+      },
+    ],
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 100, 40, 0, s, prefs),
+    accounts = rows.filter(row => row.includes("nvidia") && !/[├╰].*nvidia/.test(row));
+  expect(accounts).toHaveLength(2);
+  for (const row of accounts) expect(row).toContain("Metered");
+  expect(rows.some(row => row.includes("✓ ╰  Haiku"))).toBe(true);
+  for (const byte of Buffer.from("nvidia Codex")) menu.key(byte);
+  expect(draw(menu, 100, 30, 0, s, prefs).some(row => /│   Claude\s/.test(row))).toBe(false);
+  expect(menu.enter(s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "codex",
+    model: "gpt-6-luna",
+    account: "/codex/nvidia",
+  });
+});
+
+test("native accounts show cheap shortlists and expand to every model without borrowing chat defaults", () => {
+  for (const provider of ["codex", "claude"] as const) {
+    const menu = Menu.open(),
+      prefs = new Preferences(),
+      available = ["", "/nvidia"].flatMap(account =>
+        Array.from({ length: 8 }, (_, i) => ({
+          provider,
+          account,
+          model: `model-${i}`,
+          name: i === 0 ? "Heavy chat model" : i === 7 ? "Cheap model" : `Mid model ${i}`,
+          account_name: account ? "work@example.com" : "personal@example.com",
+          subscription: !account,
+          input_cost: i === 1 ? null : 8 - i,
+          output_cost: i === 1 ? null : 5 * (8 - i),
+        })),
+      ),
+      s = status({ choice: provider, provider, available });
+    menu.agents = new LauncherMenu();
+    menu.agents.preview = preview({
+      accounts: [
+        {
+          provider,
+          account: "/nvidia",
+          name: "nvidia",
+          option: { model: "model-0", model_name: "Heavy chat model", limits: "metered", signed_in: true },
+        },
+      ],
+    });
+    menu.enter(s, prefs);
+    menu.enter(s, prefs);
+    let rows = draw(menu, 100, 40, 0, s, prefs),
+      text = rows.join("\n");
+    expect(text).toContain("Show 6 more");
+    expect(text).not.toContain("Heavy chat model");
+    const account = rows.findIndex(row => /nvidia\s+work@example.com/.test(row));
+    expect(rows[account]).toContain("Metered");
+    expect(rows[account + 1]).toContain("Cheap model");
+    expect(rows.find(row => row.includes("(auto choice)"))).toContain("Cheap model");
+    menu.click(choiceHit(menu, /Show 6 more/, s, prefs, 100, 40), s, prefs);
+    rows = draw(menu, 100, 40, 0, s, prefs);
+    text = rows.join("\n");
+    expect(text).toContain("Show fewer");
+    expect(rows.filter(row => /[├╰]  Heavy chat model/.test(row))).toHaveLength(2);
+    expect(rows.filter(row => /nvidia\s+work@example.com/.test(row))).toHaveLength(1);
+    for (const byte of Buffer.from("nvidia Heavy")) menu.key(byte);
+    expect(draw(menu, 100, 40, 0, s, prefs).join("\n")).toContain("Heavy chat model");
+    expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: provider, model: "model-0", account: "/nvidia" });
+  }
+});
+
+test("a selected native account's model does not leak into the default account row", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "codex",
+      provider: "codex",
+      model: "nvidia/kimi-k3",
+      account: "/codex/nvidia",
+      selection: { provider: "codex", model: "nvidia/kimi-k3", account: "/codex/nvidia" },
+      models: { codex: "nvidia/kimi-k3" },
+    });
+  menu.agents = new LauncherMenu();
+  menu.agents.preview = preview({
+    accounts: [{ provider: "codex", account: "/codex/nvidia", name: "nvidia", option: { model: "nvidia/kimi-k3" } }],
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 100, 40, 0, s, prefs);
+  expect(rows.some(row => row.includes("GPT-6 Luna"))).toBe(true);
+  expect(rows.some(row => row.includes("✓ ╰  nvidia/kimi-k3"))).toBe(true);
+  expect(menu.click(choiceHit(menu, /GPT-6 Luna/, s, prefs, 100, 40), s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "codex",
+  });
+});
+
+test("a heavy explicit default selection doesn't become another native account's inference default", () => {
+  for (const [provider, heavy, cheap] of [
+    ["codex", "gpt-6-astra", "gpt-6-luna"],
+    ["claude", "claude-opus-5-5[1m]", "claude-haiku-5-5"],
+  ] as const) {
+    const menu = Menu.open(),
+      prefs = new Preferences(),
+      s = status({
+        choice: provider,
+        provider,
+        model: heavy,
+        models: { [provider]: heavy },
+        selection: { provider, model: heavy, account: "" },
+      });
+    menu.agents = new LauncherMenu();
+    menu.agents.preview = preview({
+      accounts: [{ provider, account: "/nvidia", name: "nvidia", option: { model: heavy, limits: "metered" } }],
+    });
+    menu.enter(s, prefs);
+    menu.enter(s, prefs);
+    for (const byte of Buffer.from("nvidia")) menu.key(byte);
+    draw(menu, 100, 30, 0, s, prefs);
+    expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: provider, model: cheap, account: "/nvidia" });
+  }
+});
+
+test("cached models stay visible while refreshing with only a quiet heading indicator", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "pi",
+      provider: "pi",
+      loading: true,
+      available: [
+        { provider: "pi", model: "custom/cached", name: "Cached model", account: "", ready: true },
+        { provider: "opencode2", model: "custom/old", name: "Older model", account: "", ready: false },
+      ],
+    });
+  menu.enter(s, prefs);
+  let text = draw(menu, 100, 40, 0, s, prefs).join("\n");
+  expect(text).not.toMatch(/checking|Checking/);
+  menu.enter(s, prefs);
+  text = draw(menu, 100, 40, 0, s, prefs).join("\n");
+  expect(text).toMatch(/Pi\s+1 model ◌/);
+  expect(text).toMatch(/OpenCode\s+1 model ◌/);
+  expect(text).toContain("Cached model");
+  expect(text).toContain("Older model");
+  expect(text).not.toContain("Fetching models");
+  expect(text).not.toMatch(/checking|Checking/);
+});
+
+test("a narrow model picker clips metadata without overlapping names or borders", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      available: [
+        {
+          provider: "pi",
+          model: "a-very-long-provider/model",
+          name: "A very long model name",
+          account: "/work",
+          account_name: "A very long account name",
+          subscription: true,
+        },
+      ],
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 50, 30, 0, s, prefs),
+    model = rows.find(row => row.includes("(auto choice)"))!;
+  expect(model).toBeDefined();
+  expect(model).toContain("…");
+  const account = rows.find(row => row.includes("a-very-long"))!;
+  expect(account).toContain("…");
+  expect(model.trimEnd().endsWith("│ │")).toBe(true);
+  const hit = choiceHit(menu, /[├╰]  .*\(auto choice\)/, s, prefs, 50, 30);
+  expect(menu.click(hit, s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "pi",
+    model: "a-very-long-provider/model",
+    account: "/work",
+  });
+});
+
+test("model billing distinguishes plans, token pricing, free models and unknown prices", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      available: [
+        { provider: "pi", model: "custom/plan", name: "Plan model", account: "", subscription: true },
+        { provider: "pi", model: "custom/tokens", name: "Token model", account: "", input_cost: 1, output_cost: 5 },
+        { provider: "pi", model: "custom/free", name: "Free model", account: "", input_cost: 0, output_cost: 0 },
+        { provider: "pi", model: "custom/unknown", name: "Unknown model", account: "" },
+      ],
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const rows = draw(menu, 100, 40, 0, s, prefs);
+  for (const [model, label] of [
+    ["Plan model", "Plan"],
+    ["Token model", "Metered"],
+    ["Free model", "Free"],
+    ["Unknown model", "Unknown"],
+  ]) {
+    const y = rows.findIndex(row => row.includes(model) && !row.includes("Auto"));
+    expect(rows[y - 1]).toContain("custom");
+    expect(rows[y - 1]).toContain(label);
+    expect(rows[y]).not.toContain("…");
+  }
+});
+
+test("native model rows show and search the signed-in user without assuming a billing type", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({ models: { codex: "gpt-6-luna" } });
+  menu.agents = new LauncherMenu();
+  menu.agents.preview = preview({
+    options: {
+      codex: { account: "tal@example.com", signed_in: true },
+    },
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  for (const byte of Buffer.from("tal@")) menu.key(byte);
+  const rows = draw(menu, 100, 30, 0, s, prefs),
+    account = rows.find(row => /OpenAI\s+tal@example.com/.test(row))!;
+  expect(account).toContain("tal@example.com");
+  expect(rows.join("\n")).toContain("GPT-6 Luna");
+  expect(account).not.toMatch(/Sub|Tokens/);
+  expect(rows.join("\n")).not.toContain("Claude");
+  expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
+});
+
+test("OpenCode groups and searches its models and applies the exact selection", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "opencode2",
+      provider: "opencode2",
+      model: "openai/sol",
+      models: { opencode2: "openai/sol" },
+      available: [
+        { provider: "opencode2", model: "openai/sol", name: "Sol", account: "", subscription: true, ready: true },
+        {
+          provider: "opencode2",
+          model: "custom/tiny",
+          name: "Tiny",
+          account: "",
+          input_cost: 1,
+          output_cost: 5,
+          ready: false,
+        },
+      ],
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toContain("2 models");
+  expect(text).toMatch(/Sol\s+\(auto choice\)/);
+  expect(text).toContain("Check failed");
+  expect(text).toMatch(/OpenAI\s+—\s+Plan/);
+  expect(text).not.toMatch(/included|checked/);
+  for (const byte of Buffer.from("tiny")) menu.key(byte);
+  text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toContain("Tiny");
+  expect(text).toMatch(/Sol\s+\(auto choice\)/);
+  expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "opencode2", model: "custom/tiny", account: "" });
+});
+
+test("OpenCode Auto reports unverified access rather than claiming no model works", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({
+      choice: "opencode2",
+      available: [
+        { provider: "opencode2", model: "github/cheap", name: "Cheap", account: "", ready: false },
+        { provider: "opencode2", model: "other/untested", name: "Untested", account: "" },
+      ],
+    });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  const text = draw(menu, 120, 30, 0, s, prefs).join("\n");
+  expect(text).toMatch(/✓ Auto\s+No verified model yet/);
+  expect(text).toContain("Check failed");
+  expect(text).not.toContain("No working model found");
+});
+
 test("the automatic choice says whom it follows", () => {
   const menu = Menu.open(),
     prefs = new Preferences();
@@ -518,8 +1138,8 @@ test("the automatic choice says whom it follows", () => {
   menu.openOptions(locked, prefs);
   menu.enter(locked, prefs);
   text = draw(menu, 100, 30, 0, locked, prefs).join("\n");
-  expect(text).toContain("Settled on Codex · GPT-6 Luna");
-  expect(text).toContain("Haiku 5.5 · your Claude login");
+  expect(text).toContain("Use Codex · GPT-6 Luna");
+  expect(text).toContain("Haiku 5.5");
 });
 
 test("on/off settings flip from the list and offer the opposite", () => {

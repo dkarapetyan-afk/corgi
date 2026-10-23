@@ -79,7 +79,7 @@ class AgentMenu extends Viewers {
   async attempt(operation: string, payload: any) {
     return this.raw_rpc({
       op: "session.command",
-      protocol: 2,
+      protocol: 3,
       command: { [operation]: payload },
     });
   }

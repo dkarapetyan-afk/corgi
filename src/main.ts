@@ -160,6 +160,10 @@ function asksJson(args: string[]): boolean {
   return (end === -1 ? args : args.slice(0, end)).includes("--json");
 }
 export async function run(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "__opencode2") {
+    await (await import("./providers/opencode2/worker")).run();
+    return;
+  }
   const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
   // Agent mode covers the control CLI and help; a provider alias keeps its own flags.
   const choice = agent_mode.flags(args),

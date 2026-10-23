@@ -42,10 +42,14 @@ import * as dropdown from "./dropdown";
 import * as menuAim from "./menu_aim";
 import { milliTimestamp } from "./clock";
 import type { ShellStatus } from "./launch/command";
-import { preferred_width as launcher_width, type Menu as LauncherMenu } from "./agent_launcher";
+import {
+  preferred_width as launcher_width,
+  type Menu as LauncherMenu,
+  type Preview as LauncherPreview,
+} from "./agent_launcher";
 import type { Connection } from "./rpc";
 import type { Use, Uses } from "./inference/setup";
-import { Selection, options as modelOptions, type Option as ModelOption } from "./inference/models";
+import { Selection, automatic, compare, options as modelOptions, type Option as ModelOption } from "./inference/models";
 
 /** The inference setup status the daemon publishes, as inference.zig's `Status`. */
 export interface Status {
@@ -166,7 +170,6 @@ function importSource(item: Item): catalog.Source | null {
 
 /** What Enter or a click asks the controller to do. */
 export type Apply =
-  | { kind: "inference_models" }
   | { kind: "summaries"; choice: Summarizer; model?: string; account?: string }
   | { kind: "inference_use"; use: Use; on: boolean }
   | { kind: "readings" | "smart_links" | "ghostty"; on: boolean }
@@ -248,8 +251,13 @@ const paste_found: Record<ClipboardState["support"], Found> = {
 interface Choice {
   text: string;
   note: string;
+  detail?: string;
+  pin?: boolean;
+  depth?: number;
+  inline_note?: boolean;
   current: boolean;
   heading?: boolean;
+  heading_tone?: Token;
   more?: Provider;
   apply: Apply | null;
 }
@@ -511,9 +519,10 @@ export class Menu {
   /** Whether the prefix key came last; setup runs only detach after it. */
   private after_prefix = false;
   /** The open dropdown: its setting's option, and the highlighted choice. */
-  private dropdown: { option: number; at: number; top: number } | null = null;
+  private dropdown: { option: number; at: number; top: number; visible: number[] } | null = null;
   private expanded_models = new Set<Provider>();
   private model_query = Dialog.init({ agent_command: 0 }, "");
+  private models_visible = false;
   modelSearch(): Dialog | null {
     return this.dropdown ? this.model_query : null;
   }
@@ -627,6 +636,10 @@ export class Menu {
       }
       this.clearAim();
     }
+    const l = this.rest(cols, rows),
+      visible = this.item === "clever_corgi" && l !== null && !(l.single && this.focus === "list");
+    if (visible && !this.models_visible) void conn.call("inference.configure", {}).catch(() => {});
+    this.models_visible = visible;
     const picker = this.importing();
     return (picker !== null && (await picker.poll(conn))) || hovered;
   }
@@ -823,12 +836,13 @@ export class Menu {
         this.dropdown = {
           option: this.cursor,
           top: 0,
+          visible: [],
           at: Math.max(
             0,
             option.choice.choices.findIndex(c => c.current),
           ),
         };
-        return { kind: "inference_models" };
+        return null;
       }
       return option && !option.disabled ? option.apply : null;
     }
@@ -1021,6 +1035,17 @@ export class Menu {
     }
     const row = y - l.b.y - 2;
     if (row < 0 || row >= l.body) return null;
+    const open = this.dropdownBox(l, s, prefs);
+    if (open?.contains(x, y)) {
+      const choices = this.choices(s, prefs);
+      if (y === open.y + 1 && x > open.x && x < open.x + open.w - 1) {
+        const search_width = modelColumns(choices, open.w).detail - 2;
+        return x < open.x + 4 + search_width ? { model_search: x - open.x - 4 } : null;
+      }
+      const index = dropdown.hit(open, this.dropdown?.visible.length ?? 0, x, y, true),
+        at = index === null ? -1 : (this.dropdown?.visible[index] ?? -1);
+      return at < 0 || (!choices[at]?.apply && !choices[at]?.more) ? null : { choice: at };
+    }
     const list_shown = l.single ? this.focus === "list" : l.list > 0;
     if (list_shown) {
       const left = l.b.x + 1,
@@ -1031,14 +1056,6 @@ export class Menu {
       }
     }
     if (l.single && this.focus === "list") return null;
-    const open = this.dropdownBox(l, s, prefs);
-    if (open?.contains(x, y)) {
-      if (y === open.y + 1 && x > open.x && x < open.x + open.w - 1) return { model_search: x - open.x - 4 };
-      const choices = this.choices(s, prefs),
-        index = dropdown.hit(open, Math.min(choices.length, open.h - 3), x, y, true);
-      const at = index === null ? -1 : index + (this.dropdown?.top ?? 0);
-      return at < 0 || (!choices[at]?.apply && !choices[at]?.more) ? null : { choice: at };
-    }
     if (x < l.options.x || x >= l.options.x + l.options.w) return null;
     const lines = this.lines(s, prefs, l),
       at_picker = lines.findIndex(line => line.tag === "picker");
@@ -1083,23 +1100,37 @@ export class Menu {
     if (!(l.single && this.focus === "list") && !managing) this.drawOptions(w, l, s, prefs, now_ms);
     const open = this.dropdownBox(l, s, prefs);
     if (open) {
+      const choices = this.choices(s, prefs),
+        columns = modelColumns(choices, open.w);
       dropdown.draw(
         w,
         open,
-        this.choices(s, prefs)
-          .slice(this.dropdown?.top ?? 0, (this.dropdown?.top ?? 0) + open.h - 3)
-          .map((choice, i) => ({
+        (this.dropdown?.visible ?? []).map(index => {
+          const choice = choices[index],
+            branch = choice.depth === 2 ? (choices[index + 1]?.depth === 2 ? "├" : "╰") : undefined;
+          return {
             text: choice.text,
             note: choice.note,
+            detail: choice.detail,
+            pin: choice.pin,
             current: choice.current,
+            dim: choice.pin && !choice.apply,
             heading: choice.heading,
-            hovered: i + (this.dropdown?.top ?? 0) === this.dropdown?.at,
-          })),
-        { text: "", note: "" },
+            heading_tone: choice.heading_tone,
+            depth: choice.depth,
+            inset: modelIndent(choice),
+            branch,
+            inline_note: choice.inline_note,
+            hovered: index === this.dropdown?.at,
+          };
+        }),
+        { text: "", note: "", detail: "Billing" },
+        columns.note,
+        columns.detail,
       );
       const x = open.x + 4,
         y = open.y + 1,
-        width = Math.max(1, open.w - 7);
+        width = Math.max(1, columns.detail - 2);
       w.write(at(x, y) + text);
       const offset = DialogView.scroll(this.model_query, width);
       const column = writeField(w, this.model_query, offset, width, text);
@@ -1530,12 +1561,21 @@ export class Menu {
     if (d === null) return null;
     const row = this.lines(s, prefs, l).findIndex(line => line.tag === "option" && line.index === d.option);
     if (row < 0) return null;
-    const count = this.choices(s, prefs).length,
+    const choices = this.choices(s, prefs),
+      count = choices.length,
       h = Math.min(count + 3, l.body),
       capacity = h - 3,
+      width = Math.min(l.b.w - 4, Math.max(l.options.w - 3, modelPreferredWidth(choices))),
       bottom = l.b.y + 2 + l.body;
-    d.top = clamp(d.top, Math.max(0, d.at - capacity + 1), Math.min(d.at, Math.max(0, count - capacity)));
-    return new Rect(l.options.x + 2, Math.max(l.b.y + 2, Math.min(l.b.y + 3 + row, bottom - h)), l.options.w - 3, h);
+    const view = dropdown.viewport(choices, d.top, d.at, capacity);
+    d.top = view.first;
+    d.visible = view.indices;
+    return new Rect(
+      l.options.x + l.options.w - 1 - width,
+      Math.max(l.b.y + 2, Math.min(l.b.y + 3 + row, bottom - h)),
+      width,
+      h,
+    );
   }
   /** The options pane's rows as they fit `l`: leads and notes wrap, notes
    * give way first, then the options scroll to keep the cursor in view. */
@@ -1715,7 +1755,7 @@ export class Menu {
             choice: {
               text: inUse(s),
               on: s.choice !== "off",
-              choices: summarizerChoices(s, this.expanded_models, this.model_query.name()),
+              choices: summarizerChoices(s, this.expanded_models, this.model_query.name(), this.agents?.preview),
             },
           }),
           { tag: "brief", text: summary(s.choice, s), tone: "muted" },
@@ -2163,70 +2203,164 @@ function wrap(value: string, room: number): string[] {
   if (line.length > 0) out.push(line);
   return out;
 }
-function summarizerChoices(s: Status, expanded: ReadonlySet<Provider>, query: string): Choice[] {
+function summarizerChoices(
+  s: Status,
+  expanded: ReadonlySet<Provider>,
+  query: string,
+  preview?: LauncherPreview,
+): Choice[] {
   const choices = summarizers.flatMap(choice => {
     const provider = Summarizer.provider(choice);
-    if (!provider || !adapter(provider).inference.models)
-      return !matches(query, `${Summarizer.label(choice)} ${summary(choice, s)}`)
-        ? []
-        : [
+    if (!provider) {
+      if (!matches(query, `${Summarizer.label(choice)} ${summary(choice, s)}`)) return [];
+      return [
+        {
+          text: Summarizer.label(choice),
+          inline_note: true,
+          note:
+            choice === "auto" && s.choice === "auto" && s.provider
+              ? `${s.locked ? "Use" : "Follow"} ${adapter(s.provider).name} · ${Model.resolve(s.models[s.provider]).label()}`
+              : choice === "auto"
+                ? "Follow your agents"
+                : summary(choice, s),
+          current: choice === s.choice,
+          apply: { kind: "summaries", choice },
+        } as Choice,
+      ];
+    }
+    const native = adapter(provider).inference.catalog === "native";
+    if (!adapter(provider).inference.models || (native && !s.available.some(m => m.provider === provider))) {
+      const default_model = s.selection.provider === provider && s.selection.model ? "" : s.models[provider],
+        rows = [
+          {
+            account: "",
+            name: adapter(provider).inference.source || preview?.names[provider] || "Default",
+            option: preview?.options[provider],
+          },
+          ...(preview?.accounts.filter(a => a.provider === provider) ?? []).map(a => ({
+            account: a.account,
+            name: a.name,
+            option: a.option,
+          })),
+        ].flatMap(row => {
+          const explicit =
+              s.selection.provider === provider && s.selection.account === row.account && s.selection.model,
+            model = explicit || default_model || adapter(provider).inference.model,
+            label =
+              (row.option?.model === model ? row.option.model_name : "") ||
+              Model.resolve(model).label() ||
+              "Default model",
+            user = row.option?.account || "—",
+            plan = row.option?.plan ?? "",
+            kind: Billing | "signed_out" =
+              row.option?.signed_in === false
+                ? "signed_out"
+                : row.option?.limits === "metered"
+                  ? "tokens"
+                  : row.option && typeof row.option.limits === "object"
+                    ? "subscription"
+                    : "unknown";
+          if (!matches(query, `${adapter(provider).name} ${row.name} ${label} ${model} ${user} ${plan}`)) return [];
+          return [
+            modelHeading(row.name, 1, user, billingLabel(kind, plan)),
             {
-              text: Summarizer.label(choice),
-              note: summary(choice, s),
-              current: choice === s.choice,
-              apply: { kind: "summaries", choice },
+              text: label,
+              note: "",
+              depth: 2,
+              current: s.choice === provider && s.account === row.account,
+              apply: row.account
+                ? { kind: "summaries", choice: provider, model, account: row.account }
+                : { kind: "summaries", choice: provider },
             } as Choice,
           ];
-    const all = s.available.filter(m => m.provider === provider),
-      models = all.filter(m => matches(query, `${adapter(provider).name} ${m.name} ${m.model} ${m.account_name}`)),
+        });
+      return rows.length ? [modelHeading(adapter(provider).name), ...rows] : [];
+    }
+    const all = s.available.filter(m => m.provider === provider);
+    if (native) all.sort(compare);
+    const recommended = automatic(all.filter(m => !native || !m.account)),
+      models = all.filter(m =>
+        matches(
+          query,
+          `${adapter(provider).name} ${modelSource(m, preview)} ${m.name} ${m.model} ${m.account_name} ${m.plan}`,
+        ),
+      ),
       show_all = expanded.has(provider),
       auto = s.selection.provider !== provider || !s.selection.model;
     if (query && !models.length && !(s.loading && matches(query, adapter(provider).name))) return [];
-    const resolved =
-      auto && s.choice === provider
-        ? (all.find(m => m.model === s.model && m.account === s.account)?.name ??
-          (s.model ? Model.resolve(s.model).label() : null))
-        : all[0]?.name;
-    const automatic: Choice = {
-      text: `  Auto (${resolved ?? (s.loading ? "fetching…" : "unavailable")})`,
-      note: all[0] || s.loading ? "" : `Sign in through ${adapter(provider).name} first`,
+    const candidate = recommended;
+    const auto_choice: Choice = {
+      text: "Auto",
+      depth: 1,
+      inline_note: true,
+      note: candidate ? "" : all.length ? "No verified model yet" : s.loading ? "Fetching models…" : "Sign in first",
       current: s.choice === provider && auto,
       apply: s.loading && !all.length ? null : { kind: "summaries", choice: provider },
     };
     const heading: Choice = {
       text: adapter(provider).name,
-      note: s.loading
-        ? "Fetching models…"
-        : models.length
-          ? `${models.length} signed-in models`
+      note: all.length
+        ? `${models.length} ${models.length === 1 ? "model" : "models"}${s.loading ? " ◌" : ""}`
+        : s.loading
+          ? "Fetching models…"
           : "No signed-in models",
       current: false,
       heading: true,
+      heading_tone: "accent",
       apply: null,
     };
+    const counts = new Map<string, number>(),
+      shortlist = native
+        ? models.filter(m => {
+            const count = counts.get(m.account) ?? 0;
+            counts.set(m.account, count + 1);
+            return count < 5;
+          })
+        : models.slice(0, 5),
+      hidden = models.length - shortlist.length,
+      visible = show_all ? models.slice() : shortlist;
+    if (candidate) {
+      const index = visible.indexOf(candidate);
+      if (index >= 0) visible.splice(index, 1);
+      else if (!show_all && models.includes(candidate)) {
+        const last = visible.findLastIndex(m => !native || m.account === candidate.account);
+        if (last >= 0) visible.splice(last, 1);
+      }
+      visible.unshift(candidate);
+    }
+    const groups = new Map<string, ModelOption[]>();
+    for (const model of visible) {
+      const key = JSON.stringify([modelSource(model, preview), model.account, billing(model), model.plan]),
+        group = groups.get(key);
+      if (group) group.push(model);
+      else groups.set(key, [model]);
+    }
     return [
       heading,
-      ...(matches(query, automatic.text) ? [automatic] : []),
-      ...models.slice(0, show_all ? models.length : 5).map((m): Choice => ({
-        text: "  " + m.name,
-        note: [
-          m.model.split("/")[0],
-          m.subscription
-            ? "subscription"
-            : m.input_cost === null || m.output_cost === null
-              ? "price unknown"
-              : `$${m.input_cost}/$${m.output_cost} per Mt`,
-          m.account_name,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-        current: s.choice === provider && !auto && s.model === m.model && s.account === m.account,
-        apply: { kind: "summaries", choice: provider, model: m.model, account: m.account },
-      })),
-      ...(models.length > 5
+      ...(matches(query, `${auto_choice.text} ${auto_choice.note}`) ? [auto_choice] : []),
+      ...[...groups.values()].flatMap(group => [
+        modelHeading(
+          modelSource(group[0], preview),
+          1,
+          group[0].account_name || "—",
+          billingLabel(billing(group[0]), group[0].plan),
+        ),
+        ...group.map((m): Choice => ({
+          text: m.name,
+          depth: 2,
+          note: m === candidate ? "(auto choice)" : m.ready === false ? "Check failed" : "",
+          pin: m === candidate,
+          current: s.choice === provider && !auto && s.model === m.model && s.account === m.account,
+          apply: models.includes(m)
+            ? { kind: "summaries", choice: provider, model: m.model, account: m.account }
+            : null,
+        })),
+      ]),
+      ...(hidden > 0
         ? [
             {
-              text: show_all ? "  Show fewer" : `  Show ${models.length - 5} more`,
+              text: show_all ? "Show fewer" : `Show ${hidden} more`,
+              depth: 1,
               note: "",
               current: false,
               more: provider,
@@ -2236,9 +2370,100 @@ function summarizerChoices(s: Status, expanded: ReadonlySet<Provider>, query: st
         : []),
     ];
   });
-  return choices.length
-    ? choices
+  let harness = false;
+  const spaced: Choice[] = [];
+  for (const choice of choices) {
+    if (choice.heading && (choice.depth ?? 0) === 0) {
+      if (harness) spaced.push({ text: "", note: "", depth: 0, current: false, apply: null });
+      harness = true;
+    }
+    spaced.push(choice);
+  }
+  return spaced.length
+    ? spaced
     : [{ text: "No matching models", note: "", heading: true, current: false, apply: null }];
+}
+function modelHeading(text: string, depth = 0, note = "", detail = ""): Choice {
+  return {
+    text,
+    depth,
+    note,
+    detail,
+    heading: true,
+    heading_tone: depth === 0 ? "accent" : undefined,
+    current: false,
+    apply: null,
+  };
+}
+function modelProviderName(provider: string): string {
+  const names: Record<string, string> = {
+    "github-copilot": "GitHub Copilot",
+    "openai-codex": "OpenAI Codex",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google",
+    openrouter: "OpenRouter",
+  };
+  return names[provider] ?? provider;
+}
+function modelSource(model: ModelOption, preview?: LauncherPreview): string {
+  const inference = adapter(model.provider).inference;
+  if (inference.catalog !== "native") return modelProviderName(model.model.split("/")[0]);
+  const source = inference.source || adapter(model.provider).name;
+  return model.account
+    ? preview?.accounts.find(a => a.provider === model.provider && a.account === model.account)?.name ||
+        model.account_name ||
+        source
+    : source;
+}
+type Billing = "subscription" | "tokens" | "free" | "unknown";
+function billingLabel(kind: Billing | "signed_out", plan: string): string {
+  switch (kind) {
+    case "subscription":
+      return plan || "Plan";
+    case "tokens":
+      return "Metered";
+    case "free":
+      return "Free";
+    case "unknown":
+      return plan || "Unknown";
+    case "signed_out":
+      return "Signed out";
+  }
+}
+function billing(model: ModelOption): Billing {
+  if (model.subscription) return "subscription";
+  if (adapter(model.provider).inference.catalog === "native") return "tokens";
+  if (model.input_cost === null || model.output_cost === null) return "unknown";
+  return model.input_cost === 0 && model.output_cost === 0 ? "free" : "tokens";
+}
+/** Stable columns across groups and scroll positions; names keep room before metadata. */
+function modelIndent(choice: Choice): number {
+  return choice.depth === 2 ? 3 : 0;
+}
+function modelColumnWidths(choices: Choice[]): { name: number; account: number; billing: number } {
+  const accounts = choices.filter(c => c.heading && c.depth === 1);
+  return {
+    name: Math.max(
+      12,
+      ...accounts.map(c => displayWidth(c.text)),
+      ...choices.filter(c => c.pin).map(c => displayWidth(c.text) + modelIndent(c)),
+    ),
+    account: Math.max(12, ...accounts.map(c => displayWidth(c.note))),
+    billing: Math.max(7, ...accounts.map(c => displayWidth(c.detail ?? ""))),
+  };
+}
+function modelPreferredWidth(choices: Choice[]): number {
+  const columns = modelColumnWidths(choices);
+  return columns.name + columns.account + columns.billing + 10;
+}
+function modelColumns(choices: Choice[], width: number): { note: number; detail: number } {
+  const room = Math.max(0, width - 6),
+    wanted = modelColumnWidths(choices),
+    billing = Math.min(wanted.billing, Math.max(7, Math.floor(room / 3))),
+    name = Math.min(wanted.name, Math.max(8, room - billing - 10)),
+    account = Math.max(0, room - name - billing - 4);
+  return { note: name, detail: name + account + 4 };
 }
 function summary(choice: Summarizer, s: Status): string {
   switch (choice) {
@@ -2255,11 +2480,25 @@ function summary(choice: Summarizer, s: Status): string {
           m.model === s.models[provider] &&
           (provider !== s.provider || m.account === s.account),
       );
-      if (adapter(provider).inference.models && !s.models[provider])
+      const cached = s.available.filter(m => m.provider === provider);
+      if (
+        adapter(provider).inference.models &&
+        adapter(provider).inference.catalog !== "native" &&
+        !s.models[provider] &&
+        !cached.length
+      )
         return s.loading
           ? "Checking signed-in models…"
           : `Sign in to a model provider through ${adapter(provider).name}`;
-      return `${selected?.name ?? Model.resolve(s.models[provider]).label()} · your ${adapter(provider).name} login`;
+      const model =
+        selected?.name ||
+        Model.resolve(
+          s.models[provider] ||
+            (adapter(provider).inference.catalog === "native" ? adapter(provider).inference.model : ""),
+        ).label() ||
+        automatic(cached)?.name ||
+        "No verified model yet";
+      return `${model} · your ${adapter(provider).name} login`;
     }
   }
 }
@@ -2278,12 +2517,19 @@ function note(choice: Summarizer, s: Status): string | null {
 function inUse(s: Status): string {
   const label = Summarizer.label(s.choice),
     provider = Summarizer.provider(s.choice);
-  if (provider && adapter(provider).inference.models) {
+  if (
+    provider &&
+    adapter(provider).inference.models &&
+    (adapter(provider).inference.catalog !== "native" || s.available.some(m => m.provider === provider))
+  ) {
+    const native = adapter(provider).inference.catalog === "native",
+      cached = s.available.filter(m => m.provider === provider && (!native || !m.account));
+    if (native) cached.sort(compare);
     const model =
       s.available.find(m => m.provider === provider && m.model === s.model && m.account === s.account)?.name ??
-      (s.model ? Model.resolve(s.model).label() : "checking…");
-    const automatic = s.selection.provider !== provider || !s.selection.model;
-    return `${label} · ${automatic ? `Auto (${model})` : model}`;
+      (s.model ? Model.resolve(s.model).label() : (automatic(cached)?.name ?? "checking…"));
+    const auto = s.selection.provider !== provider || !s.selection.model;
+    return `${label} · ${auto ? `Auto (${model})` : model}`;
   }
   return s.choice === "auto" && s.provider !== null ? `${label} · ${adapter(s.provider).name}` : label;
 }

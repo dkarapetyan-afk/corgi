@@ -9,6 +9,7 @@ import * as integration from "./integration";
 import * as signin from "./signin";
 import * as errors from "./errors";
 
+const managed = Provider.all.filter(p => adapter(p).accounts.signin !== null);
 export const help = `Usage: corgi account COMMAND
 
   list                          the accounts Corgi knows and who signed in
@@ -21,10 +22,10 @@ export const help = `Usage: corgi account COMMAND
   remove NAME                   remove an account: one Corgi made is signed
                                 out and deleted, another forgotten
 
-PROVIDER is ${Provider.all.join(" or ")}. Name an account claude/work when two
+PROVIDER is ${managed.join(" or ")}. Name an account claude/work when two
 providers both have one called work. Signing in runs the agent's own sign-in
 in the account's folder; agents then start there from the launcher, or with
-${Provider.all.map(p => adapter(p).accounts.env).join(" or ")} set.
+${managed.map(p => adapter(p).accounts.env).join(" or ")} set.
 `;
 /** `path` from `~` when it is under HOME, as typed or with links resolved. */
 const tilde = (path: string) => {
@@ -118,6 +119,7 @@ async function run(args: string[]): Promise<number> {
       if (rest.length > 2) throw Error("Usage");
       const provider = rest[0] === undefined ? null : Provider.parse(rest[0]);
       if (rest[0] !== undefined && !provider) throw Error("Usage");
+      if (provider && !adapter(provider).accounts.signin) throw Error("AccountManagementUnsupported");
       if (dir === null) {
         if (provider && rest[1] !== undefined) accounts.unused(provider, rest[1]);
         terminal();
@@ -176,6 +178,7 @@ const messages: Record<string, string> = {
   DefaultAccount: "that folder is the default account's",
   FileNotFound: "no such folder",
   NotATerminal: "signing in needs a terminal; run it in one, or add a folder you have with --dir",
+  AccountManagementUnsupported: "this agent uses its existing login; manage accounts in the agent itself",
 };
 /** `corgi account …`: the exit status. */
 export async function command(args: string[]): Promise<number> {

@@ -69,7 +69,14 @@ export class Claude implements Client {
     this.ready = ready;
   }
   static start(at: Place, args: string[], summary: { schema: boolean } | null) {
-    const client = new Claude(Stdio.spawn([at.executable, ...args], { cwd: at.cwd }), summary, !summary);
+    const client = new Claude(
+      Stdio.spawn([at.executable, ...args], {
+        cwd: at.cwd,
+        env: at.account ? { ...process.env, CLAUDE_CONFIG_DIR: at.account } : undefined,
+      }),
+      summary,
+      !summary,
+    );
     if (summary)
       client.io.write({ type: "control_request", request_id: "corgi-initialize", request: { subtype: "initialize" } });
     return client;

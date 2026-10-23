@@ -8,7 +8,7 @@ import * as prompt from "./prompt";
 import type { View as ToolView } from "./tools";
 import { Backend, outcome } from "../summary_backend";
 import * as setup from "../inference/setup";
-import { Selection } from "../inference/models";
+import { Selection, automatic } from "../inference/models";
 import { Catalog } from "../inference/catalog";
 import { adapter } from "../providers";
 import { Meter } from "../usage/live";
@@ -255,11 +255,13 @@ export class Worker {
   selection(provider: Provider | null): Selection {
     if (!provider) return new Selection();
     if (this.choice === provider && this.selected.provider === provider && this.selected.model) return this.selected;
-    const available = this.catalog.available.find(m => m.provider === provider),
+    const native = adapter(provider).inference.catalog === "native",
+      available = automatic(this.catalog.available.filter(m => m.provider === provider && (!native || !m.account))),
       override = process.env.CORGI_INFERENCE_MODEL ?? process.env.CORGI_SUMMARY_MODEL;
     return Object.assign(new Selection(), {
       provider,
-      model: override ?? available?.model ?? (adapter(provider).inference.models ? "" : setup.model(provider)),
+      model:
+        override ?? available?.model ?? (native || !adapter(provider).inference.models ? setup.model(provider) : ""),
       account: override === undefined ? (available?.account ?? "") : "",
     });
   }
@@ -481,6 +483,7 @@ export class Worker {
         (this.naming() || this.summarizing() || this.uses.worktrees) &&
         provider &&
         adapter(provider).inference.models &&
+        adapter(provider).inference.catalog !== "native" &&
         !(this.choice === provider && this.selected.provider === provider && this.selected.model) &&
         !process.env.CORGI_INFERENCE_MODEL &&
         !process.env.CORGI_SUMMARY_MODEL

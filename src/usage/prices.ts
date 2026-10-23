@@ -1,5 +1,20 @@
 import { max } from "./tokens";
 export type Price = { label: string; input: bigint; output: bigint };
+/** Normalize optional catalog rates received in a viewer snapshot. */
+export function parse(value: unknown): Price | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.label !== "string") return null;
+  const rate = (v: unknown) => {
+    if (typeof v === "bigint") return v >= 0n ? v : null;
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
+    if (typeof v === "string" && /^\d{1,20}$/.test(v)) return BigInt(v);
+    return null;
+  };
+  const input = rate(entry.input),
+    output = rate(entry.output);
+  return input !== null && output !== null ? { label: entry.label, input, output } : null;
+}
 const table: Array<{ id: string; price: Price }> = [
   {
     id: "claude-fable-5-1",
@@ -62,6 +77,7 @@ const table: Array<{ id: string; price: Price }> = [
   { id: "haiku", price: { label: "haiku", input: 100n, output: 500n } },
 ];
 export function lookup(model: string): Price | null {
+  model = model.slice(model.indexOf("/") + 1).split("#")[0];
   let best: (typeof table)[number] | null = null;
   for (const entry of table) {
     if (!model.startsWith(entry.id) || (model.length > entry.id.length && /[0-9]/.test(model[entry.id.length])))
@@ -71,6 +87,8 @@ export function lookup(model: string): Price | null {
   return best?.price ?? null;
 }
 export function equivalent(price: Price, reference: Price, uncached_input: bigint, output: bigint) {
-  const n = (uncached_input * price.input) / reference.input + (output * price.output) / reference.output;
+  const n =
+    (reference.input > 0n ? (uncached_input * price.input) / reference.input : 0n) +
+    (reference.output > 0n ? (output * price.output) / reference.output : 0n);
   return n > max ? max : n;
 }

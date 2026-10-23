@@ -98,6 +98,20 @@ export class Actor {
     }
     if (snapshot.transcript.len) a.transcript = snapshot.transcript;
     if (snapshot.cwd?.len) a.cwd = snapshot.cwd;
+    if (snapshot.model) {
+      a.model = new Text(snapshot.model);
+      this.model = snapshot.model_info ?? Model.resolve(snapshot.model);
+    }
+    if (snapshot.usage) {
+      this.beginHeadlessUsage(binding && ["working", "blocked"].includes(snapshot.state));
+      this.headless_meter.sample(
+        snapshot.usage.total,
+        snapshot.usage.last,
+        snapshot.state === "working",
+        Math.floor(now / 1000),
+      );
+    }
+    if (snapshot.context) this.context = snapshot.context;
     if (snapshot.location) worktrees.recordLocation(a, snapshot.location);
     this.observed_at = Math.max(this.observed_at, snapshot.observed_at);
     this.background_tasks = snapshot.background_tasks;
@@ -116,11 +130,16 @@ export class Actor {
     a.observation.source = "protocol";
     a.observation.pending_stop = false;
     if (!same || !["working", "blocked"].includes(snapshot.state)) this.transcript_tool_active = false;
+    if (snapshot.tool_active !== null) this.transcript_tool_active = snapshot.tool_active;
     this.refreshTranscriptTool();
-    a.tool = new Text();
+    a.tool = new Text(snapshot.tool);
     if (!same || old !== snapshot.state || snapshot.state !== "working") {
       a.activity = new Text();
       a.compacting = false;
+      this.screen_compacting = false;
+    }
+    if (snapshot.compacting !== null) {
+      a.compacting = snapshot.state === "working" && snapshot.compacting;
       this.screen_compacting = false;
     }
     a.activity_generation = hash(snapshot.evidence);

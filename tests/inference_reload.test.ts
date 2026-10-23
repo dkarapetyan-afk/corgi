@@ -21,7 +21,7 @@ class InferenceReload extends Summaries {
   async verify_continuity(provider: string) {
     await this.rpc({
       op: "inference.configure",
-      protocol: 2,
+      protocol: 3,
       choice: provider,
     });
     await this.start_turn("before-reload", false);

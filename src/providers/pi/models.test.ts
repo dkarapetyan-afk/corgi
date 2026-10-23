@@ -77,6 +77,19 @@ test("Pi discovery keeps only usable chat definitions and never returns credenti
   expect(result[1].subscription).toBe(false);
   expect(JSON.stringify(result)).not.toContain("secret");
 });
+test("Pi model identities come from each provider's own credentials", () => {
+  const access = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/profile": { email: "openai@example.com" }, "https://api.openai.com/auth": { chatgpt_plan_type: "promax" } })).toString("base64url")}.secret`,
+    result = parse(
+      { models: [model("anthropic", "haiku"), model("openai-codex", "luna"), model("custom", "tiny")] },
+      {
+        anthropic: { type: "oauth", email: "claude@example.com\x1b", access: "other-secret" },
+        "openai-codex": { type: "oauth", access },
+      },
+    );
+  expect(result.map(m => m.user)).toEqual(["claude@example.com", "openai@example.com", undefined]);
+  expect(result.map(m => m.plan)).toEqual([undefined, "Pro 500", undefined]);
+  expect(JSON.stringify(result)).not.toContain("secret");
+});
 test("catalog entries from stale or unverified logins are excluded", () => {
   const result = parse(
     { models: [model("anthropic", "haiku"), model("openai-codex", "luna"), model("unknown", "random")] },

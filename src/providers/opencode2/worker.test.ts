@@ -1,0 +1,26 @@
+import { expect, test } from "bun:test";
+import { API } from "./api";
+import { Engine } from "./worker";
+test("a headless conversation polls on its own and its subagents' events", () => {
+  const engine = new Engine(new API("unused"), () => {});
+  engine.session = "ses_main";
+  engine.turns.set("ses_child", "");
+  engine.live = true;
+  engine.due = false;
+  engine.polled = 1000;
+  expect(engine.wanted(2000)).toBe(false);
+  engine.observe({ type: "session.text.delta", data: { sessionID: "ses_main" } });
+  engine.observe({ type: "session.tool.called", data: { sessionID: "ses_unrelated" } });
+  expect(engine.due).toBe(false);
+  engine.observe({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_child" } });
+  expect(engine.wanted(2000)).toBe(true);
+  engine.due = false;
+  engine.observe({ type: "session.created", data: { sessionID: "ses_new", parentID: "ses_main" } });
+  expect(engine.due).toBe(true);
+  engine.due = false;
+  engine.retry = 3000;
+  expect([engine.wanted(2999), engine.wanted(3000)]).toEqual([false, true]);
+  engine.live = false;
+  engine.retry = Infinity;
+  expect(engine.wanted(1300)).toBe(true);
+});

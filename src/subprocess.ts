@@ -9,6 +9,9 @@ export type Options = {
   max_output?: number;
   stderr?: boolean;
   quit?: Quit;
+  /** Keep short-lived helpers in a worker's process group so its owner can
+   * reap them along with the worker. */
+  detached?: boolean;
 };
 export class Quit {
   private controller = new AbortController();
@@ -77,7 +80,8 @@ export async function run(argv: string[], options: Options): Promise<Output> {
     failure ??= Error(name);
     if (child?.pid)
       try {
-        process.kill(-child.pid, "SIGKILL");
+        if (options.detached === false) child.kill("SIGKILL");
+        else process.kill(-child.pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
@@ -105,7 +109,7 @@ export async function run(argv: string[], options: Options): Promise<Output> {
     child = spawn(argv[0], argv.slice(1), {
       cwd: options.cwd,
       env: options.env,
-      detached: true,
+      detached: options.detached ?? true,
       stdio: [options.input === undefined ? "ignore" : "pipe", outWrite, options.stderr ? errWrite : "ignore"],
     });
     close(outWrite);

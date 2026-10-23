@@ -18,7 +18,7 @@ test("pane environment IDs use the source unsigned integer boundary", () => {
 });
 test("runtime protocol errors are distinct from viewer incompatibility", () => {
   const runtime = failure(["dev"], Error("UnsupportedProtocol"));
-  expect(runtime).toContain("runtime protocol 2");
+  expect(runtime).toContain("runtime protocol 3");
   expect(runtime).not.toContain("viewer protocol");
   expect(failure(["dev"], Error("UnsupportedViewerProtocol"))).toContain("viewer protocol 3");
   expect(failure(["reload"], Error("UnsupportedManagementProtocol"))).toContain("management protocol 1");

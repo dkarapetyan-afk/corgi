@@ -13,7 +13,7 @@ curl -fsSL https://corgi.computer/install.sh | bash
 ## First session
 
 1. Run `corgi` in your project directory and choose a shortcut preset.
-2. Click **New** in the agent list to start Claude Code or Codex.
+2. Click **New** in the agent list to start Claude Code, Codex or [OpenCode](docs/opencode.md).
 3. Click an agent or pane to focus it; open the shortcut menu with your prefix,
    then `?` (the default prefix is Ctrl+B).
 4. Choose **Detach** in the shortcut menu to leave processes running.

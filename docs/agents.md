@@ -4,6 +4,8 @@ Start with [HACKING.md](../HACKING.md#architecture) for the runtime map.
 [Launching agents](agent-launcher.md) and [workspaces](workspaces.md) describe
 the user interface. This page covers the contracts behind it.
 
+[OpenCode](opencode.md) describes the v2 adapter and its remaining parity gaps.
+
 ## Conversation ownership
 
 The daemon owns one [conversation actor](../src/conversations.ts) per provider
@@ -196,14 +198,32 @@ the persistent provider conversations.
 
 Clever Corgi's model picker groups Pi's authenticated chat models under Pi. It
 shows five, with “Show N more”, and searches the entire catalog using Manage
-Agents' matching rules. Discovery starts only when opening the model picker,
-not Corgi setup, and never holds the daemon request queue. Pi shows “Fetching
-models…” while cached choices remain usable. Picker opens share pending work
-and reuse results for a minute; a failed refresh retains the previous catalog.
+Agents' matching rules. Making the Clever Corgi pane visible starts asynchronous
+discovery without holding the daemon request queue. All viewers and background
+requests share a three-minute throttle, cleared when accounts are added, removed
+or renamed. First loads show “Fetching models…”; cached models keep their labels
+and counts with a quiet refresh indicator. A failed refresh retains the previous
+catalog. Account changes during discovery discard stale results and restart it.
 Pi's own refresh-enabled auth check filters stale OAuth
 and unavailable credentials; a catalog entry alone is not proof of sign-in.
 These probes disable extensions, tools and context and create no saved session
 or model turn. API-key readiness is not a paid-request health check.
+
+The picker uses colored agent headings, flush account headings, and tree branches
+only beside model rows. Identity and billing stay in separate columns; known plan
+tiers are shown directly, with Plan, Metered, Free or Unknown otherwise. Missing
+identities stay blank; a login for one model provider never labels another.
+Named accounts and plan tiers remain searchable. Agent and account headings
+stay pinned beneath search. The model marked “(auto choice)” in the identity
+column and its account stay visible even when browsing another provider in that
+agent's catalog.
+Codex and Claude discover each account's complete model list through their
+read-only control channels, without a model turn. Each account starts with five
+models ranked by known price estimates; unknown prices sort last. “Show more”
+reveals the rest. Chat-model settings never choose private-inference defaults.
+An explicit pick carries that account's folder and model through inference;
+choosing Auto again clears the account override. Native Auto stays on the
+default account rather than silently switching to another metered login.
 
 Pi's “Auto (model name)” prefers recognized subscription-backed access, then
 catalog prices estimated for four input tokens per output token. Missing or
@@ -214,6 +234,8 @@ silently substitutes another model if that login becomes unavailable. Summaries,
 link names, conversation names and worktree briefs all use that selection.
 The defaulted selection, catalog and account fields extend the wire and handoff
 snapshots without changing protocol or saved-format versions.
+Known plan tiers add a defaulted display field to the transient catalog; older
+catalog records normalize it to empty, without a protocol or saved-format bump.
 
 Requests carry bounded current evidence. Activity summaries receive commentary
 and tool descriptions, not tool output; link naming can include visible terminal

@@ -133,6 +133,9 @@ export const adapter: Adapter = {
   },
   inference: {
     model: "gpt-6-luna",
+    catalog: "native",
+    source: "OpenAI",
+    models: (account, quit) => import("./models").then(m => m.read(account, quit)),
     start: (r, at) => Codex.start(at, r, toolless),
     restore: Codex.restore,
     renew: (c, r) => c instanceof Codex && c.renew(r),
