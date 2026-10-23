@@ -51,6 +51,7 @@ export function start(server: Server) {
     detected: 0,
     settling: 0,
   };
+  if (!server.summaries) workers.summaries.selected = setup.loadSelection(setup.path(server.socket));
   server.summaries = workers.summaries;
   server.usage = workers.usage;
   services.set(server, workers);

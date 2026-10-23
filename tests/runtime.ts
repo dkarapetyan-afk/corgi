@@ -138,6 +138,7 @@ export class Runtime extends TestCase {
       CORGI_BELL: "off",
       CORGI_CODEX_BIN: fake,
       CORGI_CLAUDE_BIN: fake,
+      CORGI_PI_BIN: join(this.temp.name, "pi-not-installed"),
       // Test builds look for system installs here instead of /usr, /opt and /Applications.
       CORGI_TEST_SYSTEM_ROOT: join(this.temp.name, "system"),
       SHELL: "/bin/sh",

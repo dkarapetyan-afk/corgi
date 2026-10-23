@@ -7,6 +7,9 @@ import * as prompt from "./prompt";
 import type { View as ToolView } from "./tools";
 import { Backend, outcome } from "../summary_backend";
 import * as setup from "../inference/setup";
+import { Selection } from "../inference/models";
+import { Catalog } from "../inference/catalog";
+import { adapter } from "../providers";
 import { Meter } from "../usage/live";
 import * as clock from "../clock";
 export const cooldown_ms = 8000,
@@ -147,6 +150,8 @@ export class Worker {
   }
   slots: Array<Slot | null> = Array(max_actors).fill(null);
   implementation = new Backend();
+  catalog = new Catalog();
+  selected = new Selection();
   system_meter = new Meter();
   choice: setup.Choice = "auto";
   /** What the model is asked for; the choice says only who answers. */
@@ -200,15 +205,21 @@ export class Worker {
     s.choice = this.choice;
     s.uses = { ...this.uses };
     s.provider = provider;
-    s.model = setup.model(provider);
+    const selected = this.selection(provider);
+    s.model = selected.model;
+    s.account = selected.account;
+    s.selection = { ...this.selected };
+    s.available = this.catalog.available;
+    s.loading = this.catalog.loading;
     s.locked = this.locked;
     for (const p of Provider.all) {
       s.launches[p] = this.launches.count[p];
-      s.models[p] = setup.model(p);
+      s.models[p] = this.selection(p).model;
     }
     return s;
   }
-  configure(choice: setup.Choice | null, uses: Partial<setup.Uses> = {}) {
+  configure(choice: setup.Choice | null, uses: Partial<setup.Uses> = {}, selected?: Selection) {
+    if (selected) this.selected = selected;
     if (choice === "off") {
       this.uses = setup.allUses(false);
       this.link_names = false;
@@ -237,20 +248,41 @@ export class Worker {
   systemUsage(now: number) {
     return this.system_meter.view(now);
   }
+  selection(provider: Provider | null): Selection {
+    if (!provider) return new Selection();
+    if (this.choice === provider && this.selected.provider === provider && this.selected.model) return this.selected;
+    const available = this.catalog.available.find(m => m.provider === provider),
+      override = process.env.CORGI_INFERENCE_MODEL ?? process.env.CORGI_SUMMARY_MODEL;
+    return Object.assign(new Selection(), {
+      provider,
+      model: override ?? available?.model ?? (adapter(provider).inference.models ? "" : setup.model(provider)),
+      account: override === undefined ? (available?.account ?? "") : "",
+    });
+  }
   applyChoice() {
     const provider =
       this.locked && this.choice === "auto" ? this.active : setup.resolve(this.choice, this.launches, this.remembered);
-    if (this.applied && provider === this.active) return;
-    this.implementation.use(provider);
+    const selected = this.selection(provider);
+    if (
+      this.applied &&
+      provider === this.active &&
+      this.implementation.pool.config.model === (selected.model || null) &&
+      this.implementation.pool.config.account === selected.account
+    )
+      return;
+    this.implementation.use(provider, selected.model, selected.account);
+    this.implementation.pool.config.disabled ||= !selected.model;
     this.active = provider;
     this.applied = true;
   }
   async pause() {
     this.pausing = true;
+    await this.catalog.pause();
     const deadline = Date.now() + 47000;
     while (this.running) {
       if (Date.now() >= deadline) {
         this.pausing = false;
+        this.catalog.resume();
         throw Error("ReloadInferenceBusy");
       }
       await Bun.sleep(10);
@@ -258,6 +290,7 @@ export class Worker {
     this.paused = true;
   }
   unpause() {
+    this.catalog.resume();
     this.pausing = false;
     this.paused = false;
   }
@@ -270,6 +303,7 @@ export class Worker {
       pool: this.implementation.pool.capture(),
       next_request: this.implementation.next_request,
       choice: this.choice,
+      selected: this.selected,
       launches: this.launches,
       remembered: this.remembered,
       active: this.active,
@@ -290,6 +324,7 @@ export class Worker {
     )
       throw Error("InvalidCheckpoint");
     const worker = new Worker(saved.choice);
+    worker.selected = Selection.parse(saved.selected);
     worker.launches = setup.Launches.restore(saved.launches);
     for (const key of [
       "remembered",
@@ -361,6 +396,7 @@ export class Worker {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.implementation.close();
+    this.catalog.close();
     this.slots.fill(null);
   }
   submit(owner: Actor, evidence: Text, progress: ToolView | null, panes: any[]) {
@@ -431,6 +467,20 @@ export class Worker {
     if (this.running || this.stopping || this.pausing) return;
     this.running = true;
     try {
+      const provider =
+        this.locked && this.choice === "auto"
+          ? this.active
+          : setup.resolve(this.choice, this.launches, this.remembered);
+      // Auto must resolve after restart even if nobody opens the picker.
+      if (
+        (this.naming() || this.summarizing() || this.uses.worktrees) &&
+        provider &&
+        adapter(provider).inference.models &&
+        !(this.choice === provider && this.selected.provider === provider && this.selected.model) &&
+        !process.env.CORGI_INFERENCE_MODEL &&
+        !process.env.CORGI_SUMMARY_MODEL
+      )
+        void this.catalog.refresh();
       this.applyChoice();
       this.locked ||= this.implementation.pool.started;
       this.system_meter = this.implementation.pool.system_usage.meter;
@@ -448,7 +498,7 @@ export class Worker {
             this.link_requests[i] = null;
           }
         }
-      if (!this.naming() && !this.summarizing()) return;
+      if ((!this.naming() && !this.summarizing()) || this.implementation.pool.config.disabled) return;
       const now = clock.milliTimestamp();
       if (now < this.next_global) return;
       let index = -1;

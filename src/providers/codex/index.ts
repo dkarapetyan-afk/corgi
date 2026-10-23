@@ -1,4 +1,4 @@
-import { appBundles, configHome, str, Hooks, Text, planLabel } from "../common";
+import { appBundles, configHome, str, Hooks, Text } from "../common";
 import type { Adapter } from "../adapter";
 import * as hooksFile from "../hooks_file";
 import * as integration from "./integration";
@@ -12,6 +12,7 @@ export { ItemType, commandDirectory, writes } from "./headless";
 import { screen, Watcher } from "./screen";
 import * as renaming from "./rename";
 export { screen };
+export { label as plan } from "./plan";
 import { caps, identity, info, keeping, vocabulary } from "./info";
 import { signin } from "./signin";
 import * as commandLine from "../command_line";
@@ -32,21 +33,6 @@ export function titleSession(title: string) {
     found = new Text(s);
   }
   return found;
-}
-export function plan(code: string) {
-  const names: Record<string, string> = {
-    prolite: "Pro 100",
-    pro: "Pro 200",
-    promax: "Pro 500",
-    team: "Business",
-    self_serve_business_usage_based: "Business",
-    self_serve_business_prolite: "Business Premium",
-    business: "Enterprise",
-    ent26: "Enterprise",
-    enterprise_cbp_usage_based: "Enterprise",
-    enterprise_cbp_automation: "Enterprise (Automation)",
-  };
-  return names[code] ? new Text(names[code]) : planLabel(code);
 }
 /** The hook events Corgi listens to. */
 export const events = [

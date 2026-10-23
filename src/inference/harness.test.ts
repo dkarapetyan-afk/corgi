@@ -4,10 +4,34 @@ import { test, expect } from "bun:test";
 import { resolve } from "node:path";
 import { Pool } from "./harness";
 import * as appServer from "../providers/codex/app_server";
+import * as sim from "../providers/sim";
 const fixture = resolve(import.meta.dir, "../../tests/inference_harness.ts");
 function pool(provider: "codex" | "claude", timeout_ms = 3000) {
   return new Pool({ config: { provider, executable: fixture, timeout_ms } });
 }
+test("inference starts in the selected account and old handoffs default to the original account", async () => {
+  const unregister = sim.register(),
+    start = sim.adapter.inference.start;
+  using p = new Pool({ config: { provider: sim.sim, account: "/private/pi-work" } });
+  let account = "";
+  sim.adapter.inference.start = (_request, place) => {
+    account = place.account;
+    throw Error("FixtureStop");
+  };
+  try {
+    await expect(p.infer({ instructions: "Name a conversation", content: "request" })).rejects.toThrow("FixtureStop");
+    expect(account).toBe("/private/pi-work");
+    const saved = p.capture();
+    delete (saved.config as Partial<typeof saved.config>).account;
+    using restored = new Pool();
+    restored.restore(saved);
+    expect(restored.config.account).toBe("");
+  } finally {
+    sim.adapter.inference.start = start;
+    unregister();
+  }
+});
+
 test("inference reuses each harness conversation and keeps targets separate", async () => {
   for (const provider of ["codex", "claude"] as const) {
     using p = pool(provider);

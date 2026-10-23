@@ -16,6 +16,7 @@ export const Choice = {
 export type Config = {
   provider: Provider;
   model: string | null;
+  account: string;
   executable: string | null;
   disabled: boolean;
   timeout_ms: number;
@@ -91,6 +92,7 @@ export class Pool {
     this.config = {
       provider: Provider.all[0],
       model: null,
+      account: "",
       executable: null,
       disabled: false,
       timeout_ms: 45000,
@@ -121,7 +123,7 @@ export class Pool {
   }
   restore(saved: any) {
     if (this.slots.some(Boolean)) throw Error("InferenceBusy");
-    this.config = { ...saved.config };
+    this.config = { ...this.config, ...saved.config };
     this.clock = BigInt(saved.clock);
     this.started = saved.started;
     this.system_usage = hydrate(new System(), saved.system_usage);
@@ -199,7 +201,11 @@ export class Pool {
       provider = adapter(this.config.provider),
       executable = this.config.executable ?? discovery.override(this.config.provider) ?? provider.command;
     const slot = new Slot(
-      provider.inference.start(inference(request, this.config.model), { cwd: "/tmp", account: "", executable }),
+      provider.inference.start(inference(request, this.config.model), {
+        cwd: "/tmp",
+        account: this.config.account,
+        executable,
+      }),
       request,
     );
     harnesses++;

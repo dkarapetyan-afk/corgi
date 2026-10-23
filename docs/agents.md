@@ -175,6 +175,27 @@ settings override environment defaults; [inference/setup.ts](../src/inference/se
 owns that precedence and [inference/harness.ts](../src/inference/harness.ts) owns
 the persistent provider conversations.
 
+Clever Corgi's model picker groups Pi's authenticated chat models under Pi. It
+shows five, with “Show N more”, and searches the entire catalog using Manage
+Agents' matching rules. Discovery starts only when opening the model picker,
+not Corgi setup, and never holds the daemon request queue. Pi shows “Fetching
+models…” while cached choices remain usable. Picker opens share pending work
+and reuse results for a minute; a failed refresh retains the previous catalog.
+Pi's own refresh-enabled auth check filters stale OAuth
+and unavailable credentials; a catalog entry alone is not proof of sign-in.
+These probes disable extensions, tools and context and create no saved session
+or model turn. API-key readiness is not a paid-request health check.
+
+Pi's “Auto (model name)” prefers recognized subscription-backed access, then
+catalog prices estimated for four input tokens per output token. Missing or
+unpriced zero costs are unknown, not free. Auto's resolved model and account are
+not saved as preferences and can change on a later catalog refresh. An explicit
+pick saves its model and account independently of Pi's chat settings; it never
+silently substitutes another model if that login becomes unavailable. Summaries,
+link names and worktree briefs all use that selection.
+The defaulted selection, catalog and account fields extend the wire and handoff
+snapshots without changing protocol or saved-format versions.
+
 Requests carry bounded current evidence. Activity summaries receive commentary
 and tool descriptions, not tool output; link naming can include visible terminal
 text. Worktree briefs use commits and a trimmed diff. Names and summaries are
@@ -210,3 +231,72 @@ events; they are not complete vendor emulators.
 include `conversations`, `codex_titles`, `subagents`, `activity_summary`,
 `inference_reload` and `reloads`. [evals/README.md](../evals/README.md) covers
 optional live summary evaluation. Ordinary tests do not contact models.
+
+## Pi
+
+Pi 1.0.0 or newer is supported. Corgi discovers `pi` on PATH (or
+`CORGI_PI_BIN`) and installs `extensions/corgi.js` under
+`${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`. Installation leaves settings and
+other extensions alone. `--no-extensions` disables reporting unless that
+file is explicitly loaded with `-e`.
+
+Pi accounts use separate `PI_CODING_AGENT_DIR` folders. Manage agents can
+add or rename them, and each keeps its own hooks, model settings, history,
+and resume locations. New accounts share skills, prompts, themes, model
+definitions and key bindings; settings and extensions stay private. Corgi
+refuses to modify an imported account's symlinked extensions directory.
+Guided sign-in opens Pi: type `/login` and choose a
+model provider. Corgi checks that provider with `pi auth check`. Removing
+a Corgi-managed account removes its local credentials; imported folders
+are only forgotten. The launcher shows the saved account identity without
+a cache-status suffix; saved credentials alone do not verify sign-in.
+
+Pi supplies terminal lifecycle, tools, blocked dialogs, context and token
+usage through its extension and session records. `agent_settled`, after
+retries and queued work, ends a Corgi turn. Pi 1.0 lacks settlement's
+`aborted` flag; assistant stop reasons and an observed Escape supply it.
+Corgi also supports session history, resume, fork, rename, headless RPC,
+private tool-less summaries and live transport handoff. Activity summaries
+use current-turn transcript commentary and tools independently of the
+hook activity shown as a fallback.
+
+History follows Pi's session-directory environment variable and global
+setting. Sessions observed in Corgi record their exact file and account in
+`corgi-history/` under the default Pi configuration directory, so per-command
+`--session-dir` and project settings remain discoverable and resumable.
+When accounts share a session directory, observed sessions retain their
+account; unobserved sessions appear once, under the default account when
+it shares that directory, otherwise the first registered account.
+
+The launcher asks Pi's RPC state for its effective model and display name.
+This offline probe disables extensions, tools and context files and does
+not save a session. If the probe fails, Corgi falls back to cached settings
+and its model-name formatter; the provider-qualified launch ID stays intact.
+
+Pi's project-trust flag is not a tool-permission bypass. Its launcher has
+no YOLO toggle; permission extensions keep their own policy. For OpenAI Codex
+OAuth accounts, Corgi asks Pi for a refreshed bearer token and reads ChatGPT's
+subscription usage endpoint. Usage shares the launcher's cache, cooldown and
+ten-minute expiry. Other providers do not report quota in the launcher; saved
+OAuth credentials alone do not verify sign-in or remaining quota.
+Extension-defined subagent relationships are not exposed through a standard
+interface, so Corgi does not invent them.
+
+Headless prompts received while busy are follow-ups. Stop waits for prompt
+acceptance, clears the queue, then aborts. Dialog answers use `message` for
+text or a selected option; confirmation uses `allow`. Timed-out dialogs
+are removed. Inference disables discovered extensions, context, skills and
+tools; a requested JSON schema is a prompt constraint, validated by the caller.
+
+Opt-in live checks use the configured Pi OAuth account and Luna:
+
+```sh
+bun tools/pi_live.ts /absolute/path/to/pi/dist/bundle/cli.js
+bun tools/pi_live.ts /absolute/path/to/pi/dist/bundle/cli.js --account
+bun tools/pi_rpc_live.ts /absolute/path/to/pi/dist/bundle/cli.js
+```
+
+The terminal check uses a disposable configuration and runtime; the RPC
+check saves sessions only in its disposable directory. Both consume model
+usage. The provider enum and defaulted provider maps expand in the schema
+snapshots; existing wire and saved fields retain their meanings.

@@ -383,3 +383,22 @@ test("headless commands route by both provider and session and cannot switch ide
   await request(p.server, p.peer, { op: "headless.stop", payload: { provider: "codex", session: "same-id" } });
   expect(p.server.runtime.sessions).toEqual([claude]);
 });
+
+test("a provider can retire a timed-out dialog without leaving its actor blocked", () => {
+  const s = session(),
+    registry = new Registry();
+  start(s, registry, "t", "turn");
+  s.apply(registry, {
+    kind: "request",
+    session: "t",
+    id: "dialog",
+    ask: { tool: false, name: "confirm", summary: "Continue?" },
+  });
+  expect(registry.get("codex", "t").state.state).toBe("blocked");
+  s.apply(registry, { kind: "request_closed", session: "t", id: "wrong", running: true });
+  expect(s.approvals).toHaveLength(1);
+  s.apply(registry, { kind: "request_closed", session: "t", id: "dialog", running: true });
+  expect(s.approvals).toHaveLength(0);
+  expect(registry.get("codex", "t").pending_headless_requests).toBe(0);
+  expect(registry.get("codex", "t").state.state).toBe("working");
+});

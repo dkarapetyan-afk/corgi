@@ -31,7 +31,8 @@ import * as framePacing from "./frame_pacing";
 import * as config from "./build_config";
 import * as releaseLabel from "./release_label";
 import { Writer, clamp, directoryLabel, displayWidth, writeEllipsis, sat } from "./text";
-import { Dialog } from "./name_dialog";
+import { Dialog, View as DialogView, writeField } from "./name_dialog";
+import { matches } from "./search";
 import * as keys from "./keys";
 import * as worktreeFolder from "./worktree_folder";
 import * as shellPicker from "./shell_picker";
@@ -44,12 +45,17 @@ import type { ShellStatus } from "./launch/command";
 import { preferred_width as launcher_width, type Menu as LauncherMenu } from "./agent_launcher";
 import type { Connection } from "./rpc";
 import type { Use, Uses } from "./inference/setup";
+import { Selection, options as modelOptions, type Option as ModelOption } from "./inference/models";
 
 /** The inference setup status the daemon publishes, as inference.zig's `Status`. */
 export interface Status {
   choice: Summarizer;
   provider: Provider | null;
   model: string;
+  account: string;
+  selection: Selection;
+  available: ModelOption[];
+  loading: boolean;
   locked: boolean;
   launches: ByProvider<number>;
   models: ByProvider<string>;
@@ -63,6 +69,10 @@ export function status(value: any = {}): Status {
     choice: value?.choice ?? "auto",
     provider: value?.provider ?? null,
     model: value?.model ?? "",
+    account: typeof value?.account === "string" ? value.account : "",
+    selection: Selection.parse(value?.selection),
+    available: modelOptions(value?.available),
+    loading: value?.loading === true,
     locked: value?.locked === true,
     launches: byProvider(p => Number(value?.launches?.[p] ?? 0)),
     models: byProvider(p => value?.models?.[p] ?? ""),
@@ -156,7 +166,8 @@ function importSource(item: Item): catalog.Source | null {
 
 /** What Enter or a click asks the controller to do. */
 export type Apply =
-  | { kind: "summaries"; choice: Summarizer }
+  | { kind: "inference_models" }
+  | { kind: "summaries"; choice: Summarizer; model?: string; account?: string }
   | { kind: "inference_use"; use: Use; on: boolean }
   | { kind: "readings" | "smart_links" | "ghostty"; on: boolean }
   | { kind: "corgi_intensity"; value: number }
@@ -182,6 +193,7 @@ export type Hit =
   | { item: Item }
   | { option: number }
   | { choice: number }
+  | { model_search: number }
   | { picker: importPicker.Hit }
   | { manager: Rect }
   | { intensity: number }
@@ -237,7 +249,9 @@ interface Choice {
   text: string;
   note: string;
   current: boolean;
-  apply: Apply;
+  heading?: boolean;
+  more?: Provider;
+  apply: Apply | null;
 }
 type Line =
   | { tag: "title" | "lead" | "note" | "warn"; text: string }
@@ -497,7 +511,19 @@ export class Menu {
   /** Whether the prefix key came last; setup runs only detach after it. */
   private after_prefix = false;
   /** The open dropdown: its setting's option, and the highlighted choice. */
-  private dropdown: { option: number; at: number } | null = null;
+  private dropdown: { option: number; at: number; top: number } | null = null;
+  private expanded_models = new Set<Provider>();
+  private model_query = Dialog.init({ agent_command: 0 }, "");
+  modelSearch(): Dialog | null {
+    return this.dropdown ? this.model_query : null;
+  }
+  private searchedModels() {
+    if (this.dropdown) {
+      this.dropdown.at = 0;
+      this.dropdown.top = 0;
+    }
+    this.expanded_models.clear();
+  }
   /** Pointer adjustments preview until release, then save once. */
   private intensity_drag: number | null = null;
   /** The selected row's exit point while the pointer aims for its options,
@@ -620,6 +646,12 @@ export class Menu {
   /** The field's or the import picker's own keys while they have focus;
    * false for the rest. Enter and Esc go on to save or cancel the field. */
   key(byte: number): boolean {
+    if (this.dropdown) {
+      if ([13, 27, 9, 14, 16].includes(byte)) return false;
+      this.model_query.key(byte);
+      this.searchedModels();
+      return true;
+    }
     if (this.editing) {
       if (byte === 13 || byte === 27) return false;
       if (byte !== 9) this.editing.key(byte);
@@ -640,12 +672,25 @@ export class Menu {
   /** Escape sequences the field takes while it has focus: caret movement
    * and Delete. Arrows up and down stay with it rather than move. */
   sequence(text: string): boolean {
+    if (this.dropdown) {
+      const k = keys.parse(text);
+      if (k === "up" || k === "down" || k === "shift_tab" || (k === "left" && !this.model_query.len)) return false;
+      const before = this.model_query.name();
+      this.model_query.sequence(text);
+      if (before !== this.model_query.name()) this.searchedModels();
+      return true;
+    }
     if (!this.editing) return false;
     const k = keys.parse(text);
     if (k !== "up" && k !== "down" && k !== "shift_tab") this.editing.sequence(text);
     return true;
   }
   paste(byte: number): void {
+    if (this.dropdown) {
+      this.model_query.pasteByte(byte);
+      this.searchedModels();
+      return;
+    }
     if (this.managing()) {
       this.agents!.manager.paste(byte, this.agents!.manageModel());
       return;
@@ -669,7 +714,13 @@ export class Menu {
     if (this.dropdown !== null) {
       const d = this.dropdown,
         n = this.choices(s, prefs).length;
-      d.at = wrap ? (d.at + (next ? 1 : n - 1)) % n : clamp(d.at + (next ? 1 : -1), 0, n - 1);
+      const choices = this.choices(s, prefs);
+      for (let step = 0; step < n; step++) {
+        const at = wrap ? (d.at + (next ? 1 : n - 1)) % n : clamp(d.at + (next ? 1 : -1), 0, n - 1);
+        if (at === d.at) break;
+        d.at = at;
+        if (choices[at]?.apply || choices[at]?.more) break;
+      }
       return;
     }
     const picker = this.focus === "options" ? this.importing() : null;
@@ -714,7 +765,8 @@ export class Menu {
   /** Esc closes setup, except while adjusting a slider or copying sessions. */
   escape(): boolean {
     if (this.focus !== "options") return false;
-    if (this.item === "flourishes" || this.importing()?.stage === "copying") return this.back();
+    if ((this.dropdown && this.model_query.len) || this.item === "flourishes" || this.importing()?.stage === "copying")
+      return this.back();
     return false;
   }
   /** Returns focus to the list. False when it already has it. */
@@ -731,6 +783,11 @@ export class Menu {
     }
     if (this.focus === "list") return false;
     if (this.dropdown !== null) {
+      if (this.model_query.len) {
+        this.model_query = Dialog.init({ agent_command: 0 }, "");
+        this.searchedModels();
+        return true;
+      }
       this.dropdown = null;
       return true;
     }
@@ -761,14 +818,17 @@ export class Menu {
     if (this.focus === "options") {
       const option = this.options(s, prefs)[this.cursor];
       if (option?.choice !== undefined) {
+        this.model_query = Dialog.init({ agent_command: 0 }, "");
+        this.expanded_models.clear();
         this.dropdown = {
           option: this.cursor,
+          top: 0,
           at: Math.max(
             0,
             option.choice.choices.findIndex(c => c.current),
           ),
         };
-        return null;
+        return { kind: "inference_models" };
       }
       return option && !option.disabled ? option.apply : null;
     }
@@ -807,11 +867,17 @@ export class Menu {
     if (this.editing && !on_field) this.editing = null;
     // The open dropdown takes the click, or closes.
     if (this.dropdown !== null) {
-      const choice = "choice" in hit ? this.choose(hit.choice, s, prefs) : null;
+      if ("choice" in hit) return this.choose(hit.choice, s, prefs);
+      if ("model_search" in hit) {
+        const width = Math.max(1, (this.rendered?.layout.options.w ?? 20) - 10),
+          offset = DialogView.scroll(this.model_query, width);
+        this.model_query.position(this.model_query.byteAtColumn(offset, Math.max(0, hit.model_search)));
+        return null;
+      }
       this.dropdown = null;
-      return choice;
+      return null;
     }
-    if ("choice" in hit) return null;
+    if ("choice" in hit || "model_search" in hit) return null;
     if ("url" in hit) return { kind: "open", url: hit.url };
     if ("picker" in hit) {
       const picker = this.importing();
@@ -843,11 +909,26 @@ export class Menu {
   }
   /** The open dropdown's choices. */
   private choices(s: Status, prefs: Preferences): Choice[] {
-    return this.dropdown === null ? [] : (this.options(s, prefs)[this.dropdown.option]?.choice?.choices ?? []);
+    if (!this.dropdown) return [];
+    const choices = this.options(s, prefs)[this.dropdown.option]?.choice?.choices ?? [];
+    const current = choices[this.dropdown.at];
+    if (!current?.apply && !current?.more)
+      this.dropdown.at = Math.max(
+        0,
+        choices.findIndex(c => c.apply || c.more),
+      );
+    return choices;
   }
   /** Closes the dropdown on choice `index`; Apply when it isn't the one in use. */
   private choose(index: number, s: Status, prefs: Preferences): Apply | null {
     const choice = this.choices(s, prefs)[index];
+    if (choice?.more) {
+      if (this.expanded_models.has(choice.more)) this.expanded_models.delete(choice.more);
+      else this.expanded_models.add(choice.more);
+      this.dropdown!.at = Math.min(index, this.choices(s, prefs).length - 1);
+      return null;
+    }
+    if (!choice?.apply) return null;
     this.dropdown = null;
     return choice && !choice.current ? choice.apply : null;
   }
@@ -952,8 +1033,11 @@ export class Menu {
     if (l.single && this.focus === "list") return null;
     const open = this.dropdownBox(l, s, prefs);
     if (open?.contains(x, y)) {
-      const index = dropdown.hit(open, this.choices(s, prefs).length, x, y);
-      return index === null ? null : { choice: index };
+      if (y === open.y + 1 && x > open.x && x < open.x + open.w - 1) return { model_search: x - open.x - 4 };
+      const choices = this.choices(s, prefs),
+        index = dropdown.hit(open, Math.min(choices.length, open.h - 3), x, y, true);
+      const at = index === null ? -1 : index + (this.dropdown?.top ?? 0);
+      return at < 0 || (!choices[at]?.apply && !choices[at]?.more) ? null : { choice: at };
     }
     if (x < l.options.x || x >= l.options.x + l.options.w) return null;
     const lines = this.lines(s, prefs, l),
@@ -998,17 +1082,30 @@ export class Menu {
     const managing = this.item === "agents" && this.agents !== null && !(l.single && this.focus === "list");
     if (!(l.single && this.focus === "list") && !managing) this.drawOptions(w, l, s, prefs, now_ms);
     const open = this.dropdownBox(l, s, prefs);
-    if (open)
+    if (open) {
       dropdown.draw(
         w,
         open,
-        this.choices(s, prefs).map((choice, i) => ({
-          text: choice.text,
-          note: choice.note,
-          current: choice.current,
-          hovered: i === this.dropdown?.at,
-        })),
+        this.choices(s, prefs)
+          .slice(this.dropdown?.top ?? 0, (this.dropdown?.top ?? 0) + open.h - 3)
+          .map((choice, i) => ({
+            text: choice.text,
+            note: choice.note,
+            current: choice.current,
+            heading: choice.heading,
+            hovered: i + (this.dropdown?.top ?? 0) === this.dropdown?.at,
+          })),
+        { text: "", note: "" },
       );
+      const x = open.x + 4,
+        y = open.y + 1,
+        width = Math.max(1, open.w - 7);
+      w.write(at(x, y) + text);
+      const offset = DialogView.scroll(this.model_query, width);
+      const column = writeField(w, this.model_query, offset, width, text);
+      if (!this.model_query.len) w.write(border + "Search models");
+      this.caret = { x: x + column, y };
+    }
     if (l.detail) {
       const d = l.detail;
       onboarding.drawPresetDetail(w, d.x, d.y, d.width, d.compact, {
@@ -1433,9 +1530,12 @@ export class Menu {
     if (d === null) return null;
     const row = this.lines(s, prefs, l).findIndex(line => line.tag === "option" && line.index === d.option);
     if (row < 0) return null;
-    const h = this.choices(s, prefs).length + 2,
+    const count = this.choices(s, prefs).length,
+      h = Math.min(count + 3, l.body),
+      capacity = h - 3,
       bottom = l.b.y + 2 + l.body;
-    return new Rect(l.options.x + 2, Math.min(l.b.y + 3 + row, bottom - h), l.options.w - 3, h);
+    d.top = clamp(d.top, Math.max(0, d.at - capacity + 1), Math.min(d.at, Math.max(0, count - capacity)));
+    return new Rect(l.options.x + 2, Math.max(l.b.y + 2, Math.min(l.b.y + 3 + row, bottom - h)), l.options.w - 3, h);
   }
   /** The options pane's rows as they fit `l`: leads and notes wrap, notes
    * give way first, then the options scroll to keep the cursor in view. */
@@ -1615,12 +1715,7 @@ export class Menu {
             choice: {
               text: inUse(s),
               on: s.choice !== "off",
-              choices: summarizers.map(choice => ({
-                text: Summarizer.label(choice),
-                note: summary(choice, s),
-                current: choice === s.choice,
-                apply: { kind: "summaries", choice },
-              })),
+              choices: summarizerChoices(s, this.expanded_models, this.model_query.name()),
             },
           }),
           { tag: "brief", text: summary(s.choice, s), tone: "muted" },
@@ -1917,6 +2012,7 @@ export class Menu {
       ];
     if (this.dropdown !== null)
       return [
+        ["type", "search"],
         ["↑↓", "move"],
         ["enter", "use"],
         ["esc", "close"],
@@ -2067,6 +2163,83 @@ function wrap(value: string, room: number): string[] {
   if (line.length > 0) out.push(line);
   return out;
 }
+function summarizerChoices(s: Status, expanded: ReadonlySet<Provider>, query: string): Choice[] {
+  const choices = summarizers.flatMap(choice => {
+    const provider = Summarizer.provider(choice);
+    if (!provider || !adapter(provider).inference.models)
+      return !matches(query, `${Summarizer.label(choice)} ${summary(choice, s)}`)
+        ? []
+        : [
+            {
+              text: Summarizer.label(choice),
+              note: summary(choice, s),
+              current: choice === s.choice,
+              apply: { kind: "summaries", choice },
+            } as Choice,
+          ];
+    const all = s.available.filter(m => m.provider === provider),
+      models = all.filter(m => matches(query, `${adapter(provider).name} ${m.name} ${m.model} ${m.account_name}`)),
+      show_all = expanded.has(provider),
+      auto = s.selection.provider !== provider || !s.selection.model;
+    if (query && !models.length && !(s.loading && matches(query, adapter(provider).name))) return [];
+    const resolved =
+      auto && s.choice === provider
+        ? (all.find(m => m.model === s.model && m.account === s.account)?.name ??
+          (s.model ? Model.resolve(s.model).label() : null))
+        : all[0]?.name;
+    const automatic: Choice = {
+      text: `  Auto (${resolved ?? (s.loading ? "fetching…" : "unavailable")})`,
+      note: all[0] || s.loading ? "" : `Sign in through ${adapter(provider).name} first`,
+      current: s.choice === provider && auto,
+      apply: s.loading && !all.length ? null : { kind: "summaries", choice: provider },
+    };
+    const heading: Choice = {
+      text: adapter(provider).name,
+      note: s.loading
+        ? "Fetching models…"
+        : models.length
+          ? `${models.length} signed-in models`
+          : "No signed-in models",
+      current: false,
+      heading: true,
+      apply: null,
+    };
+    return [
+      heading,
+      ...(matches(query, automatic.text) ? [automatic] : []),
+      ...models.slice(0, show_all ? models.length : 5).map((m): Choice => ({
+        text: "  " + m.name,
+        note: [
+          m.model.split("/")[0],
+          m.subscription
+            ? "subscription"
+            : m.input_cost === null || m.output_cost === null
+              ? "price unknown"
+              : `$${m.input_cost}/$${m.output_cost} per Mt`,
+          m.account_name,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        current: s.choice === provider && !auto && s.model === m.model && s.account === m.account,
+        apply: { kind: "summaries", choice: provider, model: m.model, account: m.account },
+      })),
+      ...(models.length > 5
+        ? [
+            {
+              text: show_all ? "  Show fewer" : `  Show ${models.length - 5} more`,
+              note: "",
+              current: false,
+              more: provider,
+              apply: null,
+            } as Choice,
+          ]
+        : []),
+    ];
+  });
+  return choices.length
+    ? choices
+    : [{ text: "No matching models", note: "", heading: true, current: false, apply: null }];
+}
 function summary(choice: Summarizer, s: Status): string {
   switch (choice) {
     case "auto":
@@ -2076,7 +2249,17 @@ function summary(choice: Summarizer, s: Status): string {
       return "No summaries, plain links";
     default: {
       const provider = Summarizer.provider(choice)!;
-      return `${Model.resolve(s.models[provider]).label()} · your ${adapter(provider).name} login`;
+      const selected = s.available.find(
+        m =>
+          m.provider === provider &&
+          m.model === s.models[provider] &&
+          (provider !== s.provider || m.account === s.account),
+      );
+      if (adapter(provider).inference.models && !s.models[provider])
+        return s.loading
+          ? "Checking signed-in models…"
+          : `Sign in to a model provider through ${adapter(provider).name}`;
+      return `${selected?.name ?? Model.resolve(s.models[provider]).label()} · your ${adapter(provider).name} login`;
     }
   }
 }
@@ -2093,7 +2276,15 @@ function note(choice: Summarizer, s: Status): string | null {
 }
 /** Summaries' value: the choice, and whom Auto follows once it knows. */
 function inUse(s: Status): string {
-  const label = Summarizer.label(s.choice);
+  const label = Summarizer.label(s.choice),
+    provider = Summarizer.provider(s.choice);
+  if (provider && adapter(provider).inference.models) {
+    const model =
+      s.available.find(m => m.provider === provider && m.model === s.model && m.account === s.account)?.name ??
+      (s.model ? Model.resolve(s.model).label() : "checking…");
+    const automatic = s.selection.provider !== provider || !s.selection.model;
+    return `${label} · ${automatic ? `Auto (${model})` : model}`;
+  }
   return s.choice === "auto" && s.provider !== null ? `${label} · ${adapter(s.provider).name}` : label;
 }
 /** Launches per provider since the daemon started, in launcher order. */

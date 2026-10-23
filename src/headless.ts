@@ -349,6 +349,19 @@ export class Session {
       actor.beginHeadlessUsage(this.joined.get(actor) ?? false);
       actor.headless_meter.sample(new Tokens(e.total.total), e.total.last, active, Date.now());
     }
+    if (e.kind === "request_closed") {
+      const removed = this.approvals.filter(r => r.id === e.id && r.actor === actor);
+      this.approvals = this.approvals.filter(r => !removed.includes(r));
+      if (actor) actor.pending_headless_requests = Math.max(0, actor.pending_headless_requests - removed.length);
+      if (removed.length && !this.hasApproval(actor)) {
+        target.state = e.running ? "working" : "idle";
+        target.attention = target.observation.unread() ? "finished" : "none";
+      }
+      this.syncTools(target);
+      if (target.state !== old) target.changed_at = Date.now() * 1000;
+      this.journal(e);
+      return false;
+    }
     if (e.kind === "request") {
       if (!this.approvals.some(request => request.actor === actor && request.id === e.id)) {
         if (this.approvals.length >= 64) throw Error("TooManyHeadlessRequests");

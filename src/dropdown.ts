@@ -23,6 +23,8 @@ export interface Choice {
   hovered: boolean;
   key?: string;
   dim?: boolean;
+  /** A non-selectable section heading inside a grouped menu. */
+  heading?: boolean;
 }
 /** Headings over the choices' text and over their notes. */
 export interface Heading {
@@ -70,6 +72,13 @@ export function hit(b: Rect, count: number, x: number, y: number, heading = fals
   return index >= 0 && index < count ? index : null;
 }
 function row(w: Writer, b: Rect, y: number, choice: Choice, indent: number): void {
+  if (choice.heading) {
+    const line = b.y + y + 1,
+      room = b.w - indent - 4;
+    w.write(`\x1b[${line};${b.x + 1 + indent}H` + fg("faint"));
+    writeEllipsis(w, choice.text + (choice.note ? " · " + choice.note : ""), room);
+    return;
+  }
   const style = choice.hovered
     ? new Style({ fg: "strong", bg: "selected" }).sgr()
     : new Style({ fg: choice.dim ? "faint" : "text", bg: "surface" }).sgr();
@@ -78,11 +87,17 @@ function row(w: Writer, b: Rect, y: number, choice: Choice, indent: number): voi
   w.splat(" ", b.w - 2);
   if (choice.current) w.write(`\x1b[${line};${b.x + 3}H` + fg(choice.dim ? "faint" : "strong") + `✓${style}`);
   else if (choice.key) w.write(`\x1b[${line};${b.x + 2}H${keycap} ${choice.key} ${style}`);
-  const right = b.x + b.w - 2 - displayWidth(choice.note);
+  const room = Math.max(0, b.w - indent - 4),
+    note_room = Math.max(0, room - Math.min(displayWidth(choice.text), Math.ceil(room / 2)) - 2),
+    right = b.x + b.w - 2 - Math.min(displayWidth(choice.note), note_room);
   // Faint is too dim on the hovered row's selected background.
   const faint = choice.hovered ? "muted" : choice.dim ? "line" : "faint";
   w.write(`\x1b[${line};${right + 1}H`);
-  if (choice.runs) for (const [part, token] of choice.runs) w.write(fg(token === "faint" ? faint : token) + part);
+  if (displayWidth(choice.note) > note_room) {
+    w.write(fg(faint));
+    writeEllipsis(w, choice.note, note_room);
+  } else if (choice.runs)
+    for (const [part, token] of choice.runs) w.write(fg(token === "faint" ? faint : token) + part);
   else w.write(fg(faint) + choice.note);
   w.write(style);
   w.write(`\x1b[${line};${b.x + 1 + indent}H`);

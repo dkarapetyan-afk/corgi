@@ -9,6 +9,7 @@ const c = os.c;
 pub const Provider = enum {
     codex,
     claude,
+    pi,
 
     const Info = struct {
         executables: []const []const u8,
@@ -25,6 +26,7 @@ pub const Provider = enum {
     fn info(provider: Provider) Info {
         return switch (provider) {
             .codex => .{ .executables = &.{"codex"}, .scripts = &.{"/@openai/codex/bin/codex.js"} },
+            .pi => .{ .executables = &.{"pi"}, .scripts = &.{"/@earendil-works/pi-coding-agent/dist/bundle/cli.js", "/@earendil-works/pi-coding-agent/dist/cli.js", "/@mariozechner/pi-coding-agent/dist/cli.js"} },
             .claude => .{
                 .executables = &.{ "claude", "claude-code" },
                 // Claude's daemon launches the versioned native binary directly.
@@ -210,4 +212,9 @@ test "a detached process is a background job and a terminal's foreground is not"
     defer _ = c.kill(leader, c.SIGKILL);
     try std.testing.expectEqual(@as(isize, 1), c.read(fd, &byte, 1));
     try std.testing.expect(!backgroundJob(leader));
+}
+test "Pi executable and bundled CLI are agents" {
+    try std.testing.expectEqual(@as(?Provider, .pi), identify(&.{"/opt/bin/pi"}));
+    try std.testing.expectEqual(@as(?Provider, .pi), identify(&.{"bun", "/a/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"}));
+    try std.testing.expectEqual(@as(?Provider, null), identify(&.{"vim", "pi"}));
 }

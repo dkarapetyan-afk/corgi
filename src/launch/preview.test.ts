@@ -7,7 +7,7 @@ import { Info } from "../usage/account";
 import { Text } from "../providers";
 import * as accounts from "../accounts";
 
-const variables = ["CORGI_ENV_BASE", "XDG_STATE_HOME", "CORGI_CODEX_BIN", "CORGI_CLAUDE_BIN"] as const;
+const variables = ["CORGI_ENV_BASE", "XDG_STATE_HOME", "CORGI_CODEX_BIN", "CORGI_CLAUDE_BIN", "CORGI_PI_BIN"] as const;
 let saved: NodeJS.ProcessEnv, root: string;
 beforeEach(() => {
   saved = { ...process.env };
@@ -16,6 +16,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = root;
   process.env.CORGI_CODEX_BIN = process.execPath;
   process.env.CORGI_CLAUDE_BIN = process.execPath;
+  process.env.CORGI_PI_BIN = process.execPath;
   accounts.reset();
 });
 afterEach(() => {
@@ -44,6 +45,25 @@ test("a launch preview names the model it shows and where it came from", () => {
   expect(o.source.text()).toBe("Project");
 });
 
+test("a launch preview prefers the provider's model name and keeps its launch id", async () => {
+  const worker = new Worker();
+  worker.launcher = async () => ({
+    account: async () => new Info(),
+    model: async () => ({ model: "custom/private-v2", model_name: "My coding model", source: "Pi settings" }),
+    close() {},
+  });
+  try {
+    worker.preview(root);
+    await worker.pump();
+    const o = worker.preview(root).options.pi;
+    expect(o.model.text()).toBe("custom/private-v2");
+    expect(o.modelLabel()).toBe("My coding model");
+    expect(o.source.text()).toBe("Pi settings");
+  } finally {
+    await worker.stop();
+  }
+});
+
 test("accounts are listed before provider reads, and a slow account doesn't delay other rows", async () => {
   listed(["slow", "fast"]);
   const worker = new Worker(),
@@ -65,7 +85,7 @@ test("accounts are listed before provider reads, and a slow account doesn't dela
     expect(first.accounts.every(a => a.option.pending)).toBe(true);
     await turn();
     const partial = worker.preview("/project");
-    expect(started).toHaveLength(4);
+    expect(started).toHaveLength(5);
     expect(partial.pending).toBe(true);
     expect(partial.options.codex.pending).toBe(false);
     expect(partial.accounts[0].option.pending).toBe(true);

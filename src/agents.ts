@@ -233,6 +233,7 @@ export class Agent {
     const next: State = (
       {
         session_start: "idle",
+        idle: "idle",
         stop: "idle",
         interrupt: "idle",
         tool_start: hook.asking ? "blocked" : "working",
@@ -295,6 +296,7 @@ export class Agent {
         this.setActivity(toolActivity(hook.tool, hook.description, hook.target));
     }
     if (start || next === "working") this.attention = this.observation.unread() ? "finished" : "none";
+    if (this.observation.pending_stop && hook.outcome) return this.endTurn(this.turnId(), hook.outcome, "hook", now);
     if (this.observation.pending_stop) return false;
     if (event === "interrupt" && (old === "working" || old === "blocked"))
       return this.endTurn(this.turnId(), "interrupted", "hook", now);

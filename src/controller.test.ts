@@ -250,6 +250,31 @@ test("Left returns to setup's list while Escape closes an open dropdown", async 
   }
 });
 
+test("Clever Corgi's model search takes typing and bracketed paste without changing the selected model", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const menu = SetupMenu.open();
+  menu.openOptions(s.runtime.inference, s.prefs);
+  menu.enter(s.runtime.inference, s.prefs);
+  s.corgi_setup = menu;
+  try {
+    await s.input(bytes("luna"));
+    await s.input(bytes("\x1b[200~ work\x1b[201~"));
+    expect(menu.modelSearch()?.name()).toBe("luna work");
+    expect(s.corgi_setup).toBe(menu);
+    await s.input(bytes("\x1b[A"));
+    expect(menu.modelSearch()?.name()).toBe("luna work");
+    await s.input(bytes("\x1b[27u"));
+    expect(menu.modelSearch()?.name()).toBe("");
+    expect(s.corgi_setup).toBe(menu);
+    await s.input(bytes("\x1b[27u"));
+    expect(s.corgi_setup).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("setup previews intensity drags and saves once on release, including outside the modal", async () => {
   const update = spyOn(preferences, "update").mockImplementation(() => {});
   const s = controller();
@@ -1424,7 +1449,7 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.account === "/accounts/work"),
   });
   expect(sent.at(-1)).toEqual({
-    "agent.visibility": { hidden: { codex: false, claude: false }, hidden_accounts: [] },
+    "agent.visibility": { hidden: { codex: false, claude: false, pi: false }, hidden_accounts: [] },
   });
   expect([s.agent_launcher.hiddenOf(work), s.agent_launcher.hiddenOf("claude")]).toEqual([false, false]);
   s.agent_launcher.manager.at = agentManager.agentKey("claude", "");
@@ -1432,7 +1457,7 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     kind: "remove",
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude" && !a.account),
   });
-  expect(sent.at(-1)).toEqual({ "agent.visibility": { hidden: { codex: false, claude: true } } });
+  expect(sent.at(-1)).toEqual({ "agent.visibility": { hidden: { codex: false, claude: true, pi: false } } });
 });
 
 test("the launcher lights the checkout it starts agents in, as the overview lights a worktree", () => {
@@ -1704,6 +1729,36 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
     expect(reads.slice(4)).toEqual(["/w/2"]);
   } finally {
     setSystemTime();
+  }
+});
+
+test("setup requests models only when editing Clever Corgi and does not wait for discovery", async () => {
+  const requests: protocol.Op[] = [],
+    s = new Controller({
+      socket: "",
+      request: transport(async op => {
+        requests.push(op);
+        if (op === "inference.configure") return new Promise(() => {});
+        return { ok: true };
+      }).request,
+    }) as any;
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.width = 100;
+  s.height = 30;
+  try {
+    s.openSetup();
+    expect(requests).not.toContain("inference.configure");
+    expect(s.frame()).toContain("Corgi setup");
+    await s.key(13);
+    expect(requests).not.toContain("inference.configure");
+    await s.key(13);
+    expect(requests.filter(op => op === "inference.configure")).toHaveLength(1);
+    expect(s.frame()).toContain("Search models");
+    await s.input(bytes("\x1b[D"));
+    expect(s.corgi_setup.modelSearch()).toBeNull();
+  } finally {
+    viewer.close(s);
   }
 });
 

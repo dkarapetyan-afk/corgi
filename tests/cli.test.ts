@@ -224,10 +224,10 @@ class AgentCli extends Runtime {
           .map((a: any) => a.agent);
     await this.cli(["launcher", "hide", "codex", "--workspace", 1]);
     // Inside a pane, its own workspace.
-    await this.cli(["launcher", "hide", "claude"], { caller: one.pane });
+    await this.cli(["launcher", "hide", "claude", "pi"], { caller: one.pane });
     this.assertEqual(await shown(1), []);
-    this.assertEqual(await shown(other), ["codex", "claude"]);
-    this.assertEqual((await this.snapshot()).workspaces[0].launcher_hidden, ["codex", "claude"]);
+    this.assertEqual(await shown(other), ["codex", "claude", "pi"]);
+    this.assertEqual((await this.snapshot()).workspaces[0].launcher_hidden, ["codex", "claude", "pi"]);
     this.assertEqual((await this.cli(["launcher", "show", "codex", "--workspace", 1])).workspaces[0].agents, [
       { agent: "codex", label: "Codex", launcher: true, hidden: false },
     ]);
@@ -236,6 +236,8 @@ class AgentCli extends Runtime {
     await this.cli(["launcher", "hide", "codex", "--workspace", 99], { error: "NoWorkspace" });
     await this.cli(["launcher", "hide", "codex"], { error: "MissingWorkspace" });
     this.assertEqual(await shown(1), ["codex"]);
+    await this.cli(["launcher", "show", "pi", "--workspace", 1]);
+    this.assertEqual(await shown(1), ["codex", "pi"]);
   }
   async test_command_options_launch_processes() {
     const one = (

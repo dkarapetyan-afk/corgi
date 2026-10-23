@@ -3,17 +3,38 @@ import { Model } from "./providers/model";
 import type { Server } from "./server";
 import type { Client } from "./peer";
 import type { Request } from "./protocol";
+import { Provider, adapter } from "./providers";
+import { Selection } from "./inference/models";
 /** Sets who answers, what they are asked for, or both; each part it names is saved. */
 export async function configure(server: Server, client: Client, query: Request<"inference.configure">) {
   const worker = server.summaries;
   if (!worker) throw Error("InferenceUnavailable");
   const uses: Partial<setup.Uses> = {};
   for (const use of setup.uses) if (query[use] !== null) uses[use] = query[use];
-  worker.configure(query.choice, uses);
+  const provider = Provider.parse(query.choice);
+  const refresh =
+    query.choice === null && query.model === null && query.account === null && Object.keys(uses).length === 0;
+  let selected: Selection | undefined;
+  if (refresh) void worker.catalog.refresh();
+  if (query.model !== null || query.account !== null || (provider && adapter(provider).inference.models)) {
+    if (!provider) throw Error("InvalidModel");
+    const option = worker.catalog.available.find(
+      m =>
+        m.provider === provider && (!query.model || (m.model === query.model && m.account === (query.account ?? ""))),
+    );
+    if (!option) throw Error("ModelUnavailable");
+    selected = Object.assign(new Selection(), {
+      provider,
+      model: query.model ? option.model : "",
+      account: query.model ? option.account : "",
+    });
+  }
+  if (!refresh) worker.configure(query.choice, uses, selected);
   let saved = false;
   try {
     const file = setup.path(server.socket);
     if (query.choice !== null && query.choice !== "off") setup.save(file, query.choice);
+    if (selected) setup.saveSelection(file, selected);
     // The switches go in the file once it wouldn't bring them back as they
     // are: after a change, or after an older Corgi's "off".
     if (JSON.stringify(setup.loadUses(file)) !== JSON.stringify(worker.uses)) setup.saveUses(file, worker.uses);

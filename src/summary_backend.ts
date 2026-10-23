@@ -26,12 +26,13 @@ export function outcome(request: bigint, discard: Discard | null) {
 export class Backend {
   pool = new Pool();
   next_request = 0n;
-  use(provider: Provider | null) {
+  use(provider: Provider | null, selected = model(provider), account = "") {
     this.pool.close();
     this.pool.started = false;
     this.pool.config.disabled = provider === null;
     if (provider) this.pool.config.provider = provider;
-    this.pool.config.model = model(provider) || null;
+    this.pool.config.model = selected || null;
+    this.pool.config.account = account;
     this.pool.config.executable = process.env.CORGI_INFERENCE_BIN ?? null;
   }
   close() {

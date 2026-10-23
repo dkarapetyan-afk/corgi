@@ -36,7 +36,7 @@ type Entry = {
   asked: number;
 };
 type Job = { path: string; base: string; fingerprint: string };
-export type Config = { enabled: boolean; provider: Provider | null; model: string; file: string };
+export type Config = { enabled: boolean; provider: Provider | null; model: string; account?: string; file: string };
 
 export const instructions = [
   `You label a git worktree in a list of a project's worktrees: what its branch holds that main does not, meaning its commits plus its uncommitted changes.`,
@@ -458,7 +458,14 @@ export class Briefs {
   private configure(config: Config) {
     const before = this.config;
     this.config = config;
-    if (before && before.provider === config.provider && before.model === config.model && this.pools.length) return;
+    if (
+      before &&
+      before.provider === config.provider &&
+      before.model === config.model &&
+      before.account === config.account &&
+      this.pools.length
+    )
+      return;
     for (const pool of this.pools) pool.close();
     this.pools = Array.from(
       { length: pool_count },
@@ -468,6 +475,7 @@ export class Briefs {
           config: {
             provider: config.provider ?? Provider.first,
             model: config.model || null,
+            account: config.account ?? "",
             executable: process.env.CORGI_INFERENCE_BIN ?? null,
             disabled: config.provider === null,
           },

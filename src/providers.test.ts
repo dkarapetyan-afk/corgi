@@ -8,8 +8,8 @@ import { Hooks, timestampMs } from "./providers/common";
 import * as sim from "./providers/sim";
 import type { Settings } from "./providers/adapter";
 test("per-provider values are keyed by name, in the registry's order", () => {
-  expect(JSON.stringify(byProvider(p => p === "claude"))).toBe('{"codex":false,"claude":true}');
-  expect(Provider.all).toEqual(["codex", "claude"]);
+  expect(JSON.stringify(byProvider(p => p === "claude"))).toBe('{"codex":false,"claude":true,"pi":false}');
+  expect(Provider.all).toEqual(["codex", "claude", "pi"]);
   expect(Provider.parse("claude")).toBe("claude");
   expect(Provider.parse("other")).toBeNull();
   expect(Provider.owning("/opt/bin/claude-code")).toBe("claude");
@@ -17,17 +17,17 @@ test("per-provider values are keyed by name, in the registry's order", () => {
 test("a registered provider is listed, parsed and found until it is removed", () => {
   const remove = sim.register();
   try {
-    expect<string[]>(Provider.all).toEqual(["codex", "claude", "sim"]);
+    expect<string[]>(Provider.all).toEqual(["codex", "claude", "pi", "sim"]);
     expect(Provider.parse("sim")).toBe(sim.sim);
     expect(Provider.owning("sim")).toBe(sim.sim);
     expect(adapter(sim.sim).name).toBe("Sim");
     expect(adapter(sim.sim)).toBe(sim.adapter);
-    expect(Object.keys(byProvider(p => p))).toEqual(["codex", "claude", "sim"]);
+    expect(Object.keys(byProvider(p => p))).toEqual(["codex", "claude", "pi", "sim"]);
     expect(() => sim.register()).toThrow("ProviderExists");
   } finally {
     remove();
   }
-  expect(Provider.all).toEqual(["codex", "claude"]);
+  expect(Provider.all).toEqual(["codex", "claude", "pi"]);
   expect(Provider.parse("sim")).toBeNull();
   expect(() => adapter(sim.sim)).toThrow("UnknownProvider");
 });
@@ -110,7 +110,7 @@ test("inference asks Claude for the request's prompt, model and schema on its co
   expect(claudeHeadless.summaryArgs({ instructions: "x", model: null, schema: null })).not.toContain("--model");
 });
 test("shared hook codec preserves permission context and rejects child observations", () => {
-  for (const provider of Provider.all) {
+  for (const provider of ["codex", "claude"] as const) {
     const backend = adapter(provider);
     const hook = backend.hook({
       hook_event_name: "PreToolUse",

@@ -2,6 +2,7 @@ import { Provider, byProvider, adapter } from "../providers";
 import type { ByProvider } from "../providers";
 import * as settings from "../settings";
 import type { Choice } from "./harness";
+import { Selection, type Option } from "./models";
 export type { Choice };
 export class Launches {
   count: ByProvider<number> = byProvider(() => 0);
@@ -36,6 +37,10 @@ export class Status {
   choice: Choice = "auto";
   provider: Provider | null = null;
   model = "";
+  account = "";
+  selection = new Selection();
+  available: Option[] = [];
+  loading = false;
   locked = false;
   launches: ByProvider<number> = byProvider(() => 0);
   models: ByProvider<string> = byProvider(() => "");
@@ -64,6 +69,12 @@ export function load(file: string): Choice | null {
 }
 export function save(file: string, choice: Choice) {
   settings.update(file, { inference: choice });
+}
+export function loadSelection(file: string) {
+  return Selection.parse(settings.read(file).inference_selection);
+}
+export function saveSelection(file: string, selection: Selection) {
+  settings.update(file, { inference_selection: selection });
 }
 /** Whether the model is off: a choice saved before uses were separate, or
  * the environment's. */

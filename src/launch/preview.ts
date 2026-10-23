@@ -27,9 +27,9 @@ export class Option {
   modelLabel() {
     return this.model_name.len ? this.model_name.text() : this.model.text();
   }
-  setModel(model: string, source: string) {
+  setModel(model: string, source: string, name = "") {
     this.model = new Text(model);
-    this.model_name = Model.resolve(model).name;
+    this.model_name = name ? new Text(name) : Model.resolve(model).name;
     this.source = new Text(source);
   }
 }
@@ -247,7 +247,7 @@ export class Worker {
     }
     if (this.stopping) return null;
     const chosen = await launcher.model(cwd, this.quit);
-    if (chosen.model) out.setModel(chosen.model, chosen.source);
+    if (chosen.model) out.setModel(chosen.model, chosen.source, chosen.model_name);
     else out.source = new Text(chosen.source);
     return out;
   }

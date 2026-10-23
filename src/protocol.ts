@@ -510,6 +510,8 @@ const requests = {
   "server.reload": { executable: ["string", ""] },
   "inference.configure": {
     choice: ["?auto|provider|off", null],
+    model: ["?string", null],
+    account: ["?string", null],
     activity: ["?bool", null],
     worktrees: ["?bool", null],
   },

@@ -284,7 +284,10 @@ export class Pane {
   restoring() {
     if (!this.ghost && !this.dormant) return "";
     return (
-      this.ghost?.fork ?? this.attached ?? this.resumeLaunch()?.typed(this.resume_hint.args(), this.resume_hint) ?? ""
+      this.ghost?.fork ??
+      this.attached ??
+      this.resumeLaunch()?.typed(this.resume_hint.args(this.resumeLaunch()?.account()), this.resume_hint) ??
+      ""
     );
   }
   /** How its agent comes back: as it was launched, or as its provider starts. */
@@ -658,7 +661,7 @@ export class Runtime {
     if (provider && adapter(provider).caps.titles_once_loaded) p.ghost.untitled = p.terminal.title;
   }
   async resumeAgent(opts: Create, launch: Launch, hint: ResumeHint, old: string | Uint8Array | null) {
-    if (!hint.provider || !hint.args()) throw Error("InvalidSession");
+    if (!hint.provider || !hint.args(launch.account())) throw Error("InvalidSession");
     const attached = launch.agent ? hint.attach(launch.account()) : null;
     if (opts.asleep) {
       const id = await this.create(opts),
@@ -667,7 +670,7 @@ export class Runtime {
       this.resumed(p, opts.workspace, launch, hint, attached);
       return id;
     }
-    const typed = attached ?? launch.typed(hint.args(), hint),
+    const typed = attached ?? launch.typed(hint.args(launch.account()), hint),
       run = launch.run(opts.executable, typed),
       frozen = await this.frozenScreen(opts, old);
     let id: number;
@@ -704,7 +707,7 @@ export class Runtime {
     if (!p.dormant) throw Error("NotDormant");
     const hint = p.resume_hint,
       launch = p.resumeLaunch(),
-      args = hint.args();
+      args = hint.args(launch?.account());
     if (!launch || !args) throw Error("InvalidSession");
     const attached = launch.agent ? hint.attach(launch.account()) : null,
       typed = attached ?? launch.typed(args, hint),

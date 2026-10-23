@@ -207,6 +207,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual((await this.session()).agent_hidden, {
       codex: true,
       claude: false,
+      pi: false,
     });
     await this.newCommand(view);
     const source = "FOO=123 claude code --whatever 'two words' --prompt '" + "x".repeat(100) + "'\n";
@@ -235,6 +236,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual((await this.session()).agent_hidden, {
       codex: true,
       claude: false,
+      pi: false,
     });
     const entry = (await this.session()).agent_commands[0];
     this.assertEqual(entry.command, changed);
@@ -624,6 +626,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual((await this.session()).agent_yolo, {
       codex: true,
       claude: false,
+      pi: false,
     });
     this.assertEqual((await this.session()).panes.length, 1);
     this.assertIn("New agent", (await view.poll()).data);
@@ -632,11 +635,13 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual((await this.session()).agent_yolo, {
       codex: true,
       claude: true,
+      pi: false,
     });
     await view.input("y");
     this.assertEqual((await this.session()).agent_yolo, {
       codex: true,
       claude: false,
+      pi: false,
     });
     await view.input("k");
     await view.input("a");
@@ -646,6 +651,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertEqual((await this.session()).agent_yolo, {
       codex: true,
       claude: false,
+      pi: false,
     });
     await this.command("agent.yolo", { provider: "claude", enabled: true });
     await this.command("agent.create", {

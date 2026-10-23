@@ -211,7 +211,7 @@ export class Menu {
     const out = this.signsIn(row) !== null;
     return [
       this.label(row),
-      this.yoloOf(row) ? "✓" : "·",
+      adapter(Row.launch(row)!.provider).bypass === false ? "—" : this.yoloOf(row) ? "✓" : "·",
       o.model.length > 0 ? modelLabel(o) : pending ? "Reading…" : "Default",
       out ? "—" : o.account.length > 0 ? o.account : pending ? "Reading…" : "Unavailable",
       out ? "—" : o.plan.length > 0 ? o.plan : pending ? "…" : "Unknown",
@@ -415,7 +415,7 @@ export class Menu {
   /** The row whose YOLO toggle is under a pointer. */
   yoloHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     const row = this.agentHit(cols, rowsCount, side, x, y);
-    if (row === null) return null;
+    if (row === null || adapter(Row.launch(row)!.provider).bypass === false) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
@@ -432,7 +432,7 @@ export class Menu {
   }
   usageHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     const row = this.agentHit(cols, rowsCount, side, x, y);
-    if (row === null) return null;
+    if (row === null || adapter(Row.launch(row)!.provider).bypass === false) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
@@ -817,6 +817,8 @@ export class Menu {
         { key: "a", label: m.signsIn(m.selected) ? "sign in" : "launch" },
         { key: "y", label: "YOLO" },
       ];
+    const launch = Row.launch(m.selected);
+    if (launch && adapter(launch.provider).bypass === false) hints = hints.filter(h => h.key !== "y");
     const planned = m.worktree.planned;
     const what = !planned
       ? "new tab"

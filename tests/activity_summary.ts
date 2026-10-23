@@ -88,6 +88,98 @@ export class Summaries extends Titles {
       .map(line => JSON.parse(line.slice("info(activity_summary): ".length)));
   }
 }
+export class PiSummaries extends Runtime {
+  backend_dir!: ReturnType<typeof tempDir>;
+  log!: string;
+  control!: string;
+  transcript!: string;
+  pane!: number;
+  seq = 0;
+  async configure() {
+    this.env.CORGI_INFERENCE_PROVIDER = "codex";
+    this.env.CORGI_INFERENCE_BIN = inferenceProgram;
+    this.env.CORGI_INFERENCE_TEST_LOG = this.log;
+    this.env.CORGI_INFERENCE_TEST_CONTROL = this.control;
+  }
+  async setUp() {
+    this.backend_dir = tempDir("corgi-pi-summary-");
+    this.log = join(this.backend_dir.name, "calls.jsonl");
+    this.control = join(this.backend_dir.name, "control.json");
+    this.transcript = join(this.backend_dir.name, "pi.jsonl");
+    writeFileSync(this.control, JSON.stringify({ label: "Investigating parser behavior" }));
+    writeFileSync(this.transcript, JSON.stringify({ type: "session", id: "pi-s" }) + "\n");
+    await super.setUp();
+    this.pane = (await this.command("pane.create", { workspace: 1, command: "sleep 60" })).pane;
+  }
+  async tearDown() {
+    try {
+      await super.tearDown();
+    } finally {
+      this.backend_dir?.cleanup();
+    }
+  }
+  async hook(event: string, turn: string, extra: object = {}) {
+    return this.rpc({
+      op: "hook",
+      provider: "pi",
+      pane: this.pane,
+      seq: ++this.seq,
+      event: { event, session: "pi-s", turn, transcript: this.transcript, ...extra },
+    });
+  }
+  record(id: string, content: object[]) {
+    appendFileSync(
+      this.transcript,
+      JSON.stringify({ type: "message", id, timestamp: now(), message: { role: "assistant", content } }) + "\n",
+    );
+  }
+  async agent() {
+    return (await this.session()).panes.find((p: any) => p.id === this.pane).agent;
+  }
+  async test_pi_hooks_do_not_block_summaries_or_the_next_turn_timeline() {
+    await this.hook("SessionStart", "");
+    await this.settle();
+    await this.hook("UserPromptSubmit", "turn-1");
+    await this.settle();
+    this.record("m1", [
+      { type: "text", text: "Tracing how the parser reads model names." },
+      { type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/providers/model.ts" } },
+    ]);
+    await this.hook("PreToolUse", "turn-1", { tool: "read", input: { path: "src/providers/model.ts" } });
+    await this.until(async () => (await this.agent()).activity === "Investigating parser behavior");
+    this.assertIn("Latest agent update: Tracing how the parser", JSON.parse(lines(this.log)[0]).evidence);
+    await this.hook("Stop", "turn-1", { outcome: "completed" });
+    await this.settle();
+    this.assertEqual((await this.agent()).state, "idle");
+
+    writeFileSync(this.control, JSON.stringify({ label: "Running parser tests" }));
+    await this.advance(1.1);
+    await this.hook("UserPromptSubmit", "turn-2");
+    await this.settle();
+    this.record("m2", [
+      { type: "toolCall", id: "bash-2", name: "bash", arguments: { command: "bun test src/providers/model.test.ts" } },
+    ]);
+    await this.hook("PreToolUse", "turn-2", {
+      tool: "bash",
+      input: { command: "bun test src/providers/model.test.ts" },
+    });
+    await this.until(async () => (await this.agent()).activity === "Running parser tests");
+    const input = JSON.parse(lines(this.log).at(-1)!);
+    this.assertEqual(input.provider, "pi");
+    this.assertIn("Currently running tools", input.evidence);
+    this.assertIn("bun test src/providers/model.test.ts", input.evidence);
+    this.assertNotIn("Latest agent update", input.evidence);
+    const conversation = (await this.session()).conversations.find((c: any) => c.agent.session === "pi-s");
+    this.assertEqual(
+      conversation.timeline.points.map((p: any) => p.activity),
+      ["Investigating parser behavior", "Running parser tests"],
+    );
+    await this.settle();
+    const calls = lines(this.log).length;
+    await this.advance(9);
+    this.assertEqual(lines(this.log).length, calls);
+  }
+}
 export class ClaudeSummaries extends Runtime {
   backend_dir!: ReturnType<typeof tempDir>;
   log!: string;

@@ -381,9 +381,10 @@ export class Server {
     const inference = this.summaries?.status();
     tracked =
       this.runtime.worktree_briefs.tick(this.runtime, overviews, {
-        enabled: this.summaries?.uses.worktrees ?? false,
+        enabled: (this.summaries?.uses.worktrees ?? false) && !!inference?.model,
         provider: inference?.provider ?? null,
         model: inference?.model ?? "",
+        account: inference?.account ?? "",
         file: settings.path(this.socket),
       }) || tracked;
     if (viewers.length) this.resource_readings = viewers.some(c => c.resources);

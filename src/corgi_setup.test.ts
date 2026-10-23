@@ -337,7 +337,7 @@ test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   expect(menu.focus).toBe("options");
   expect(menu.cursor).toBe(0);
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("enter change");
-  expect(menu.enter(s, prefs)).toBeNull();
+  expect(menu.enter(s, prefs)).toEqual({ kind: "inference_models" });
   let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
   expect(text).toMatch(/│ ✓ Claude /);
   // Turning things off is up to each use's own switch.
@@ -348,17 +348,20 @@ test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   // Keys wrap past either end; the wheel stops there.
   menu.enter(s, prefs);
   menu.move(true, s, prefs);
+  menu.move(true, s, prefs);
   expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "auto" });
   menu.enter(s, prefs);
   menu.move(true, s, prefs, false);
-  expect(menu.enter(s, prefs)).toBeNull();
+  menu.move(true, s, prefs, false);
+  expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "pi" });
   menu.enter(s, prefs);
+  menu.move(true, s, prefs);
   menu.move(true, s, prefs);
   menu.move(true, s, prefs);
   expect(menu.enter(s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
   // Clicks open it and choose.
   const row = hits(menu, 100, 30, s, prefs).find(hit => "option" in hit && hit.option === 0)!;
-  expect(menu.click(row, s, prefs)).toBeNull();
+  expect(menu.click(row, s, prefs)).toEqual({ kind: "inference_models" });
   const codex = hits(menu, 100, 30, s, prefs).find(hit => "choice" in hit && hit.choice === 1)!;
   expect(menu.click(codex, s, prefs)).toEqual({ kind: "summaries", choice: "codex" });
   // Left closes the dropdown, then returns to the list.
@@ -383,6 +386,110 @@ test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   expect(menu.item).toBe("clever_corgi");
   menu.move(false, s, prefs);
   expect(menu.item).toBe(items.at(-1)!);
+});
+
+test("Pi shows fetching in the model picker and keeps cached choices usable", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status({ loading: true });
+  expect(menu.enter(s, prefs)).toBeNull();
+  expect(menu.enter(s, prefs)).toEqual({ kind: "inference_models" });
+  let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toContain("Pi");
+  expect(text).toContain("Fetching models…");
+  expect(text).not.toContain("Sign in through Pi first");
+  const available = [{ provider: "pi", model: "custom/cached", name: "Cached model", account: "" }];
+  const cached = status({ loading: true, available });
+  text = draw(menu, 100, 30, 0, cached, prefs).join("\n");
+  expect(text).toContain("Fetching models…");
+  expect(text).toContain("Cached model");
+  // Auto, Codex, Claude, Pi Auto, then its cached model.
+  for (let i = 0; i < 4; i++) menu.move(true, cached, prefs);
+  expect(menu.enter(cached, prefs)).toEqual({
+    kind: "summaries",
+    choice: "pi",
+    model: "custom/cached",
+    account: "",
+  });
+});
+
+test("Pi's grouped models scroll inside the frame and selection carries the exact model and account", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences();
+  const available = Array.from({ length: 80 }, (_, i) => ({
+    provider: "pi",
+    model: `custom/model-${i}`,
+    name: `Model ${i}`,
+    account: "/pi/work",
+    account_name: "Work",
+    subscription: i === 0,
+    input_cost: i + 1,
+    output_cost: i + 2,
+  }));
+  const s = status({
+    choice: "pi",
+    provider: "pi",
+    model: "custom/model-0",
+    account: "/pi/work",
+    available,
+    selection: { provider: "pi", model: "custom/model-0", account: "/pi/work" },
+  });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  let rows = draw(menu, 100, 24, 0, s, prefs),
+    text = rows.join("\n");
+  expect(text).toContain("Auto (Model 0)");
+  expect(text).not.toMatch(/cheapest/i);
+  expect(text).toContain("Model 4");
+  expect(text).not.toContain("Model 5");
+  expect(text).toContain("Show 75 more");
+  for (let i = 0; i < 5; i++) menu.move(true, s, prefs, false);
+  const more = hits(menu, 100, 24, s, prefs).find(hit => "choice" in hit && hit.choice === 10)!;
+  expect(menu.click(more, s, prefs)).toBeNull();
+  expect(menu.modelSearch()).not.toBeNull();
+  for (let i = 0; i < 65; i++) menu.move(true, s, prefs, false);
+  rows = draw(menu, 100, 24, 0, s, prefs);
+  text = rows.join("\n");
+  expect(text).toContain("Model 70");
+  expect(text).not.toContain("Model 0");
+  expect(menu.enter(s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "pi",
+    model: "custom/model-70",
+    account: "/pi/work",
+  });
+});
+
+test("model search filters the complete list like Manage Agents, including collapsed models", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences();
+  const available = Array.from({ length: 30 }, (_, i) => ({
+    provider: "pi",
+    model: `custom/model-${i}`,
+    name: `Model ${i}`,
+    account: "/pi/work",
+    account_name: "Work",
+  }));
+  const s = status({ choice: "pi", provider: "pi", model: "custom/model-0", available });
+  menu.enter(s, prefs);
+  menu.enter(s, prefs);
+  for (const byte of Buffer.from("WORK model-29")) expect(menu.key(byte)).toBe(true);
+  let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toContain("Model 29");
+  expect(text).not.toContain("Model 28");
+  expect(menu.enter(s, prefs)).toEqual({
+    kind: "summaries",
+    choice: "pi",
+    model: "custom/model-29",
+    account: "/pi/work",
+  });
+  menu.enter(s, prefs);
+  for (const byte of Buffer.from("no-such-model")) menu.paste(byte);
+  expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("No matching models");
+  expect(menu.escape()).toBe(true);
+  text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toContain("Search models");
+  expect(text).toContain("Show 25 more");
 });
 
 test("the automatic choice says whom it follows", () => {

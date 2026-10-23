@@ -9,7 +9,7 @@ $.runtime: versioned persist.checkpoint.State
 $.summaries: optional
 $.summaries?.slots[].index: usize
 $.summaries?.slots[].slot.request.actor: u32
-$.summaries?.slots[].slot.request.provider: enum codex claude
+$.summaries?.slots[].slot.request.provider: enum codex claude pi
 $.summaries?.slots[].slot.request.session: custom bounded_text.BoundedText(160)
 $.summaries?.slots[].slot.request.turn: custom bounded_text.BoundedText(160)
 $.summaries?.slots[].slot.request.evidence: custom bounded_text.BoundedText(2048)
@@ -40,7 +40,7 @@ $.summaries?.slots[].slot.retry: bool
 $.summaries?.slots[].slot.active: bool
 $.summaries?.slots[].slot.result: optional
 $.summaries?.slots[].slot.result?.request.actor: u32
-$.summaries?.slots[].slot.result?.request.provider: enum codex claude
+$.summaries?.slots[].slot.result?.request.provider: enum codex claude pi
 $.summaries?.slots[].slot.result?.request.session: custom bounded_text.BoundedText(160)
 $.summaries?.slots[].slot.result?.request.turn: custom bounded_text.BoundedText(160)
 $.summaries?.slots[].slot.result?.request.evidence: custom bounded_text.BoundedText(2048)
@@ -80,9 +80,10 @@ $.summaries?.link_results[64]?.key.scheme: enum unknown http https
 $.summaries?.link_results[64]?.key.address: u64
 $.summaries?.link_results[64]?.name: optional
 $.summaries?.link_results[64]?.name?: custom bounded_text.BoundedText(32)
-$.summaries?.pool.config.provider: enum codex claude
+$.summaries?.pool.config.provider: enum codex claude pi
 $.summaries?.pool.config.model: optional
 $.summaries?.pool.config.model?: string
+$.summaries?.pool.config.account: string
 $.summaries?.pool.config.executable: optional
 $.summaries?.pool.config.executable?: string
 $.summaries?.pool.config.disabled: bool
@@ -116,14 +117,18 @@ $.summaries?.pool.system_usage.meter.buckets[5].minute: i64
 $.summaries?.pool.system_usage.meter.buckets[5].tokens: u64
 $.summaries?.pool.system_usage.reports: u64
 $.summaries?.next_request: u64
-$.summaries?.choice: enum auto codex claude off
+$.summaries?.choice: enum auto codex claude pi off
+$.summaries?.selected.provider: optional
+$.summaries?.selected.provider?: enum codex claude pi
+$.summaries?.selected.model: string
+$.summaries?.selected.account: string
 $.summaries?.launches.count.codex: u32
 $.summaries?.launches.count.claude: u32
 $.summaries?.launches.latest: optional
-$.summaries?.launches.latest?: enum codex claude
-$.summaries?.remembered: enum codex claude
+$.summaries?.launches.latest?: enum codex claude pi
+$.summaries?.remembered: enum codex claude pi
 $.summaries?.active: optional
-$.summaries?.active?: enum codex claude
+$.summaries?.active?: enum codex claude pi
 $.summaries?.applied: bool
 $.summaries?.locked: bool
 $.summaries?.cursor: usize
@@ -278,3 +283,4 @@ $.last_bell_kind: enum none finished needs_input
 $.clients[].headless_start: optional
 $.clients[].headless_start?.id: u32
 $.clients[].headless_start?.deadline: i64
+$.clients[].launch_preview?.preview.installed.pi: bool

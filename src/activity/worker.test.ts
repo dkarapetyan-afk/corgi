@@ -4,6 +4,112 @@ import { Text, parseLabel, hash } from "./summary";
 import { Registry, Attachment, Actor } from "../conversations";
 import { View as ToolView } from "./tools";
 import { clone } from "../json";
+import { Option, Selection, compare } from "../inference/models";
+test("Pi inference defaults to the cheapest subscription and pins an explicit model and account across handoff", () => {
+  const worker = new Worker("pi");
+  worker.catalog.refresh = async () => {};
+  worker.catalog.available = [
+    Object.assign(new Option(), { provider: "pi", model: "api/free", name: "Free API", input_cost: 0, output_cost: 0 }),
+    Object.assign(new Option(), {
+      provider: "pi",
+      model: "anthropic/haiku",
+      name: "Haiku",
+      subscription: true,
+      input_cost: 0.1,
+      output_cost: 0.5,
+      account: "/pi/work",
+    }),
+  ].sort(compare);
+  expect(worker.status().model).toBe("anthropic/haiku");
+  expect(worker.status().account).toBe("/pi/work");
+  const selected = Object.assign(new Selection(), { provider: "pi", model: "api/free", account: "" });
+  worker.configure("pi", {}, selected);
+  worker.applyChoice();
+  expect(worker.implementation.pool.config.model).toBe("api/free");
+  expect(worker.implementation.pool.config.account).toBe("");
+  worker.paused = true;
+  const restored = Worker.restore(clone(worker.capture()));
+  try {
+    expect(restored.selected).toEqual(selected);
+    expect(restored.selection("pi")).toEqual(selected);
+    restored.catalog.available = [];
+    // Losing credentials never silently substitutes another paid model.
+    expect(restored.selection("pi").model).toBe("api/free");
+  } finally {
+    worker.stop();
+    restored.stop();
+  }
+});
+
+test("applying Pi inference never enumerates the model catalogue", () => {
+  const worker = new Worker("pi");
+  let reads = 0;
+  worker.catalog.refresh = async () => {
+    reads++;
+  };
+  try {
+    worker.applyChoice();
+    worker.applyChoice();
+    expect(reads).toBe(0);
+  } finally {
+    worker.stop();
+  }
+});
+
+test("Pi Auto resolves after restart without requiring the model picker to open", async () => {
+  const worker = new Worker("pi");
+  let reads = 0;
+  worker.catalog.refresh = async () => {
+    reads++;
+    worker.catalog.available = [
+      Object.assign(new Option(), { provider: "pi", model: "provider/available", name: "Available" }),
+    ];
+  };
+  try {
+    await worker.run();
+    expect(reads).toBe(1);
+    expect(worker.implementation.pool.config.model).toBe("provider/available");
+    expect(worker.selected.model).toBe("");
+  } finally {
+    worker.stop();
+  }
+});
+
+test("Pi Auto re-resolves its model without pinning or saving the resolved name", () => {
+  const worker = new Worker("pi");
+  worker.catalog.refresh = async () => {};
+  const a = Object.assign(new Option(), {
+    provider: "pi",
+    model: "provider/a",
+    name: "A",
+    subscription: true,
+    input_cost: 1,
+    output_cost: 2,
+  });
+  const b = Object.assign(new Option(), {
+    provider: "pi",
+    model: "provider/b",
+    name: "B",
+    subscription: true,
+    input_cost: 2,
+    output_cost: 3,
+  });
+  worker.catalog.available = [a, b];
+  worker.configure("pi", {}, Object.assign(new Selection(), { provider: "pi" }));
+  worker.applyChoice();
+  expect(worker.status().model).toBe("provider/a");
+  worker.locked = true;
+  b.input_cost = 0.1;
+  b.output_cost = 0.2;
+  worker.catalog.available.sort(compare);
+  worker.applyChoice();
+  expect(worker.status().model).toBe("provider/b");
+  expect(worker.selected.model).toBe("");
+  worker.paused = true;
+  expect(worker.capture().selected.model).toBe("");
+  worker.stop();
+});
+
 test("each use turns off on its own, and an old off choice turns them all off", () => {
   const worker = new Worker("off");
   expect(worker.choice).toBe("auto");

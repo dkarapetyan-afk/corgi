@@ -136,7 +136,7 @@ function fixture() {
 test("the runtime wire matches protocol.version", () => {
   expect(protocol.version).toBe(2);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "c467e99aba9b6733fbd7f66d4beb2f8146c420c30aad25690639f8e3a8fb6912",
+    "488cfda92fa7eee5328a9a40ffad9da2f2b968ae4ba7118eeaec4acfc2b72728",
   );
   const { server, client, dispose } = fixture();
   try {
@@ -210,7 +210,7 @@ test("saved handoff format matches its version", async () => {
   expect(handoff_version).toBe(5);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "8dcd26b5e69d11fcf0667472c174c053bcd0f356c914419d00e3b28062ef088f",
+    "a76fa0cfef011c31af42ca7b82cb42172bff5cb015a99f4dc7552e2933dd81c4",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();

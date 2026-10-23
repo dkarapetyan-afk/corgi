@@ -6,7 +6,7 @@ import { Model, Tab } from "./layout";
 import { label } from "./pane/label";
 import { Entry, Semantics, resolve, analyze, shellStatus } from "./launch/command";
 import { ResumeHint } from "./resume_hint";
-import { Text } from "./providers";
+import { Text, adapter } from "./providers";
 import { logicalKey } from "./keys";
 import { encode } from "./keyboard";
 import * as accounts from "./accounts";
@@ -142,7 +142,8 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       return {};
     }
     case "agent.yolo": {
-      const { provider, enabled } = request.payload,
+      const { provider } = request.payload,
+        enabled = adapter(provider).bypass !== false && request.payload.enabled,
         account = named(provider, request.payload.account);
       if (!account) r.agent_yolo[provider] = enabled;
       else r.account_yolo = [...r.account_yolo.filter(a => a !== account), ...(enabled ? [account] : [])];

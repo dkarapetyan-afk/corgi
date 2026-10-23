@@ -4,7 +4,6 @@ import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import { Rect, View as LayoutView, Model, type Axis, type Border } from "./layout";
 import * as sidebar from "./sidebar";
-import { byProvider } from "./providers";
 import {
   View as SidebarView,
   Preview,
@@ -19,7 +18,7 @@ import {
 import { ResizeView, TabMenu } from "./commands";
 import { Dialog, View as NameView } from "./name_dialog";
 import type { Menu as LauncherMenu } from "./agent_launcher";
-import { Menu as SetupMenu, type Status as SetupStatus } from "./corgi_setup";
+import { Menu as SetupMenu, status as setupStatus, type Status as SetupStatus } from "./corgi_setup";
 import * as corgiBadge from "./corgi_badge";
 import * as rowGlide from "./row_glide";
 import type { Cell } from "./fork_motion";
@@ -169,15 +168,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     corgi_setup: null,
     paste_card: null,
     paste_copied: false,
-    inference: {
-      choice: "auto",
-      provider: null,
-      model: "",
-      locked: false,
-      launches: byProvider(() => 0),
-      models: byProvider(() => ""),
-      uses: { activity: true, worktrees: true },
-    },
+    inference: setupStatus(),
     copy_feedback: false,
     added_feedback: "",
     signin_exit: null,

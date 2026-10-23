@@ -220,6 +220,15 @@ export class Signin {
   get signin() {
     return adapter(this.provider!).accounts.signin;
   }
+  get check() {
+    const check = this.signin.check;
+    return typeof check === "function" ? check(this.dir) : check;
+  }
+  async signOut() {
+    const logout = this.signin.logout;
+    if (typeof logout === "function") logout(this.dir);
+    else await this.account_command(logout, 15000);
+  }
   steps() {
     return [...(this.asked_agent ? ["Agent"] : []), "Sign in", "Ready"];
   }
@@ -361,7 +370,7 @@ export class Signin {
       // Its own check spawns the agent: now and then is enough.
       if (!this.signed && Date.now() - this.checked >= 3000) {
         this.checked = Date.now();
-        this.signed = (await this.account_command(this.signin.check, 10000)) === 0;
+        this.signed = (await this.account_command(this.check, 10000)) === 0;
         if (this.signed) this.changed();
       }
       if (this.signed && this.signin.ready(this.dir) && this.stage.kind === "signin") await this.finish();
@@ -374,7 +383,7 @@ export class Signin {
     this.child = null;
     t.destroy();
     this.who = accounts.identity(this.provider!, this.dir);
-    if (this.who && (await this.account_command(this.signin.check, 10000)) === 0 && this.signin.ready(this.dir))
+    if (this.who && (await this.account_command(this.check, 10000)) === 0 && this.signin.ready(this.dir))
       return this.finish();
     this.stopped(`${this.label} closed before you signed in.`);
   }
@@ -456,8 +465,8 @@ export class Signin {
     await this.stopChild();
     const s = this.staged;
     if (s) {
-      if (accounts.identity(this.provider!, s.dir) || (await this.account_command(this.signin.check, 10000)) === 0)
-        await this.account_command(this.signin.logout, 15000);
+      if (accounts.identity(this.provider!, s.dir) || (await this.account_command(this.check, 10000)) === 0)
+        await this.signOut();
       await stopInside([s.dir, s.temp]);
       accounts.unstage(s);
       this.staged = null;
@@ -475,8 +484,11 @@ export class Signin {
     } catch {}
     const s = this.staged;
     if (s) {
-      if (accounts.identity(this.provider!, s.dir))
-        Bun.spawnSync([this.agent, ...this.signin.logout], { env: this.env(), timeout: 5000 });
+      if (accounts.identity(this.provider!, s.dir)) {
+        const logout = this.signin.logout;
+        if (typeof logout === "function") logout(s.dir);
+        else Bun.spawnSync([this.agent, ...logout], { env: this.env(), timeout: 5000 });
+      }
       kill(inside([s.dir, s.temp]), "SIGKILL");
       accounts.unstage(s);
     }
@@ -707,7 +719,9 @@ export async function signOut(account: accounts.Known): Promise<void> {
   a.unnest?.(env);
   let agent = await discovery.resolve(account.provider);
   if (!agent.includes("/")) agent = Bun.which(agent) ?? agent;
-  await run(agent, a.accounts.signin.logout, env as Record<string, string>, 15000);
+  const logout = a.accounts.signin.logout;
+  if (typeof logout === "function") logout(account.dir);
+  else await run(agent, logout, env as Record<string, string>, 15000);
   await stopInside([account.dir]);
 }
 /** Runs `agent` with `args` in `env`, killed after `ms`: its status. */

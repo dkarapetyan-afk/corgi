@@ -9,6 +9,7 @@ import { Style, keycap } from "./palette";
 import { type Provider, adapter } from "./providers";
 import { Rect } from "./layout";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
+import { matches } from "./search";
 import { Entry as CommandEntry, Semantics, Resolution } from "./launch/command";
 import * as keys from "./keys";
 import { Writer, displayWidth, writeEllipsis, ellipsis, sat, clamp } from "./text";
@@ -90,14 +91,6 @@ function itemKey(item: Item): string {
 }
 /** The key of an agent's row, to open the list on it. */
 export const agentKey = (provider: Provider, account: string) => `agent:${provider}:${account}`;
-/** Whether each word of `query` shows in `text`, ignoring case. */
-function matches(query: string, text: string): boolean {
-  const hay = text.toLowerCase();
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .every(word => hay.includes(word));
-}
 function cleanControls(text: string): string {
   return text.replace(/[\x00-\x1f\x7f]/g, " ");
 }

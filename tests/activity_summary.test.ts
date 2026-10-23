@@ -3,7 +3,7 @@ import { registerCase, sleep } from "./support";
 import { Viewer } from "./viewer_client";
 import { screen_text, EXE } from "./runtime";
 import { A } from "./codex_titles";
-import { Summaries, ClaudeSummaries, lines } from "./activity_summary";
+import { Summaries, ClaudeSummaries, PiSummaries, lines } from "./activity_summary";
 
 class SummaryCases extends Summaries {
   async test_tool_icon_survives_polls_and_tracks_yielded_background_build() {
@@ -506,6 +506,7 @@ class SummaryCases extends Summaries {
   }
 }
 registerCase("Summaries", SummaryCases, { inherited: false, concurrent: true });
+registerCase("PiSummaries", PiSummaries, { inherited: false, concurrent: true });
 registerCase("ClaudeSummaries", ClaudeSummaries, {
   inherited: false,
   concurrent: true,

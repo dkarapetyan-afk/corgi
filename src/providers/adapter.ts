@@ -18,7 +18,7 @@ export interface Launcher {
   account(quit: Quit): Promise<Account>;
   /** The model it would start with in `cwd`, and the setting that chose it.
    * Corgi asks after `account`, whose sign-in may name the default. */
-  model(cwd: string, quit: Quit): Promise<{ model: string; source: string }>;
+  model(cwd: string, quit: Quit): Promise<{ model: string; model_name?: string; source: string }>;
   close(): void;
 }
 /** What core asks of a headless client. A prompt or interrupt without a
@@ -39,6 +39,7 @@ export type Event =
   | { kind: "message"; session: string; text: string }
   | { kind: "tool"; session: string; turn: string; id: string; done: boolean; wrote: string[] }
   | { kind: "request"; session: string; id: string; ask: Ask }
+  | { kind: "request_closed"; session: string; id: string; running: boolean }
   | {
       kind: "usage";
       session: string;
@@ -229,11 +230,13 @@ export type Signin = {
   /** Its first run at `directory` is over, so a session there opens at the prompt. */
   ready(directory: string): boolean;
   /** Arguments, run with the variable set, that exit 0 once someone signed
-   * in: its own word, as a login can live outside the folder. */
-  check: string[];
+   * in: its own word, as a login can live outside the folder. A function
+   * chooses arguments for the provider saved in that directory. */
+  check: string[] | ((directory: string) => string[]);
   /** Arguments that sign out, run the same way, before Corgi deletes a
-   * folder a cancelled sign-in made. */
-  logout: string[];
+   * folder a cancelled sign-in made. A provider without a logout CLI can
+   * remove its local credentials directly. */
+  logout: string[] | ((directory: string) => void);
   /** Arguments its first run in a new account's folder starts with. */
   first: string[];
   /** Arguments that sign in to a folder it has run in before, for one whose
@@ -268,6 +271,8 @@ export type Info = {
   launcher_key: string;
   /** The executable a user types to start it. */
   command: string;
+  /** False when permission policy belongs to extensions, with no CLI bypass. */
+  bypass?: boolean;
 };
 /** How an agent asks before acting: as its own settings say, or never. */
 export type Permissions = "default" | "bypass";
@@ -279,6 +284,14 @@ export type Settings = { permissions: Permissions; model: string | null; args: s
 export type Kept = { args: string[]; env: [string, string][] };
 /** One kind of request a tool-less model answers. */
 export type Inference = { instructions: string; model: string | null; schema: string | null };
+/** An authenticated chat model; prices are catalog dollars per million tokens. */
+export type InferenceModel = {
+  id: string;
+  name: string;
+  subscription: boolean;
+  input_cost: number | null;
+  output_cost: number | null;
+};
 export type Fork = {
   args: string[];
   /** The fork's session, when the provider lets Corgi pick it. */
@@ -340,7 +353,7 @@ export interface Adapter extends Info {
     /** Arguments that start an agent. */
     start(s: Settings): string[];
     /** Arguments, after the ones it started with, that resume `session`. */
-    resume(session: string): string[];
+    resume(session: string, account?: string): string[];
     /** Arguments, after the command, that attach to `session` where it
      * already runs in `account`, such as a daemon of the provider's own,
      * instead of resuming it. */
@@ -362,6 +375,8 @@ export interface Adapter extends Info {
   };
   inference: {
     model: string;
+    /** Available models for private inference, without starting a model turn. */
+    models?(account: string, quit: Quit): Promise<InferenceModel[]>;
     /** A private, tool-less client for `r`'s conversations. Its answer to a
      * prompt is the last message before the turn ends. */
     start(r: Inference, at: Place): Client;

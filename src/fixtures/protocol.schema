@@ -18,7 +18,7 @@ $.requests|session.command.command|agent.command.original: optional
 $.requests|session.command.command|agent.command.original?: string
 $.requests|session.command.command|agent.command.semantics: optional
 $.requests|session.command.command|agent.command.semantics?.provider: optional
-$.requests|session.command.command|agent.command.semantics?.provider?: enum codex claude
+$.requests|session.command.command|agent.command.semantics?.provider?: enum codex claude pi
 $.requests|session.command.command|agent.command.semantics?.suggested_name: custom bounded_text.BoundedText(160)
 $.requests|session.command.command|agent.command.semantics?.model: custom bounded_text.BoundedText(160)
 $.requests|session.command.command|agent.command.semantics?.model_name: custom bounded_text.BoundedText(160)
@@ -39,17 +39,17 @@ $.requests|session.command.command|agent.visibility.hidden_accounts?[]: string
 $.requests|session.command.command|agent.workspace_visibility.workspace: u32
 $.requests|session.command.command|agent.workspace_visibility.row: string
 $.requests|session.command.command|agent.workspace_visibility.shown: bool
-$.requests|session.command.command|agent.yolo.provider: enum codex claude
+$.requests|session.command.command|agent.yolo.provider: enum codex claude pi
 $.requests|session.command.command|agent.yolo.enabled: bool
 $.requests|session.command.command|agent.yolo.account: string
 $.requests|session.command.command|agent.create.workspace: u32
 $.requests|session.command.command|agent.create.cwd: string
 $.requests|session.command.command|agent.create.provider: optional
-$.requests|session.command.command|agent.create.provider?: enum codex claude
+$.requests|session.command.command|agent.create.provider?: enum codex claude pi
 $.requests|session.command.command|agent.create.account: string
 $.requests|session.command.command|agent.resume.workspace: u32
 $.requests|session.command.command|agent.resume.cwd: string
-$.requests|session.command.command|agent.resume.provider: enum codex claude
+$.requests|session.command.command|agent.resume.provider: enum codex claude pi
 $.requests|session.command.command|agent.resume.session: string
 $.requests|session.command.command|agent.resume.asleep: bool
 $.requests|session.command.command|agent.resume.name: string
@@ -176,7 +176,11 @@ $.requests|pane.surface.pane: u32
 $.requests|server.reload.executable: string
 $.requests|recovery.save: {}
 $.requests|inference.configure.choice: optional
-$.requests|inference.configure.choice?: enum auto codex claude off
+$.requests|inference.configure.choice?: enum auto codex claude pi off
+$.requests|inference.configure.model: optional
+$.requests|inference.configure.model?: string
+$.requests|inference.configure.account: optional
+$.requests|inference.configure.account?: string
 $.requests|inference.configure.activity: optional
 $.requests|inference.configure.activity?: bool
 $.requests|inference.configure.worktrees: optional
@@ -252,7 +256,7 @@ $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].pid?: i32
 $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.name: custom bounded_text.BoundedText(160)
 $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.touched_at: i64
 $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.provider: optional
-$.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.provider?: enum codex claude
+$.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.provider?: enum codex claude pi
 $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].panes[].resume_hint.session: custom bounded_text.BoundedText(160)
 $.requests|onboarding.copy.herdr_session?.workspaces[].tabs[].root: any
 $.requests|onboarding.copy.selected[]: string
@@ -278,18 +282,18 @@ $.requests|focus.viewer?: u32
 $.requests|workspace.switch.workspace: u32
 $.requests|workspace.switch.viewer: optional
 $.requests|workspace.switch.viewer?: u32
-$.requests|headless.start.provider: enum codex claude
+$.requests|headless.start.provider: enum codex claude pi
 $.requests|headless.start.prompt: string
 $.requests|headless.start.cwd: string
 $.requests|headless.start.workspace: optional
 $.requests|headless.start.workspace?: u32
 $.requests|headless.list: {}
-$.requests|headless.stop.provider: enum codex claude
+$.requests|headless.stop.provider: enum codex claude pi
 $.requests|headless.stop.session: string
-$.requests|headless.send.provider: enum codex claude
+$.requests|headless.send.provider: enum codex claude pi
 $.requests|headless.send.session: string
 $.requests|headless.send.input: any
-$.requests|headless.events.provider: enum codex claude
+$.requests|headless.events.provider: enum codex claude pi
 $.requests|headless.events.session: string
 $.requests|headless.events.after: u64
 $.requests|theme.theme: optional
@@ -305,7 +309,7 @@ $.requests|theme.theme?.palette[16]: optional
 $.requests|theme.theme?.palette[16]?.r: u8
 $.requests|theme.theme?.palette[16]?.g: u8
 $.requests|theme.theme?.palette[16]?.b: u8
-$.requests|hook.provider: enum codex claude
+$.requests|hook.provider: enum codex claude pi
 $.requests|hook.event: any
 $.requests|hook.pane: u32
 $.requests|hook.seq: optional
@@ -321,10 +325,26 @@ $.snapshot.release_commit: string
 $.snapshot.staged_version: string
 $.snapshot.system_model: string
 $.snapshot.system_model_name: string
-$.snapshot.inference.choice: enum auto codex claude off
+$.snapshot.inference.choice: enum auto codex claude pi off
 $.snapshot.inference.provider: optional
-$.snapshot.inference.provider?: enum codex claude
+$.snapshot.inference.provider?: enum codex claude pi
 $.snapshot.inference.model: string
+$.snapshot.inference.account: string
+$.snapshot.inference.selection.provider: optional
+$.snapshot.inference.selection.provider?: enum codex claude pi
+$.snapshot.inference.selection.model: string
+$.snapshot.inference.selection.account: string
+$.snapshot.inference.loading: bool
+$.snapshot.inference.available[].provider: enum codex claude pi
+$.snapshot.inference.available[].model: string
+$.snapshot.inference.available[].name: string
+$.snapshot.inference.available[].account: string
+$.snapshot.inference.available[].account_name: string
+$.snapshot.inference.available[].subscription: bool
+$.snapshot.inference.available[].input_cost: optional
+$.snapshot.inference.available[].input_cost?: f64
+$.snapshot.inference.available[].output_cost: optional
+$.snapshot.inference.available[].output_cost?: f64
 $.snapshot.inference.locked: bool
 $.snapshot.inference.launches.codex: u32
 $.snapshot.inference.launches.claude: u32
@@ -348,7 +368,7 @@ $.snapshot.system_usage.losses: u32
 $.snapshot.system_usage.since: i64
 $.snapshot.system_usage.updated_at: i64
 $.snapshot.system_usage.recent_tokens: u64
-$.snapshot.last_agent: enum codex claude
+$.snapshot.last_agent: enum codex claude pi
 $.snapshot.agent_yolo.codex: bool
 $.snapshot.agent_yolo.claude: bool
 $.snapshot.agent_hidden.codex: bool
@@ -360,7 +380,7 @@ $.snapshot.agent_commands[6].original: custom bounded_text.BoundedText(2048)
 $.snapshot.agent_commands[6].hidden: bool
 $.snapshot.agent_commands[6].name: custom bounded_text.BoundedText(160)
 $.snapshot.agent_commands[6].semantics.provider: optional
-$.snapshot.agent_commands[6].semantics.provider?: enum codex claude
+$.snapshot.agent_commands[6].semantics.provider?: enum codex claude pi
 $.snapshot.agent_commands[6].semantics.suggested_name: custom bounded_text.BoundedText(160)
 $.snapshot.agent_commands[6].semantics.model: custom bounded_text.BoundedText(160)
 $.snapshot.agent_commands[6].semantics.model_name: custom bounded_text.BoundedText(160)
@@ -368,7 +388,7 @@ $.snapshot.agent_commands[6].semantics.account: custom bounded_text.BoundedText(
 $.snapshot.agent_commands[6].semantics.mode: custom bounded_text.BoundedText(160)
 $.snapshot.agent_commands[6].semantics.yolo: bool
 $.snapshot.agent_commands[6].semantics.default_account: bool
-$.snapshot.accounts[].provider: enum codex claude
+$.snapshot.accounts[].provider: enum codex claude pi
 $.snapshot.accounts[].account: string
 $.snapshot.accounts[].name: string
 $.snapshot.accounts[].managed: bool
@@ -435,7 +455,7 @@ $.snapshot.conversations[].agent.recent_activity: string
 $.snapshot.conversations[].agent.changed_at: i64
 $.snapshot.conversations[].agent.working_since: i64
 $.snapshot.conversations[].agent.provider: optional
-$.snapshot.conversations[].agent.provider?: enum codex claude
+$.snapshot.conversations[].agent.provider?: enum codex claude pi
 $.snapshot.conversations[].agent.state: enum unknown initializing idle working blocked done
 $.snapshot.conversations[].agent.attention: enum none finished needs_input
 $.snapshot.conversations[].agent.session: string
@@ -492,7 +512,7 @@ $.snapshot.resources.workspaces[].processes[].pid: i32
 $.snapshot.resources.workspaces[].processes[].start: u64
 $.snapshot.resources.workspaces[].processes[].name: string
 $.snapshot.resources.workspaces[].processes[].provider: optional
-$.snapshot.resources.workspaces[].processes[].provider?: enum codex claude
+$.snapshot.resources.workspaces[].processes[].provider?: enum codex claude pi
 $.snapshot.resources.workspaces[].processes[].cpu: optional
 $.snapshot.resources.workspaces[].processes[].cpu?: f64
 $.snapshot.resources.workspaces[].processes[].memory: u64
@@ -520,7 +540,7 @@ $.snapshot.workspaces[].agent_order[]: one of
 $.snapshot.workspaces[].agent_order[]|pane: u32
 $.snapshot.workspaces[].agent_order[]|headless: u32
 $.snapshot.workspaces[].last_agent: optional
-$.snapshot.workspaces[].last_agent?: enum codex claude
+$.snapshot.workspaces[].last_agent?: enum codex claude pi
 $.snapshot.workspaces[].launcher_hidden[]: string
 $.snapshot.workspaces[].closed_agents: usize
 $.snapshot.workspaces[].git_commits[].timestamp: i64
@@ -616,7 +636,7 @@ $.snapshot.panes[].agent.recent_activity: string
 $.snapshot.panes[].agent.changed_at: i64
 $.snapshot.panes[].agent.working_since: i64
 $.snapshot.panes[].agent.provider: optional
-$.snapshot.panes[].agent.provider?: enum codex claude
+$.snapshot.panes[].agent.provider?: enum codex claude pi
 $.snapshot.panes[].agent.state: enum unknown initializing idle working blocked done
 $.snapshot.panes[].agent.attention: enum none finished needs_input
 $.snapshot.panes[].agent.session: string
@@ -646,7 +666,7 @@ $.snapshot.headless_sessions[].agent?.recent_activity: string
 $.snapshot.headless_sessions[].agent?.changed_at: i64
 $.snapshot.headless_sessions[].agent?.working_since: i64
 $.snapshot.headless_sessions[].agent?.provider: optional
-$.snapshot.headless_sessions[].agent?.provider?: enum codex claude
+$.snapshot.headless_sessions[].agent?.provider?: enum codex claude pi
 $.snapshot.headless_sessions[].agent?.state: enum unknown initializing idle working blocked done
 $.snapshot.headless_sessions[].agent?.attention: enum none finished needs_input
 $.snapshot.headless_sessions[].agent?.session: string
@@ -665,7 +685,7 @@ $.snapshot.headless_sessions[].observation.outcome: enum completed interrupted f
 $.snapshot.headless_sessions[].id: u32
 $.snapshot.headless_sessions[].session: string
 $.snapshot.headless_sessions[].workspace: u32
-$.snapshot.headless_sessions[].provider: enum codex claude
+$.snapshot.headless_sessions[].provider: enum codex claude pi
 $.snapshot.headless_sessions[].cwd: string
 $.snapshot.headless_sessions[].ready: bool
 $.snapshot.headless_sessions[].exited: bool
@@ -710,10 +730,26 @@ $.replies.pane.idle.panes[].tab: u32
 $.replies.pane.idle.panes[].workspace: u32
 $.replies.pane.idle.panes[].cwd: string
 $.replies.inference.configure.saved: bool
-$.replies.inference.configure.inference.choice: enum auto codex claude off
+$.replies.inference.configure.inference.choice: enum auto codex claude pi off
 $.replies.inference.configure.inference.provider: optional
-$.replies.inference.configure.inference.provider?: enum codex claude
+$.replies.inference.configure.inference.provider?: enum codex claude pi
 $.replies.inference.configure.inference.model: string
+$.replies.inference.configure.inference.account: string
+$.replies.inference.configure.inference.selection.provider: optional
+$.replies.inference.configure.inference.selection.provider?: enum codex claude pi
+$.replies.inference.configure.inference.selection.model: string
+$.replies.inference.configure.inference.selection.account: string
+$.replies.inference.configure.inference.loading: bool
+$.replies.inference.configure.inference.available[].provider: enum codex claude pi
+$.replies.inference.configure.inference.available[].model: string
+$.replies.inference.configure.inference.available[].name: string
+$.replies.inference.configure.inference.available[].account: string
+$.replies.inference.configure.inference.available[].account_name: string
+$.replies.inference.configure.inference.available[].subscription: bool
+$.replies.inference.configure.inference.available[].input_cost: optional
+$.replies.inference.configure.inference.available[].input_cost?: f64
+$.replies.inference.configure.inference.available[].output_cost: optional
+$.replies.inference.configure.inference.available[].output_cost?: f64
 $.replies.inference.configure.inference.locked: bool
 $.replies.inference.configure.inference.launches.codex: u32
 $.replies.inference.configure.inference.launches.claude: u32
@@ -728,7 +764,7 @@ $.replies.onboarding.status.progress.workspace: optional
 $.replies.onboarding.status.progress.workspace?: u32
 $.replies.onboarding.status.progress.message: string
 $.replies.agent.command.preview.resolution.semantics.provider: optional
-$.replies.agent.command.preview.resolution.semantics.provider?: enum codex claude
+$.replies.agent.command.preview.resolution.semantics.provider?: enum codex claude pi
 $.replies.agent.command.preview.resolution.semantics.suggested_name: custom bounded_text.BoundedText(160)
 $.replies.agent.command.preview.resolution.semantics.model: custom bounded_text.BoundedText(160)
 $.replies.agent.command.preview.resolution.semantics.model_name: custom bounded_text.BoundedText(160)
@@ -742,7 +778,7 @@ $.replies.agent.command.preview.resolution.command.original: custom bounded_text
 $.replies.agent.command.preview.resolution.command.hidden: bool
 $.replies.agent.command.preview.resolution.command.name: custom bounded_text.BoundedText(160)
 $.replies.agent.command.preview.resolution.command.semantics.provider: optional
-$.replies.agent.command.preview.resolution.command.semantics.provider?: enum codex claude
+$.replies.agent.command.preview.resolution.command.semantics.provider?: enum codex claude pi
 $.replies.agent.command.preview.resolution.command.semantics.suggested_name: custom bounded_text.BoundedText(160)
 $.replies.agent.command.preview.resolution.command.semantics.model: custom bounded_text.BoundedText(160)
 $.replies.agent.command.preview.resolution.command.semantics.model_name: custom bounded_text.BoundedText(160)
@@ -752,7 +788,7 @@ $.replies.agent.command.preview.resolution.command.semantics.yolo: bool
 $.replies.agent.command.preview.resolution.command.semantics.default_account: bool
 $.replies.agent.command.preview.resolution.error_message: custom bounded_text.BoundedText(160)
 $.replies.agent.history.history.pending: bool
-$.replies.agent.history.history.entries[].provider: enum codex claude
+$.replies.agent.history.history.entries[].provider: enum codex claude pi
 $.replies.agent.history.history.entries[].account: string
 $.replies.agent.history.history.entries[].session: string
 $.replies.agent.history.history.entries[].title: string
@@ -834,7 +870,7 @@ $.launch_preview.installed.claude: bool
 $.launch_history.epoch: u64
 $.launch_history.revision: u64
 $.launch_history.full: bool
-$.launch_history.entries[].provider: enum codex claude
+$.launch_history.entries[].provider: enum codex claude pi
 $.launch_history.entries[].session: string
 $.launch_history.entries[].title: string
 $.launch_history.entries[].first: string
@@ -843,7 +879,11 @@ $.launch_history.entries[].cwd: string
 $.launch_history.entries[].branch: string
 $.launch_history.entries[].updated_at: i64
 $.launch_history.entries[].interrupted: bool
-$.launch_history.removed[].provider: enum codex claude
+$.launch_history.removed[].provider: enum codex claude pi
 $.launch_history.removed[].session: string
 $.replies.viewer.image.data: optional
 $.replies.viewer.image.data?: string
+$.requests|session.command.command|agent.visibility.hidden.pi: bool
+$.snapshot.agent_yolo.pi: bool
+$.snapshot.agent_hidden.pi: bool
+$.launch_preview.installed.pi: bool

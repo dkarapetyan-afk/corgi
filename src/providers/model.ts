@@ -73,8 +73,8 @@ export class Model {
         }
       }
     }
-    if (/^[a-z0-9.-]+$/.test(reported)) {
-      const words = reported.split("-");
+    if (/^[a-z0-9.-]+$/.test(id)) {
+      const words = id.split("-");
       const first = words.shift();
       let name = "";
       if (first === "gpt" && words[0] && /^\d/.test(words[0])) name = "GPT-" + words.shift();

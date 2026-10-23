@@ -22,6 +22,20 @@ function screen(m: Menu, cols: number, rows: number, side: SidebarView): string[
 const work = Row.of("claude", "/accounts/work");
 const workAccount = (option: object = {}) => ({ provider: "claude", account: "/accounts/work", name: "work", option });
 
+test("Pi's default and account rows do not offer a permission bypass", () => {
+  const named = Row.of("pi", "/accounts/pi"),
+    m = menu({ selected: named });
+  m.preview = preview({ pending: false, accounts: [{ provider: "pi", account: "/accounts/pi", name: "work" }] });
+  const side = SidebarView.init(120, 32, true, 0, 0),
+    b = m.bounds(120, 32, side);
+  for (const row of ["pi", named] as const) {
+    expect(m.cells(row)[1]).toBe("—");
+    const index = Array.from({ length: m.count() }, (_, i) => m.rowAt(i)).indexOf(row);
+    expect(m.yoloHit(120, 32, side, b.x + 3 + m.columns(b.w)[0], b.y + 2 + index)).toBeNull();
+  }
+  expect(screen(m, 120, 32, side)[b.y + b.h - 2]).not.toContain("YOLO");
+});
+
 test("Enterprise accounts show their monthly spend in the picker and manager", () => {
   const at = now();
   const m = menu({ selected: work });
@@ -68,7 +82,7 @@ test("launcher menu bounds", () => {
   expect(b.x + b.w <= 80 && b.y + b.h <= 24).toBe(true);
   expect(m.hit(80, 24, side, b.x + 2, b.y + 2)).toBe("codex");
   expect(m.hit(80, 24, side, b.x + 2, b.y + 3)).toBe("claude");
-  expect(m.hit(80, 24, side, b.x + 2, b.y + 4)).toBe("terminal");
+  expect(m.hit(80, 24, side, b.x + 2, b.y + 5)).toBe("terminal");
   expect(m.hit(80, 24, side, b.x + 2, b.y + 6)).toBeNull();
   // Manage is the title's button now.
   expect(m.manageHit(80, 24, side, b.x + b.w - 6, b.y)).toBe(true);
@@ -109,7 +123,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
   };
   const b = m.bounds(120, 40, side);
   // Border, headings, three agent rows, a gap, then the Resume heading.
-  const first_line = b.y + 7;
+  const first_line = b.y + 8;
   expect(m.hit(120, 40, side, b.x + 2, first_line)).toBeNull();
   expect(m.resumeHit(120, 40, side, b.x + 2, first_line)).toEqual({ row: 0 });
   // "More" sits below a gap.
@@ -221,7 +235,7 @@ test("viewer expires a delivered usage reading after ten minutes", () => {
 test("launcher hides providers that are not installed", () => {
   const side = SidebarView.init(120, 24, true, 0, 0);
   const m = menu();
-  m.preview.installed = { codex: false, claude: true };
+  m.preview.installed = { codex: false, claude: true, pi: false };
   m.normalize();
   expect(m.selected).toBe("claude");
   const b = m.bounds(120, 24, side);
@@ -233,7 +247,7 @@ test("launcher hides providers that are not installed", () => {
   expect(m.selected).toBe("terminal");
   m.move(true, true);
   expect(m.selected).toBe("claude");
-  m.preview.installed = { codex: false, claude: false };
+  m.preview.installed = { codex: false, claude: false, pi: false };
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(m.first()).toBe("terminal");
@@ -245,12 +259,14 @@ test("Manage agents lists the signed-out and hidden agents the picker leaves out
   m.preview.options.codex.signed_in = false;
   m.preview.options.claude.account = "me@example.com";
   m.hidden.claude = true;
+  m.hidden.pi = true;
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(!m.shown("codex") && !m.shown("claude")).toBe(true);
   expect(m.manageModel().agents.map(a => [a.label, a.who, a.shown, a.signed_out])).toEqual([
     ["Codex", "Not signed in", true, true],
     ["Claude Code", "me@example.com", false, false],
+    ["Pi", "Unavailable", false, false],
   ]);
   m.commands[0].set("FOO=123 claude --whatever");
   m.commands[0].hidden = true;
@@ -279,6 +295,7 @@ test("rows hidden in this workspace leave its picker but stay in Manage agents, 
     ["Codex", true, true],
     ["Claude Code", true, false],
     ["Claude Code · work", true, false],
+    ["Pi", true, true],
   ]);
   expect([model.here(0), model.here(1)]).toEqual([false, true]);
   expect(["codex", "claude:/a", "custom5", "terminal", "claude:work", "custom6", ""].map(Row.parse)).toEqual([
@@ -297,7 +314,8 @@ test("digit shortcuts enumerate visible agents and exclude terminal and manageme
   const c = (s: string) => s.charCodeAt(0);
   expect(m.shortcutRow(c("0"))).toBe("codex");
   expect(m.shortcutRow(c("1"))).toBe("claude");
-  expect(m.shortcutRow(c("2"))).toBeNull();
+  expect(m.shortcutRow(c("2"))).toBe("pi");
+  m.hidden.pi = true;
   m.hidden.codex = true;
   m.commands[3].set("claude --model opus");
   expect(m.shortcutRow(c("0"))).toBe("claude");
@@ -494,7 +512,7 @@ test("digits count account rows like the agents'", () => {
   m.preview = preview({ accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }] });
   m.commands[0].set("claude --model opus");
   const c = (s: string) => s.charCodeAt(0);
-  expect([..."01234"].map(digit => m.shortcutRow(c(digit)))).toEqual(["codex", side, "claude", work, "custom0"]);
+  expect([..."012345"].map(digit => m.shortcutRow(c(digit)))).toEqual(["codex", side, "claude", work, "pi", "custom0"]);
   m.hidden.codex = true;
   expect([m.shortcutRow(c("0")), m.shortcutRow(c("1"))]).toEqual([side, "claude"]);
   m.account_hidden = ["/accounts/side"];

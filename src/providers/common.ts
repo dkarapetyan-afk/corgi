@@ -92,6 +92,7 @@ export class Hooks {
     if (!v || typeof v !== "object" || Array.isArray(v)) return null;
     const session_kinds: Record<string, string> = {
       SessionStart: "session_start",
+      Idle: "idle",
       UserPromptSubmit: "prompt",
       PreToolUse: "tool_start",
       PostToolUse: "tool_finish",
@@ -122,6 +123,8 @@ export class Hooks {
       moved = kind === "tool_finish" && moves[tool] ? str(response, moves[tool]) : "";
     return {
       kind,
+      /** A provider settlement event, unlike a pre-completion Stop hook. */
+      outcome: null as Outcome | null,
       session: str(v, "session_id"),
       turn: str(v, "turn_id"),
       prompt: str(v, "prompt_id"),

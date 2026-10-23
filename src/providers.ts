@@ -1,11 +1,12 @@
 import * as codex from "./providers/codex";
 import * as claude from "./providers/claude";
+import * as pi from "./providers/pi";
 import type { Adapter } from "./providers/adapter";
 export * from "./providers/common";
 /** Every provider Corgi integrates with, by id. `Provider` derives from it,
  * so a provider missing from any `ByProvider` record fails to compile. Key
  * order is the order the UI lists them in. */
-const registry = { codex: codex.adapter, claude: claude.adapter } satisfies Record<string, Adapter>;
+const registry = { codex: codex.adapter, claude: claude.adapter, pi: pi.adapter } satisfies Record<string, Adapter>;
 export type Provider = keyof typeof registry;
 export type ByProvider<T> = Record<Provider, T>;
 const adapters = new Map<string, Adapter>(Object.entries(registry));

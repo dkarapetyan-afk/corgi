@@ -11,7 +11,7 @@ const detection = deps.detection;
 const c = os.c;
 const a = os.allocator;
 
-const Provider = enum { claude, codex };
+const Provider = enum { claude, codex, pi };
 
 pub fn main(init: std.process.Init) void {
     os.initIo(init.minimal);
@@ -46,17 +46,17 @@ fn run(init: std.process.Init) !void {
             };
             if (parent.len > 0 and !std.mem.eql(u8, parent, session)) return;
         },
-        .claude => {},
+        .claude, .pi => {},
     }
     // Claude's background daemon inherits the environment of whichever pane
     // first spawned it, and so does a `claude -p` an agent runs from a tool.
     const origin: detection.HookOrigin = switch (provider) {
         .claude => detection.hookOrigin(),
-        .codex => .{},
+        .codex, .pi => .{},
     };
     const background = switch (provider) {
         .claude => std.mem.eql(u8, os.env("CLAUDE_CODE_SESSION_KIND") orelse "", "bg") or origin.background,
-        .codex => false,
+        .codex, .pi => false,
     };
     const body = try std.json.Stringify.valueAlloc(a, .{
         .op = "hook",

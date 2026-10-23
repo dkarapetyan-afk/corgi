@@ -37,6 +37,8 @@ const cases: Array<[string, string, string, bigint]> = [
     200000n,
   ],
   ["gpt-6-astra", "gpt-6-astra", "GPT-6 Astra", 0n],
+  ["openai-codex/gpt-6-luna", "openai-codex/gpt-6-luna", "GPT-6 Luna", 0n],
+  ["openai/gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-6.1 Sol", 0n],
   ["gpt-6.1-sol", "gpt-6.1-sol", "GPT-6.1 Sol", 0n],
   ["gpt-5.5", "gpt-5.5", "GPT-5.5", 0n],
   ["gpt-5.3-codex-spark", "gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", 0n],

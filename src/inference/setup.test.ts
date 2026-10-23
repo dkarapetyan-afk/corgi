@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Launches, resolve, load, save, initial, loadUses, saveUses, off } from "./setup";
+import { Launches, resolve, load, save, initial, loadUses, saveUses, off, loadSelection, saveSelection } from "./setup";
+import { Selection } from "./models";
 
 test("auto follows launched agents, then the remembered agent", () => {
   const launches = new Launches();
@@ -30,6 +31,26 @@ test("setup choice round-trips beside workspace state", () => {
     save(file, "off");
     expect(load(file)).toBe("off");
     expect(initial("claude")).toBe("claude");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Clever Corgi keeps its explicit model and account independently of provider choice", () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-model-"));
+  try {
+    const file = join(root, "settings.json"),
+      selected = Object.assign(new Selection(), {
+        provider: "pi",
+        model: "anthropic/claude-haiku-5-5",
+        account: "/private/pi-work",
+      });
+    saveSelection(file, selected);
+    save(file, "claude");
+    saveUses(file, { activity: false });
+    expect(loadSelection(file)).toEqual(selected);
+    save(file, "pi");
+    expect(loadSelection(file)).toEqual(selected);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

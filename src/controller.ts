@@ -2624,7 +2624,7 @@ export class Controller {
   /** Toggles YOLO for a provider's or an account's row. */
   private async toggleLauncherYolo(row: LauncherRow): Promise<void> {
     const target = Row.launch(row);
-    if (!target) return;
+    if (!target || adapter(target.provider).bypass === false) return;
     const { provider, account } = target,
       list = this.runtime.account_yolo,
       enabled = account ? !list.includes(account) : !this.runtime.agent_yolo[provider];
@@ -3192,8 +3192,11 @@ export class Controller {
         return this.toggleGhostty();
       case "smart_links":
         return this.configureSmartLinks(apply.on);
+      case "inference_models":
+        void call(this.connection, "inference.configure", {}).catch(() => {});
+        return;
       case "summaries":
-        return this.configureSummaries(apply.choice);
+        return this.configureSummaries(apply.choice, apply.model, apply.account);
       case "inference_use":
         return this.configureUse(apply.use, apply.on);
     }
@@ -3227,10 +3230,10 @@ export class Controller {
     );
   }
   /** The setup screen stays open; the daemon republishes status, which moves the in-use mark. */
-  private async configureSummaries(choice: Summarizer): Promise<void> {
+  private async configureSummaries(choice: Summarizer, model?: string, account?: string): Promise<void> {
     let response: any;
     try {
-      response = await call(this.connection, "inference.configure", { choice });
+      response = await call(this.connection, "inference.configure", { choice, model, account });
     } catch {
       this.notice(" Corgi setup: the runtime did not accept the change");
       return;
@@ -3830,7 +3833,7 @@ export class Controller {
         ? "launcher"
         : "discard";
     if (this.corgi_setup?.managing()) return this.corgi_setup.agents!.manager.typing() ? "setup" : "discard";
-    if (this.corgi_setup?.editing) return "setup";
+    if (this.corgi_setup?.editing || this.corgi_setup?.modelSearch()) return "setup";
     if (this.agent_picker) return "picker";
     if (this.name_dialog) return "name";
     if (this.reviewKeys() && this.review.typing) return "review";
@@ -3854,7 +3857,11 @@ export class Controller {
     }
     if (this.corgi_setup) {
       const manager = this.corgi_setup.managing() ? this.corgi_setup.agents!.manager : null;
-      return manager ? (manager.typing() ? manager.input().area : null) : (this.corgi_setup.editing?.area ?? null);
+      return manager
+        ? manager.typing()
+          ? manager.input().area
+          : null
+        : (this.corgi_setup.modelSearch()?.area ?? this.corgi_setup.editing?.area ?? null);
     }
     if (this.agent_picker) return this.agent_picker.query.area;
     if (this.name_dialog) {
