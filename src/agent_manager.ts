@@ -783,8 +783,9 @@ export class View {
       this.agent_form.draw(w, b, now);
       View.footer(w, b, [
         ["tab", "next"],
-        ["↵", this.agent_form.typing() ? "save" : "activate"],
+        ["↵", this.agent_form.typing() ? "next" : "activate"],
         ["esc", "cancel"],
+        ["↑↓", "move"],
       ]);
       caret = this.agent_form.caret(b);
     } else caret = this.drawList(w, b, model, now, presentation.focused !== false);

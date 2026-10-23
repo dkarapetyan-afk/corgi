@@ -121,10 +121,13 @@ test("Enter edits an account, preserving drafts on failure and suggesting an emp
   expect(v.agent_form.name.name()).toBe("work");
   expect(screen(v, m).lines.join("\n")).toContain("Extra flags");
   type(v, m, "big");
+  v.sequence("\x1b[Z", m);
   expect(v.key(13, m)).toEqual({ kind: "configure", agent: work, name: "big", options: { flags: "", env: [] } });
   v.fail("There's an account by that name already.");
   expect(screen(v, m).lines.join("\n")).toContain("There's an account by that name already.");
+  v.key(9, m);
   for (let i = 0; i < 3; i++) v.key(127, m);
+  v.sequence("\x1b[Z", m);
   expect(v.key(13, m)).toEqual({ kind: "configure", agent: work, name: "acme", options: { flags: "", env: [] } });
   v.configured();
   expect(v.page).toBe("list");
@@ -140,8 +143,11 @@ test("an empty default name goes by its agent's name, without replacing it with 
   v.open(agentManager.agentKey("claude", ""));
   v.key(9, m);
   expect(v.key(13, m)).toBeNull();
+  v.sequence("\x1b[Z", m);
   expect(v.key(13, m)).toEqual({ kind: "configure", agent: claude, name: "", options: { flags: "", env: [] } });
+  v.key(9, m);
   type(v, m, "example");
+  v.sequence("\x1b[Z", m);
   expect(v.key(13, m)).toEqual({ kind: "configure", agent: claude, name: "example", options: { flags: "", env: [] } });
   v.configured();
   m.agents[1] = { ...claude, name: "example", label: "Claude Code · example" };

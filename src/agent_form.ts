@@ -100,6 +100,49 @@ export class Form {
     this.focus = stops[(Math.max(0, index) + delta + stops.length) % stops.length];
     this.ensureVisible();
   }
+  private vertical(delta: number): void {
+    const rows: Focus[][] = [
+      [{ kind: "name" }],
+      [{ kind: "flags" }],
+      ...this.variables.map((_, row): Focus[] => [
+        { kind: "key", row },
+        { kind: "value", row },
+        { kind: "remove", row },
+      ]),
+      ...(this.variables.length < agentOptions.max_variables ? [[{ kind: "add" } as Focus]] : []),
+      [{ kind: "cancel" }, { kind: "save" }],
+    ];
+    const f = this.focus,
+      index = rows.findIndex(row =>
+        row.some(stop => stop.kind === f.kind && (!("row" in stop) || ("row" in f && stop.row === f.row))),
+      ),
+      target = rows[Math.max(0, Math.min(rows.length - 1, index + delta))],
+      column = f.kind === "value" ? 1 : f.kind === "remove" ? 2 : 0;
+    if (index + delta < 0 || index + delta >= rows.length) return;
+    this.focus = target[0].kind === "cancel" ? { kind: "save" } : target[Math.min(column, target.length - 1)];
+    this.ensureVisible();
+  }
+  private nextField(): void {
+    const f = this.focus;
+    switch (f.kind) {
+      case "name":
+        this.focus = { kind: "flags" };
+        break;
+      case "key":
+        this.focus = { kind: "value", row: f.row };
+        break;
+      case "flags":
+      case "value": {
+        const row = f.kind === "value" ? f.row + 1 : 0;
+        this.focus =
+          row < this.variables.length
+            ? { kind: "key", row }
+            : { kind: this.variables.length < agentOptions.max_variables ? "add" : "save" };
+        break;
+      }
+    }
+    this.ensureVisible();
+  }
   private ensureVisible(): void {
     if ("row" in this.focus)
       this.first = Math.max(0, Math.min(this.focus.row, Math.max(this.first, this.focus.row - this.room + 1)));
@@ -136,8 +179,11 @@ export class Form {
             return null;
           case "cancel":
             return "cancel";
-          default:
+          case "save":
             return this.validate() ? "save" : null;
+          default:
+            this.nextField();
+            return null;
         }
       default:
         if (this.typing()) this.input().key(byte);
@@ -145,13 +191,18 @@ export class Form {
     }
   }
   sequence(seq: string): void {
-    if (keys.parse(seq) === "shift_tab") this.move(-1);
+    const key = keys.parse(seq);
+    if (key === "shift_tab") this.move(-1);
+    else if (key === "up" || key === "down") this.vertical(key === "up" ? -1 : 1);
+    else if (key === "left" && this.focus.kind === "save") this.focus = { kind: "cancel" };
+    else if (key === "right" && this.focus.kind === "cancel") this.focus = { kind: "save" };
+    else if (key === "left" && this.focus.kind === "remove") this.focus = { kind: "value", row: this.focus.row };
     else if (this.typing()) this.input().sequence(seq);
   }
   private geometry(b: Rect) {
     const x = b.x + 3,
-      width = sat(b.w, 6),
-      key_width = Math.min(22, Math.floor((width - 5) * 0.4));
+      width = Math.min(80, sat(b.w, 6)),
+      key_width = Math.min(26, Math.floor((width - 6) * 0.4));
     const compact = b.h < this.height();
     this.room = compact ? 3 : visible_rows;
     this.ensureVisible();
@@ -160,8 +211,10 @@ export class Form {
       width,
       key_width,
       value_x: x + key_width + 2,
-      value_width: width - key_width - 5,
-      remove_x: b.x + b.w - 4,
+      value_width: width - key_width - 6,
+      remove_x: x + width - 3,
+      cancel_x: x + width - 20,
+      save_x: x + width - 8,
       name: compact ? 4 : 5,
       flags: compact ? 6 : 8,
       hint: compact ? 7 : 9,
@@ -170,7 +223,6 @@ export class Form {
       rows: compact ? 10 : 13,
       count: compact ? 13 : 17,
       add: compact ? 14 : 18,
-      note: compact ? 15 : 19,
       actions: compact ? 16 : 20,
       error: compact ? 17 : 21,
       compact,
@@ -185,14 +237,16 @@ export class Form {
     width: number,
     focused: boolean,
   ): void {
-    const plain = new palette.Style({ fg: "text", bg: focused ? "selected" : "surface" }).sgr();
-    w.write(at(x, y) + plain);
-    w.splat(" ", width);
-    w.write(at(x, y));
+    const plain = new palette.Style({ fg: "text", bg: "selected" }).sgr(),
+      border = palette.fg(focused ? "accent" : "line"),
+      columns = sat(width, 4);
+    w.write(at(x, y) + plain + border + "[" + plain);
+    w.splat(" ", sat(width, 2));
+    w.write(border + "]" + at(x + 2, y));
     if (!d.len) {
-      w.write(palette.fg(focused ? "muted" : "faint"));
-      writeEllipsis(w, placeholder, width);
-    } else writeField(w, d, DialogView.scroll(d, width), width, plain, { selecting: focused });
+      w.write(palette.fg("muted"));
+      writeEllipsis(w, placeholder, columns);
+    } else writeField(w, d, DialogView.scroll(d, columns), columns, plain, { selecting: focused });
     w.write(new palette.Style({ fg: "text", bg: "surface" }).sgr());
   }
   draw(w: Writer, b: Rect, now: number): void {
@@ -201,8 +255,11 @@ export class Form {
       text = new palette.Style({ fg: "text", bg: "surface" }).sgr(),
       dim = palette.fg("faint"),
       strong = palette.fg("strong"),
-      label = (y: number, value: string) => {
-        w.write(at(g.x, b.y + y) + text + dim);
+      label = (y: number, value: string, focused = false) => {
+        w.write(
+          at(g.x, b.y + y) +
+            new palette.Style({ fg: focused ? "strong" : "muted", bg: "surface", bold: focused }).sgr(),
+        );
         writeEllipsis(w, value, g.width);
       },
       button = (x: number, y: number, value: string, focused: boolean) =>
@@ -215,7 +272,7 @@ export class Form {
     w.write(at(g.x, b.y + 2) + text + strong);
     writeEllipsis(w, printable(this.agent?.label ?? ""), g.width);
     if (!g.compact) label(3, printable(this.agent?.who ?? ""));
-    label(g.name - 1, "Name");
+    label(g.name - 1, "Name", f.kind === "name");
     this.field(
       w,
       this.name,
@@ -225,19 +282,19 @@ export class Form {
       g.width,
       f.kind === "name",
     );
-    label(g.flags - 1, "Extra flags");
+    label(g.flags - 1, "Extra flags", f.kind === "flags");
     this.field(w, this.flags, "e.g. --model sonnet --verbose", g.x, b.y + g.flags, g.width, f.kind === "flags");
     label(g.hint, "Appended to Corgi's launch command. Quotes supported.");
     label(g.environment, "Environment");
-    label(g.headings, "Variable");
-    w.write(at(g.value_x, b.y + g.headings) + dim + "Value");
+    label(g.headings, "Variable", f.kind === "key");
+    w.write(at(g.value_x, b.y + g.headings) + palette.fg(f.kind === "value" ? "strong" : "muted") + "Value");
     if (!this.variables.length) label(g.rows, "No overrides; inherits your environment.");
     for (let i = this.first; i < Math.min(this.variables.length, this.first + this.room); i++) {
       const variable = this.variables[i],
         y = b.y + g.rows + i - this.first;
       this.field(w, variable.key, "VARIABLE", g.x, y, g.key_width, f.kind === "key" && f.row === i);
       this.field(w, variable.value, "(empty)", g.value_x, y, g.value_width, f.kind === "value" && f.row === i);
-      button(g.remove_x, y - b.y, "×", f.kind === "remove" && f.row === i);
+      button(g.remove_x, y - b.y, "[×]", f.kind === "remove" && f.row === i);
       if (variable.added !== null) {
         const t = Math.min(1, Math.max(0, (now - variable.added) / row_duration_ms)),
           color = palette.mix(palette.colors.accent, palette.colors.line, Math.round(100 * (1 - (1 - t) ** 3)));
@@ -249,10 +306,9 @@ export class Form {
         g.count,
         `${this.first + 1}–${Math.min(this.first + this.room, this.variables.length)} of ${this.variables.length} · tab to scroll`,
       );
-    if (this.variables.length < agentOptions.max_variables) button(g.x, g.add, "+ Add variable", f.kind === "add");
-    label(g.note, "Across workspaces · new launches only");
-    button(b.x + b.w - 22, g.actions, "[ Cancel ]", f.kind === "cancel");
-    button(b.x + b.w - 10, g.actions, "[ Save ]", f.kind === "save");
+    if (this.variables.length < agentOptions.max_variables) button(g.x, g.add, "[ + Add variable ]", f.kind === "add");
+    button(g.cancel_x, g.actions, "[ Cancel ]", f.kind === "cancel");
+    button(g.save_x, g.actions, "[ Save ]", f.kind === "save");
     if (this.error) {
       w.write(at(g.x, b.y + g.error) + palette.fg("hot"));
       writeEllipsis(w, this.error, g.width);
@@ -262,8 +318,8 @@ export class Form {
     const g = this.geometry(b),
       f = this.focus,
       variable = f.kind === "key" || f.kind === "value",
-      x = f.kind === "value" ? g.value_x : g.x,
-      width = f.kind === "key" ? g.key_width : f.kind === "value" ? g.value_width : g.width,
+      x = (f.kind === "value" ? g.value_x : g.x) + 2,
+      width = sat(f.kind === "key" ? g.key_width : f.kind === "value" ? g.value_width : g.width, 4),
       d = this.input(),
       offset = DialogView.scroll(d, width),
       y = b.y + (variable && "row" in f ? g.rows + f.row - this.first : f.kind === "flags" ? g.flags : g.name);
@@ -272,18 +328,19 @@ export class Form {
   click(b: Rect, x: number, y: number, now = milliTimestamp()): Result {
     const g = this.geometry(b),
       row = y - b.y;
-    if (x < g.x || x >= b.x + b.w - 2) return null;
-    if (row === g.actions && x >= b.x + b.w - 10 && x < b.x + b.w - 2) return this.validate() ? "save" : null;
-    if (row === g.actions && x >= b.x + b.w - 22 && x < b.x + b.w - 12) return "cancel";
-    if (row === g.add && x < g.x + 14) {
+    if (x < g.x || x >= g.x + g.width) return null;
+    if (row === g.actions && x >= g.save_x && x < g.save_x + 8) return this.validate() ? "save" : null;
+    if (row === g.actions && x >= g.cancel_x && x < g.cancel_x + 10) return "cancel";
+    if (row === g.add && x < g.x + 18) {
       this.add(now);
       return null;
     }
+    this.error = "";
     if (row === g.name) this.focus = { kind: "name" };
     else if (row === g.flags) this.focus = { kind: "flags" };
     else if (row >= g.rows && row < g.rows + this.room && this.variables[row - g.rows + this.first]) {
       const index = row - g.rows + this.first;
-      if (x === g.remove_x) {
+      if (x >= g.remove_x && x < g.remove_x + 3) {
         this.remove(index);
         return null;
       }
@@ -291,10 +348,13 @@ export class Form {
       else if (x >= g.value_x && x < g.value_x + g.value_width) this.focus = { kind: "value", row: index };
       else return null;
     } else return null;
-    const width = this.focus.kind === "key" ? g.key_width : this.focus.kind === "value" ? g.value_width : g.width,
-      start = this.focus.kind === "value" ? g.value_x : g.x,
+    const width = sat(
+        this.focus.kind === "key" ? g.key_width : this.focus.kind === "value" ? g.value_width : g.width,
+        4,
+      ),
+      start = (this.focus.kind === "value" ? g.value_x : g.x) + 2,
       d = this.input();
-    d.position(d.byteAtColumn(DialogView.scroll(d, width), x - start));
+    d.position(d.byteAtColumn(DialogView.scroll(d, width), Math.max(0, Math.min(width, x - start))));
     return null;
   }
 }

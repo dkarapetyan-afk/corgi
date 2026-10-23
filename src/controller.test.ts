@@ -1218,6 +1218,9 @@ test.each(["launcher", "settings"] as const)(
       await s.key(9);
       for (const ch of "60000") await s.key(ch.charCodeAt(0));
       await s.key(13);
+      expect(accounts.launchOptions("claude", "")).toEqual({ flags: "", env: [] });
+      await s.input(bytes("\x1b[B"));
+      await s.key(13);
       expect(accounts.launchOptions("claude", "")).toEqual({
         flags: "--model sonnet",
         env: [["API_TIMEOUT_MS", "60000"]],

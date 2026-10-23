@@ -150,7 +150,10 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.managerOpen(view, "Codex");
     await view.advance(0.3);
     this.assertIn("Extra flags", (await view.poll()).data);
-    await view.input('local\t--model custom --label "two words"\t\rLAUNCH_TEST_VALUE\ttwo words = $literal\r');
+    await view.input('local\r--model custom --label "two words"\r\rLAUNCH_TEST_VALUE\rtwo words = $literal\r');
+    this.assertIn("Edit agent", (await view.poll()).data);
+    this.assertFalse(existsSync(this.launches), "editing must not start an agent");
+    await view.input("\x1b[B\r");
     const file = join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json");
     await this.until(() => existsSync(file) && json(file).launch?.some((a: any) => a.provider === "codex"));
     this.assertEqual(json(file).launch, [
