@@ -131,7 +131,8 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
   #v-launcher-phone, #v-overview-phone { display: block; }
   #overview-stage { padding: 0; border: 0; border-radius: 0; background: none; }
 }
-.screen .badge { position: absolute; z-index: 1; top: calc(.71em - 1.5 * var(--cell)); width: calc(3 * var(--cell)); height: calc(3 * var(--cell)); object-fit: contain; }
+/* Where Corgi places it: from the top of its row, three cells wide. */
+.screen .badge { position: absolute; z-index: 1; top: 0; width: calc(3 * var(--cell)); height: calc(3 * var(--cell)); object-fit: contain; }
 .f-bg { color: var(--bg); } .f-surface { color: var(--surface); } .f-selected { color: var(--selected); }
 .f-line { color: var(--line); } .f-faint { color: var(--faint); } .f-muted { color: var(--muted); }
 .f-text { color: var(--text); } .f-strong { color: var(--strong); } .f-accent { color: var(--accent); }
@@ -182,7 +183,9 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 #overview-stage { box-sizing: border-box; }
 #v-overview-phone { --pad: 0px; }
 /* The overview hangs from the badge, where a pointer rests until the visitor's own arrives. */
-#v-overview .cursor { left: 2.4ch; top: 0.9em; }
+#v-overview .cursor { left: 1.9ch; top: 0.9em; }
+/* From the badge's foot, a row and a half down, to the middle of the card's top border's row. */
+#v-overview .hang { position: absolute; top: 1.8em; width: 1px; height: calc(2.5 * 1.42em - 1.8em + .5px); background: var(--line); pointer-events: none; }
 #v-overview:hover .cursor { opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -237,6 +240,30 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
   .sim-stage { padding: 4px; border-radius: 5px; }
   #v-sim { --pad: 10px; }
 }
+/* A link card's picture, over the rows the card leaves it, and the
+   pointer resting on the link. */
+.screen .shot { position: absolute; z-index: 1; pointer-events: none; }
+[data-feature] .cursor { transition: opacity .3s; }
+/* The agents Corgi knows, on a tab the screen's box grows at its foot, on
+   the page's ground, its border curving out of the box's bottom edge. */
+.band > .stage:has(+ .works-with) { position: relative; z-index: 1; }
+/* Its box's padding takes the ground beside it: the sidebar's, then the
+   pane's from --split on, so there's no bezel. */
+.band[data-feature="agents"] > .stage { background: linear-gradient(to right, var(--bg) var(--split, 50%), var(--pane) var(--split, 50%)); }
+.works-with { --r: 10px; --gap: 3.5ch; position: relative; z-index: 2; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px var(--gap); margin: -8px 0 0; padding: 7px 2ch 9px; list-style: none; font-size: 13px; background: var(--bg); border: 1px solid var(--surface); border-top: 0; border-radius: 0 0 var(--r) var(--r); }
+.works-with::before, .works-with::after { content: ""; position: absolute; top: 0; width: var(--r); height: var(--r); pointer-events: none; }
+.works-with::before { left: calc(-1 * var(--r)); background: radial-gradient(circle at 0 100%, transparent calc(var(--r) - 1px), var(--surface) calc(var(--r) - 1px) var(--r), var(--bg) var(--r)); }
+.works-with::after { right: calc(-1 * var(--r)); background: radial-gradient(circle at 100% 100%, transparent calc(var(--r) - 1px), var(--surface) calc(var(--r) - 1px) var(--r), var(--bg) var(--r)); }
+/* A thin rule centered in the gap between each two. */
+.works-with li + li { position: relative; }
+.works-with li + li::before { content: ""; position: absolute; left: calc(var(--gap) / -2); top: 50%; width: 1px; height: .8em; background: var(--selected); transform: translate(-50%, -50%); }
+.works-with a { display: inline-flex; align-items: center; gap: 0.75ch; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.works-with a:hover { color: var(--strong); }
+.works-with img { width: 14px; height: 14px; object-fit: contain; }
+@media (max-width: 600px) {
+  .works-with { --gap: 2.25ch; padding-inline: 1.5ch; font-size: 11px; }
+  .works-with img { width: 12px; height: 12px; }
+}
 .band > .legend { font-size: inherit; color: var(--muted); }
 @media (max-width: 600px) {
   .band > .legend { font-size: 13px; gap: 2px 2ch; }
@@ -252,7 +279,10 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 /* A wire joins rings that go together. */
 .sim-wire { overflow: visible; }
 .sim-wire path { fill: none; stroke: var(--accent); stroke-width: 1; stroke-linejoin: miter; }
-.sim-ring { box-sizing: border-box; border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 3px rgb(123 241 168 / .08); }
+.sim-ring, .sim-focus { box-sizing: border-box; border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 3px rgb(123 241 168 / .08); }
+/* What's worth reading in the agent the visitor just read. */
+.sim-focus { position: absolute; z-index: 2; pointer-events: none; opacity: 0; transition: opacity .25s; }
+.sim-focus.on { opacity: 1; }
 
 /* Two viewers on one desktop, with the work alive behind both windows. */
 .running-desktop { box-sizing: border-box; width: 100%; max-width: 1200px; padding: 24px; border: 1px solid var(--surface); border-radius: 12px; background: var(--surface); }

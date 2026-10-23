@@ -18,6 +18,8 @@ import * as worktreeTooltip from "../src/worktree_tooltip";
 import * as worktreeRemoval from "../src/worktree_removal";
 import * as worktrees from "../src/worktrees";
 import * as bindings from "../src/bindings";
+import { TabMenu } from "../src/commands";
+import * as linkTooltip from "../src/link_tooltip";
 import { Rect } from "../src/layout";
 import { Writer } from "../src/text";
 import { cpuText, memoryText } from "../src/trackers/resources";
@@ -354,9 +356,11 @@ function noYolo(g) {
   g[PICK_HEIGHT - 2] = [...foot.slice(0, lead), ...Array.from({ length: hint.length }, () => [" ", foot[1][1]]), ...foot.slice(lead, at), ...foot.slice(at + hint.length)];
   return g;
 }
-// Rows: Codex, Claude Code, Codex on a second account, New terminal.
+// Rows: Codex, Claude Code, Pi on the company's account, New terminal.
 // Every mode is the same height, so the page never moves.
 const PICK_AGENTS = 4, PICK_HEIGHT = 18, FIELD_ROW = 7;
+// What each agent row starts.
+const PICK_PROVIDERS = ["codex", "claude", "pi"];
 const PICK = Array.from({ length: PICK_AGENTS }, (_, i) => noYolo(noManage(crop(F["launcher" + i], POP_AT.top, POP_AT.left, PICK_HEIGHT, POP.width))));
 const PICK_LIST = noManage(crop(F.search3, POP_AT.top, POP_AT.left, PICK_HEIGHT, POP.width));
 // No scope switching here: the search line and the footer lose "tab".
@@ -447,6 +451,11 @@ function agentScreen(provider, entry, width) {
     rows.push([["❯ ", A.prompt2]]);
     rows.push([["─".repeat(width), A.border]]);
     rows.push([["⏵⏵ bypass permissions on", A.mode]]);
+  } else if (provider === "pi") {
+    // Pi's editor between its two rules, then the folder and its status line.
+    rows.push([["─".repeat(width), PI.rule]], [], [["─".repeat(width), PI.rule]], [["~/dev/corgi", PI.dim]]);
+    const status = "$0.000 (sub) 0.0%/400k (auto)", model = "(openai-codex) gpt-6-astra • high";
+    rows.push([[status + " ".repeat(Math.max(1, width - status.length - model.length)) + model, PI.dim]]);
   } else {
     if (entry) {
       const [verb, arg, out] = entry.tool;
@@ -484,9 +493,13 @@ function drawAgent(g, rows, k, width = POP.width, bottom = PANE_BOTTOM) {
   });
   return top;
 }
-// The caret: inside Claude Code's box, or over the first letter of Codex's hint.
+// Pi's purple rules and gray lines, as it draws them.
+const PI = { rule: style("#9776e5"), dim: style("#7e888e") };
+// The caret: inside Claude Code's box or Pi's editor, or over the first
+// letter of Codex's hint.
 function caret(g, provider, rows, top) {
   if (provider === "claude") return put(g, top + rows.length - 3, 3, " ", A.cursor);
+  if (provider === "pi") return put(g, top + rows.length - 4, 1, " ", A.cursor);
   put(g, top + rows.length - 3, 3, "A", A.caret);
 }
 function drawOpened(g, t, width = POP.width, bottom = PANE_BOTTOM) {
@@ -563,7 +576,7 @@ function openItem(kind, value) {
   launcherStage.focus({ preventScroll: true });
 }
 function openSelected() {
-  if (L.mode === "agents") return L.agent === PICK_AGENTS - 1 ? openItem("terminal") : openItem("agent", L.agent === 1 ? "claude" : "codex");
+  if (L.mode === "agents") return L.agent === PICK_AGENTS - 1 ? openItem("terminal") : openItem("agent", PICK_PROVIDERS[L.agent]);
   const rows = rowsFor(L.mode, L.query), line = rows[at(rows)];
   if (!line) return;
   if (line.kind === "more") return startSearch();
@@ -711,11 +724,12 @@ const PS = (() => {
     foot: at(desk, 16, "new tab"), scope_in: at(desk, 0, " in "), scope: at(desk, 0, "corgi"),
   };
 })();
-// [account, name, model, five-hour and weekly use (%), or null where unknown]
+// [row, account, name, model, [label, use (%)] for each of the two figures,
+// or null where unknown], under their accounts.
 const PHONE_AGENTS = [
-  ["you@example.com", "Codex", "GPT-6 Astra", [null, 18]],
-  ["you@example.com", "Claude Code", "Opus 5.5", [23, 41]],
-  ["you@slopcorp.ai", "Codex", "GPT-6 Astra", null],
+  [0, "you@example.com", "Codex", "GPT-6 Astra", [null, ["7d", 18]]],
+  [1, "you@example.com", "Claude Code", "Opus 5.5", [["5h", 23], ["7d", 41]]],
+  [2, "you@slopcorp.ai", "Pi", "GPT-6 Astra", [["5h", 12], ["7d", 33]]],
 ];
 // Columns: keycap, then name and model; figures end at FIG.
 const NAME = 7, MODEL = 20, FIG = 45;
@@ -736,26 +750,25 @@ function phoneAgents(g) {
   // Its title names the workspace it opens in, as corgi's does.
   put(g, 0, put(g, 0, put(g, 0, 2, " New agent ", PS.title), " in  ", PS.scope_in), "corgi ", PS.scope);
   let r = 1, account = null;
-  PHONE_AGENTS.forEach(([acct, name, model, use], i) => {
+  PHONE_AGENTS.forEach(([i, acct, name, model, use]) => {
     if (acct !== account) phoneHeader(g, r++, (account = acct));
     const sel = L.mode === "agents" && L.agent === i, k = sel ? "_sel" : "";
     phoneRow(g, r, sel);
     put(g, r, 3, ` ${i} `, PS.key);
     put(g, r, NAME, name, PS["text" + k]);
     put(g, r, MODEL, model, PS["muted" + k]);
-    // An account whose usage corgi can't read shows none.
-    if (use) ["5h", "7d"].forEach((label, n) => {
-      if (use[n] == null) return;
+    use.forEach((figure, n) => {
+      if (!figure) return;
       const at = FIG - 12 + 7 * n;
-      put(g, r, put(g, r, at, label + " ", PS["label" + k]), `${use[n]}%`.padStart(3), PS["pct" + k]);
+      put(g, r, put(g, r, at, figure[0] + " ", PS["label" + k]), `${figure[1]}%`.padStart(3), PS["pct" + k]);
     });
     PMAP[r++] = { agent: i };
   });
-  const sel = L.mode === "agents" && L.agent === 3;
+  const term = PICK_AGENTS - 1, sel = L.mode === "agents" && L.agent === term;
   phoneRow(g, r, sel);
   put(g, r, 3, " t ", PS.key);
   put(g, r, NAME, "New terminal", sel ? PS.text_sel : PS.text);
-  PMAP[r++] = { agent: 3 };
+  PMAP[r++] = { agent: term };
   phoneRow(g, r++);
   return r;
 }
@@ -1025,6 +1038,27 @@ function workRows(key, t, w) {
       ...claudeBottom(w)];
   }
 }
+// The thruster tuning, asked how the game looks now, saves a screenshot
+// and goes on tuning, as the sidebar says.
+const SHOT = { text: "shots/descent.png", uri: "file:///Users/me/dev/moonlander/.claude/worktrees/thrusters/shots/descent.png" };
+const shotRows = (t, w) => [
+  ...ask("fix the bounce"),
+  ...tool("Update", "physics.ts", "2 lines fixed"),
+  ...say("Fixed: it lands softly now."), [],
+  ...ask("show me the descent"), [],
+  ...tool("Bash", "bun run shot --at descent", "Wrote 1 screenshot"),
+  ...say(`It drifts down past the moon: ${SHOT.text}`), [],
+  [[SPIN_CLAUDE[Math.floor(t / 120) % SPIN_CLAUDE.length] + " Tuning lunar gravity… ", ORANGE], [`(${41 + Math.floor(t / 1000)}s)`, A.hint]],
+  ...claudeBottom(w)];
+// The thruster tuning, asked for a pull request, opens one and goes on
+// tuning; its link sits over blank rows the card opens onto.
+const PR = { text: "https://github.com/you/moonlander/pull/12" };
+const prRows = (t, w) => [
+  ...ask("open a PR for the thrusters"),
+  ...tool("Bash", "gh pr create --fill", "Created pull request #12"),
+  ...say("It's up for review:"), [["  " + PR.text, A.text]], [], [], [],
+  [[SPIN_CLAUDE[Math.floor(t / 120) % SPIN_CLAUDE.length] + " Tuning lunar gravity… ", ORANGE], [`(${41 + Math.floor(t / 1000)}s)`, A.hint]],
+  ...claudeBottom(w)];
 // The thruster tuning's session, told short, once its turn is over.
 const thrustersTuned = (w) => [
   ...ask("fix the bounce"), [],
@@ -1430,9 +1464,21 @@ watchEl.addEventListener("click", (e) => {
 // `top` for your tokens: corgi's overview, open under the hovered badge. Each
 // step adds the working agents' new tokens; Tune the thruster physics passes
 // Release notes, and Corgi's summarizer runs now and then.
-const OV_STEP = 2400, OV_CARD = F.ov_card;
+// The card on the screen's ground, which its border cells would otherwise
+// spill past its line: the sidebar header it opens from keeps none of its
+// own either, and its "workspaces" sits well back so the card leads.
+const OV_STEP = 2400, OV_CARD = F.ov_card.map((g) => g.map((row, r) => row.map(([ch, s]) => {
+  const [fg, bg, bold, ul, ulc] = STYLES[s];
+  if (r > 1 && bg !== "bg") return [ch, s];
+  return [ch, style(r > 1 || !fg ? fg : mix(fg, "bg", 0.65), null, bold, ul, ulc)];
+})));
 const overviewEl = document.getElementById("v-overview");
 const overviewScreen = new Screen(overviewEl, OV_CARD[0][0].length, OV_CARD[0].length, { badge: true });
+// The badge's left edge on the card's left border, the middle of its cell.
+overviewScreen.badge.style.left = `calc(${BADGE_X - 0.5} * var(--cell))`;
+// The line the card hangs from it by, from its foot to the card's top border.
+const hang = overviewEl.appendChild(Object.assign(document.createElement("div"), { className: "hang" }));
+hang.style.left = `calc(${BADGE_X + 1} * var(--cell) - .5px)`;
 let overviewShown = null;
 // On a phone the card is laid out like the picker: agents under their
 // account, limits under their own header, each a label and one figure at the
@@ -1821,22 +1867,29 @@ function find(g, text, { r0 = 0, r1 = g.length - 1, c0 = 0, c1 = g[0].length - 1
   return null;
 }
 const agentRows = (i) => ({ r0: WATCH_ROWS[i], r1: WATCH_ROWS[i] + 1, c0: 1, c1: SW - 3 });
-const WT_ROWS = F.wt34.length;
+const WT_ROWS = F.wt34_0.length;
 
-// ---- the review panel: Corgi's own, at the window's right edge, on the
-// thruster tuning's checkout as git answered the recorder (site/browser/git.ts).
+// ---- the review panel: Corgi's own, at the window's right edge, on one of
+// moonlander's checkouts as git answered the recorder (site/browser/git.ts).
 // Corgi's default width, beside a narrow sidebar, leaving the agent's pane
 // less than Corgi would. Its keys overlay stays shut.
 const REVIEW_W = 80;
-function reviewPanel() {
+// The checkouts the recorder made, by the worktree each is: where the panel
+// reads it, and the agent it follows there.
+const REVIEWED = [
+  ["/thrusters", { cwd: "~/moonlander", name: "Tune the thruster physics" }],
+  ["/sprite", { cwd: "~/moonlander/.claude/worktrees/sprite", name: "Draw the lander sprite" }],
+];
+function reviewPanel(target = REVIEWED[0][1]) {
   const p = new panel.Panel();
   p.open = true;
   p.keysHelp = false;
-  p.follow({ pane: 0, cwd: "~/moonlander", name: "Tune the thruster physics" });
-  // All files, newest edit first, with the new physics test folded to its
-  // heading so the gravity fix in physics.ts shows under it. Sorting keeps
-  // the cursor on its file, so it goes back to the top first.
-  p.refresh().then(() => [{ text: "o" }, { named: "home" }, { text: "x" }].forEach((k) => p.key(k)));
+  p.follow({ pane: 0, ...target });
+  // All files, newest edit first; the thruster tuning's new physics test
+  // folded to its heading so the gravity fix in physics.ts shows under it.
+  // Sorting keeps the cursor on its file, so it goes back to the top first.
+  const fold = target === REVIEWED[0][1] ? [{ text: "x" }] : [];
+  p.refresh().then(() => [{ text: "o" }, { named: "home" }, ...fold].forEach((k) => p.key(k)));
   return p;
 }
 function drawReview(g, p, focused, rows) {
@@ -1871,6 +1924,7 @@ function reviewEffect(s, effect) {
 }
 function toggleReview(s) {
   const S = s.S;
+  if (!s.review) return;
   if (!S.review) { s.review.open = true; void s.review.refresh(); Object.assign(S, { review: true, reviewKeys: true }); }
   else if (!S.reviewKeys) S.reviewKeys = true;
   else reviewEffect(s, { kind: "hide" });
@@ -1891,6 +1945,8 @@ function reviewInput(el, current, [r0, c0, rows, cols]) {
   });
   el.addEventListener("mousemove", (e) => {
     const s = current(), at = cellAt(e);
+    // A slice that opens its panel only on Review changes has none yet.
+    if (!s.review) return;
     if (pressed) s.review.mouse("drag", at.col, at.row);
     else if (inPanel(s, at)) s.review.mouse("move", at.col, at.row);
     // The rule under the file list drags its height.
@@ -1946,48 +2002,133 @@ function treesRect(o, rows, now = Date.now()) {
   const shown = worktreeTooltip.listing(o.snapshot, o.card, now);
   return worktreeTooltip.geometry(COLS, rows, o.sw, treesBadge(o)?.y ?? o.card.anchor, shown.entries.length, shown.closed, o.card.lines());
 }
-// The card and the line from its badge; what they leave unwritten shows through.
+// What Corgi wrote to `out` over `g`, each cell's look through `ground`;
+// what it leaves unwritten shows through.
+function drawOver(g, out, rows, ground = (look) => look) {
+  terminal.grid(out.buffered(), COLS, rows).forEach((row, r) => row.forEach(([ch, ...look], c) => {
+    if (look[1] !== null) g[r][c] = [ch, style(...ground(look, c))];
+  }));
+}
+// The card and the line from its badge. Over the pane the card takes the
+// pane's ground, which its border cells would otherwise spill past its line.
 function drawTrees(g, o, rows) {
   const now = Date.now(), out = new Writer();
   if (o.card.removal.phase !== "idle") o.card.removal.advance(now);
   const rect = treesRect(o, rows, now);
   if (!rect) return;
   worktreeTooltip.draw(out, rect, o.data.name, o.data.cwd, o.snapshot, o.card, treesBadge(o), now);
-  terminal.grid(out.buffered(), COLS, rows).forEach((row, r) => row.forEach(([ch, ...look], c) => {
-    if (look[1] !== null) g[r][c] = [ch, style(...look)];
-  }));
+  drawOver(g, out, rows, ([fg, bg, ...rest], c) => [fg, bg === "surface" && c >= o.sw ? "pane" : bg, ...rest]);
+}
+// ---- a worktree heading's menu: Corgi's own, as a right-click on the
+// heading opens it (on the page, any click). Review changes says what it
+// would show once git answers; Copy full path copies the folder. The rest
+// close it, the page having no tabs to open.
+const GIT_ANSWERS = 350;
+// The checkout whose heading is on `row` of the sidebar, `sw` wide.
+function headingAt(g, o, row, sw) {
+  if (!g?.[row]) return null;
+  const text = rowText(g, row).slice(0, sw - 1), at = text.indexOf("⌥ ");
+  if (at < 0) return null;
+  const name = text.slice(at + 2).split(" ")[0];
+  return o.snapshot.entries.find((e) => worktrees.label(e) === name || (name.endsWith("…") && worktrees.label(e).startsWith(name.slice(0, -1)))) ?? null;
+}
+function openMenu(S, checkout, col, row) {
+  const o = S.trees, menu = new TabMenu({ tab: 1, worktree: checkout.path, title: worktrees.label(checkout), anchor_x: col, anchor_y: row });
+  menu.setDetail("review", null);
+  menu.setDetail("copy-path", [[worktreeTooltip.displayPath(checkout.path, o.data.cwd), "faint"]]);
+  menu.highlightFirst();
+  S.menu = { menu, path: checkout.path, at: Date.now(), overview: o.open };
+  o.card.clear();
+  o.open = false;
+}
+// The overview the menu opened over comes back as it goes.
+function closeMenu(S) {
+  if (S.menu.overview) openTrees(S.trees);
+  S.menu = null;
+}
+function menuAction(s, item) {
+  const S = s.S, path = S.menu.path;
+  if (item === "copy-path") {
+    navigator.clipboard?.writeText(path).catch(() => {});
+    S.copiedUntil = Date.now() + 2000;
+  }
+  closeMenu(S);
+  if (item === "review") reviewTree(s, path);
+}
+// Review changes on a worktree: Corgi's panel on its checkout, the overview
+// going as the panel takes the keyboard.
+function reviewTree(s, path) {
+  const target = REVIEWED.find(([end]) => path.endsWith(end))?.[1];
+  if (!target) return;
+  s.S.trees.card.clear();
+  s.S.trees.open = false;
+  s.openReview(target);
+}
+function drawMenu(g, S) {
+  const m = S.menu, out = new Writer();
+  if (!m.answered && Date.now() - m.at >= GIT_ANSWERS) {
+    m.answered = true;
+    m.menu.setDetail("review", new Map(S.trees.data.reviews).get(m.path) ?? [["No changes", "faint"]]);
+  }
+  m.menu.draw(out, COLS, S.rows);
+  drawOver(g, out, S.rows);
+}
+// Corgi's toast once something's copied, as src/render.ts draws it.
+function drawCopied(g, rows) {
+  const out = new Writer(), x = COLS - 26;
+  out.write(new palette.Style({ fg: "line", bg: "bg" }).sgr() + `\x1b[2;${x}H╭─────────────────────────╮`);
+  out.write(`\x1b[3;${x}H│ ` + palette.fg("strong") + "● \x1b[1mCopied to clipboard\x1b[22m" + palette.fg("line") + "   │");
+  out.write(`\x1b[4;${x}H╰─────────────────────────╯\x1b[0m`);
+  drawOver(g, out, rows);
 }
 // A press of ⌫ or Delete, or a repeat while it's held, as Corgi's
-// worktree-remove. Once the hold completes, Corgi would close the agents and
-// have Git remove it; here it's gone at once.
+// worktree-remove, always with the corgi burying the row. Once the hold
+// completes, Corgi would close the agents and have Git remove it; here it's
+// gone at once, and the sidebar shows the frame recorded without it and its
+// agents.
 function removeTree(S) {
   const o = S.trees, card = o.card, entries = card.entries(o.snapshot), index = card.index(entries), checkout = entries[index];
   if (!checkout) return;
   card.select(checkout.path);
   const agents = o.snapshot.agents.filter((a) => a.path === checkout.path).length, now = Date.now();
-  if (!card.removal.press(now, worktreeRemoval.target(1, checkout, index, agents), card.removalEffect())) return;
+  if (!card.removal.press(now, worktreeRemoval.target(1, checkout, index, agents), "bury")) return;
   o.gone |= 1 << o.data.snapshot.entries.filter((e) => !e.primary).findIndex((e) => e.path === checkout.path);
   o.snapshot = { ...o.snapshot, entries: o.snapshot.entries.filter((e) => e.path !== checkout.path), agents: o.snapshot.agents.filter((a) => a.path !== checkout.path) };
-  S.side = `wt34_${o.gone}`;
   card.removal.settle(now, null);
   card.select((entries[index + 1] ?? entries[index - 1])?.path ?? null);
 }
 // Its keys while the screen has the page's focus: ↑↓ (or j k) browse, ⌫
 // held removes, Esc closes. The pointer picks the row it's on, a heading
 // sorts the rows, and the badge opens it again. `held` runs once a hold is
-// under way.
+// under way, and e reviews the worktree browsed. A worktree heading in the
+// sidebar opens its menu, which takes the keys and the pointer while it's
+// open. The review panel, once open, has its own.
 const TREE_MOVES = { ArrowDown: 1, ArrowUp: -1, j: 1, k: -1 };
 function treesInput(el, current, [r0, c0, rows, cols], held) {
-  const cellAt = (e) => { const b = el.getBoundingClientRect(); return { col: c0 + Math.floor((e.clientX - b.left) / (b.width / cols)), row: r0 + Math.floor((e.clientY - b.top) / (b.height / rows)) }; };
+  // A pointer's whole pixels can sit just outside a screen that starts between two.
+  const inside = (n, size) => Math.min(size - 1, Math.max(0, n));
+  const cellAt = (e) => { const b = el.getBoundingClientRect(); return { col: c0 + inside(Math.floor((e.clientX - b.left) / (b.width / cols)), cols), row: r0 + inside(Math.floor((e.clientY - b.top) / (b.height / rows)), rows) }; };
   const aim = (e) => {
-    const o = current().S.trees, at = cellAt(e), badge = treesBadge(o), rect = o.open && treesRect(o, rows);
+    const s = current(), S = s.S, o = S.trees, at = cellAt(e), badge = treesBadge(o), rect = o.open && treesRect(o, rows);
     const onBadge = !!badge && badge.contains(at.col, at.row), on = rect && rect.contains(at.col, at.row);
-    return { o, onBadge, at, rect, path: on ? o.card.hit(o.snapshot, rect, at.col, at.row) : null, sort: on ? worktreeTooltip.sortAt(rect, at.col, at.row) : null };
+    const row = S.menu ? S.menu.menu.hit(COLS, S.rows, at.col, at.row) : null;
+    const heading = !S.menu && at.col < o.sw - 1 ? headingAt(F[S.side], o, at.row, o.sw) : null;
+    return { s, S, o, onBadge, at, rect, row, heading, panel: S.review && at.col >= COLS - REVIEW_W, path: on ? o.card.hit(o.snapshot, rect, at.col, at.row) : null, sort: on ? worktreeTooltip.sortAt(rect, at.col, at.row) : null };
   };
   el.addEventListener("keydown", (e) => {
-    const S = current().S, o = S.trees;
-    if (!o.open || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === "Escape") { o.card.clear(); o.open = false; }
+    const s = current(), S = s.S, o = S.trees, m = S.menu?.menu;
+    if (e.metaKey || e.ctrlKey || e.altKey || S.reviewKeys) return;
+    if (m) {
+      const item = e.key.length === 1 ? m.itemFor(e.key.charCodeAt(0)) : null;
+      if (e.key === "Escape") closeMenu(S);
+      else if (TREE_MOVES[e.key]) m.move(TREE_MOVES[e.key] > 0);
+      else if (e.key === "Enter" && m.highlightedItem()) menuAction(s, m.highlightedItem());
+      else if (item) menuAction(s, item);
+      else return;
+    }
+    else if (!o.open) return;
+    else if (e.key === "Escape") { o.card.clear(); o.open = false; }
+    else if (e.key === "e") { const entries = o.card.entries(o.snapshot), at = entries[o.card.index(entries)]; if (at) reviewTree(s, at.path); }
     else if (TREE_MOVES[e.key]) o.card.move(o.snapshot, TREE_MOVES[e.key]);
     else if (e.key === "Backspace" || e.key === "Delete") { removeTree(S); held(); }
     else return;
@@ -1995,17 +2136,32 @@ function treesInput(el, current, [r0, c0, rows, cols], held) {
   });
   el.addEventListener("mousemove", (e) => {
     if (!e.movementX && !e.movementY) return;
-    const { o, onBadge, path, sort } = aim(e);
+    const { S, o, onBadge, row, heading, panel, path, sort } = aim(e);
+    if (panel && !o.open) return;
+    if (S.menu) {
+      if (row != null && !S.menu.menu.off.has(S.menu.menu.entries()[row].item)) S.menu.menu.highlighted = row;
+      return void (el.style.cursor = row != null ? "pointer" : "");
+    }
     if (onBadge && !o.open) openTrees(o);
     if (path) o.card.select(path);
-    el.style.cursor = onBadge || path || sort ? "pointer" : "";
+    el.style.cursor = onBadge || path || sort || heading ? "pointer" : "";
   });
-  el.addEventListener("click", (e) => {
-    const { o, onBadge, at, rect, path, sort } = aim(e);
+  const press = (e) => {
+    const { s, S, o, onBadge, at, rect, row, heading, panel, path, sort } = aim(e);
+    if (S.menu) {
+      const item = row != null ? S.menu.menu.entries()[row].item : null;
+      if (item == null) closeMenu(S);
+      else if (!S.menu.menu.off.has(item)) menuAction(s, item);
+      return;
+    }
+    if (panel && !o.open) return;
+    if (heading) return openMenu(S, heading, at.col, at.row);
     if (onBadge && !o.open) openTrees(o);
     if (path) o.card.select(path);
     if (sort) o.card.click(rect, at.col, at.row);
-  });
+  };
+  el.addEventListener("click", press);
+  el.addEventListener("contextmenu", (e) => { e.preventDefault(); press(e); });
 }
 
 // ---- a session: its state, and the frame it draws
@@ -2028,21 +2184,27 @@ function session(init = {}) {
     // while the screen has the page's focus.
     // Notes it sent wait in a pane's prompt.
     side: null, rows: ROWS, cols: COLS, single: false, review: false, reviewKeys: false, active: false, pasted: {},
-    // With `trees`, the worktree overview of the workspace it names, open.
-    trees: null,
+    // With `trees`, the worktree overview of the workspace it names, open;
+    // a worktree heading's menu, and when the toast for a copy goes. With
+    // `lights`, the sidebar is the frame of that name recorded after the
+    // overview's removals, lighting the worktree it browses while open.
+    // With `alone`, the sidebar lists `ws` only.
+    trees: null, menu: null, copiedUntil: 0, lights: null, alone: false,
     // The hackable band's terminals by pane: scrollback, the line being
     // typed, and the program holding it, if any. With `quiet`, agents show
     // only what `corgi pane send` asked them, kept in `asked`.
     term: null, quiet: false, asked: {}, fixed: false,
-    // With `idle`, the thruster tuning has finished, its pane still.
-    idle: false,
+    // With `idle`, the thruster tuning has finished, its pane still; with
+    // `shot`, it has saved a screenshot of the game, and with `pr`, opened a
+    // pull request.
+    idle: false, shot: false, pr: false,
     ...init,
   };
   Object.assign(S, { read: new Set(S.read), tab: { ...S.tab }, focus: { ...S.focus }, term: S.term && structuredClone(S.term) });
   // The sidebar is as wide as its recording, and the rest lays out around it.
   const SW = (S.side ? F[S.side] : F.w34_C00)[0].length;
   S.trees &&= overview(S.trees, SW);
-  const review = S.review ? reviewPanel() : null;
+  let review = S.review ? reviewPanel() : null;
   // The resource card's table order and sort.
   const resCard = new resourceTooltip.State();
   const unread = () => (S.read.has(4) ? 0 : 1) + (S.tagged && !S.read.has(2) ? 1 : 0);
@@ -2052,7 +2214,9 @@ function session(init = {}) {
     const clear = [S.clear, S.tagged && S.read.has(2) ? 2 : null].filter((i) => i != null);
     const key = [ws, ahead, un, fi, [...S.read].sort().join(","), clear, S.newButton, S.approvedAt != null, S.side, S.rows, S.compacting].join(":");
     if (SIDE.has(key)) return SIDE.get(key);
-    const g = blank(S.rows, COLS);
+    // A recorded sidebar keeps its rows past a shorter window's, for a
+    // slice's edit to move up.
+    const g = blank(Math.max(S.rows, S.side ? F[S.side].length : 0), COLS);
     if (S.side) F[S.side].forEach((row, r) => row.slice(0, SW).forEach((cell, c) => (g[r][c] = cell)));
     else agentList(g, ws, un, ahead, fi, clear);
     tidySidebar(g);
@@ -2137,6 +2301,8 @@ function session(init = {}) {
     if (id === "blank") return [];
     if (S.term?.[id]) return termRows(id, t, w, focused);
     if (id === "sh") return shellRows(t, focused);
+    if (S.shot && id === "M0") return shotRows(t, w);
+    if (S.pr && id === "M0") return prRows(t, w);
     if (S.quiet) return [...askedRows(id, t), ...claudeBottom(w)];
     if (id === "C2" && S.approvedAt != null) return tagRows(t, w);
     // keeps watch's sessions; its hidden band won't read this.
@@ -2172,7 +2338,8 @@ function session(init = {}) {
     });
     if (!S.single) put(g, 0, c, " + ", TAB_ADD);
     const ls = layout();
-    if (ls.length > 1) {
+    // A slice showing one pane of two draws no outline.
+    if (ls.length > 1 && !S.solo) {
       // Every pane's outline; the focused one's in the accent.
       const on = new Map();
       for (const l of ls) for (let x = l.x - 1; x <= l.x + l.w; x++) for (let y = l.y - 1; y <= l.y + l.h; y++) {
@@ -2209,10 +2376,16 @@ function session(init = {}) {
       S.fixed = true;
       for (const p of Object.values(S.term ?? {})) if (p.program === "bun test --watch") p.rows = TEST_PASS;
     }
+    if (S.lights) {
+      const o = S.trees, browsed = o.open && o.card.entries(o.snapshot)[o.card.index(o.card.entries(o.snapshot))];
+      const k = browsed ? o.data.snapshot.entries.filter((e) => !e.primary).findIndex((e) => e.path === browsed.path) : -1;
+      S.side = `${S.lights}_${o.gone}${k >= 0 ? `_${k}` : ""}`;
+    }
     const g = animate(sidebar(), t);
-    // Resources sample once a second, as in keeps watch.
-    for (const ws of ["C", "M"]) {
-      const row = RES_ROW[ws], text = rowText(g, row), cpu = text.match(/\d+%/), mem = text.match(/\d[\d.]*[GM]\b/);
+    // Resources sample once a second, as in keeps watch; a workspace alone
+    // has its row where the first one's is.
+    for (const [ws, row] of Object.entries(S.alone ? { [S.ws]: RES_ROW.C } : RES_ROW)) {
+      const text = rowText(g, row), cpu = text.match(/\d+%/), mem = text.match(/\d[\d.]*[GM]\b/);
       if (cpu) put(g, row, cpu.index, RES_TOTALS[ws][sample(t)][0].padEnd(cpu[0].length));
       if (mem) put(g, row, mem.index, RES_TOTALS[ws][sample(t)][1].padEnd(mem[0].length));
     }
@@ -2249,7 +2422,7 @@ function session(init = {}) {
     if (label) put(g, 2, SW - 2 - Array.from(label.text).length, label.text, style(label.fg, "selected", true));
     // The workspace not shown fades back until the pointer comes to it.
     const other = S.ws === "C" ? "M" : "C";
-    if (S.wsHover !== other && S.res !== other) for (const r of WS_ROWS[other]) for (let c = 0; c < SW - 1; c++) {
+    if (!S.alone && S.wsHover !== other && S.res !== other) for (const r of WS_ROWS[other]) for (let c = 0; c < SW - 1; c++) {
       const [ch, s] = g[r][c], [fg, bg, bold, ul, ulc] = STYLES[s];
       if (fg) g[r][c] = [ch, style(mix(fg, "bg", 0.45), bg, bold, ul, ulc)];
     }
@@ -2264,6 +2437,8 @@ function session(init = {}) {
     drawPanes(g, t);
     if (S.review) drawReview(g, review, S.reviewKeys && S.active, S.rows);
     if (S.trees?.open) drawTrees(g, S.trees, S.rows);
+    if (S.menu) drawMenu(g, S);
+    if (S.copiedUntil > Date.now()) drawCopied(g, S.rows);
     if (S.linkHover) CHIP.forEach((cell, c) => (g[S.rows - 1][c] = cell));
     if (S.res) { const rect = resRectAt(S.res, S.rows); paste(g, resCells(S.res, sample(t), resCard, rect, S.resHeld), rect); }
     else if (S.card != null) { const [frame, box] = cardFor(S.ws, S.card); overlay(g, frame, box, SW, box.left); }
@@ -2289,7 +2464,13 @@ function session(init = {}) {
     tab: ({ row, col }) => { let c = SW; const i = row === 0 ? S.tabs[S.ws].findIndex((root, n) => (!S.single || n === S.tab[S.ws]) && col >= c && col < (c += tabWidth(root, n))) : -1; return i >= 0 ? i : null; },
     pane: ({ row, col }) => layout().find((l) => row >= l.y - 1 && row <= l.y + l.h && col >= l.x - 1 && col <= l.x + l.w)?.id ?? null,
   };
-  return { S, compose, layout, linkCol, focusAgent, unread, cardFor, hit, review, resCard, paneRows };
+  // Review changes on a checkout the recorder made: the panel opens on it
+  // with the keyboard.
+  function openReview(target) {
+    review = reviewPanel(target);
+    Object.assign(S, { review: true, reviewKeys: true, active: true });
+  }
+  return { S, compose, layout, linkCol, focusAgent, unread, cardFor, hit, get review() { return review; }, openReview, resCard, paneRows };
 }
 
 // ---- pointing at a screen that shows `crop` [row, column, rows, columns] of
@@ -2339,8 +2520,8 @@ function act(s, { kind, v }, cards = null) {
   switch (kind) {
     case "link": return openGame();
     case "git": return Object.assign(S, { git: "pushing", gitAt: now() });
-    case "unread": S.ws = "C"; s.focusAgent(S.tagged && !S.read.has(2) ? 2 : 4); return Object.assign(S, { card: null });
-    case "agent": s.focusAgent(v); return Object.assign(S, cards === "keep" ? { card: v, hover: v } : { card: null, hover: null });
+    case "unread": S.ws = "C"; s.focusAgent(S.tagged && !S.read.has(2) ? 2 : 4); return Object.assign(S, { card: null, readAt: now() });
+    case "agent": s.focusAgent(v); return Object.assign(S, cards === "keep" ? { card: v, hover: v } : { card: null, hover: null }, { readAt: now() });
     case "ws": return Object.assign(S, { ws: v, hover: null, card: null });
     case "tab": S.tab[S.ws] = v; S.focus[S.ws] = s.layout()[0].id; return;
     case "pane": S.focus[S.ws] = v;
@@ -2809,15 +2990,94 @@ const cliBand = (() => {
   };
 })();
 
+// ---- link cards: Corgi's own, under or over a link in a pane, as a
+// pointer resting on it opens it, with Copy link (Copy path for a file) and,
+// for an image, its picture, as on a host with Kitty graphics. The page's
+// pointer, `rest`, rests a little into the first link, and the card holds
+// still. `links` are the links a slice shows, each its text and where it
+// goes; `img` is the picture of the one that's an image.
+// A cell of the picture's, in hundredths of an em: the screen's .6em by 1.42em.
+const PIC_CELL = { width: 60, height: 142 };
+function linkCards(f, links, img, rest) {
+  let rect = null;
+  // The picture's size in the card, as link_thumbnail.ts shrinks it: inside
+  // 28 by 10 cells, never enlarged.
+  const picture = () => {
+    if (!img?.naturalWidth) return null;
+    const scale = Math.min((28 * PIC_CELL.width) / img.naturalWidth, (10 * PIC_CELL.height) / img.naturalHeight);
+    return { width: Math.round(img.naturalWidth * scale), height: Math.round(img.naturalHeight * scale), cell: PIC_CELL };
+  };
+  img?.addEventListener("load", () => f.draw(now()));
+  return {
+    get rect() { return rect; },
+    draw(g, rows) {
+      rect = null;
+      if (img) img.hidden = true;
+      const link = links.map((l) => ({ ...l, at: find(g, l.text, { c0: SW }) })).find((l) => l.at);
+      rest?.classList.toggle("on", !!link);
+      if (!link) return;
+      const anchor = { x: link.at.c0 + 2, y: link.at.r0 };
+      Object.assign(rest.style, { left: `calc(${anchor.x - f.c0 + 0.3} * var(--cell))`, top: `calc(${anchor.y - f.r0 + 0.35} * 1.42em)` });
+      // The link under the pointer is underlined, as Ghostty draws it.
+      for (let c = link.at.c0; c <= link.at.c1; c++) {
+        const [ch, st] = g[link.at.r0][c], [fg, bg, bold] = STYLES[st];
+        g[link.at.r0][c] = [ch, style(fg, bg, bold, 1, null)];
+      }
+      const thumbnail = link.image ? picture() : null;
+      // The slice's right edge is the terminal's, which keeps the card in.
+      rect = linkTooltip.geometry(f.c0 + f.cols, rows, anchor, thumbnail);
+      if (!rect) return;
+      const out = new Writer();
+      linkTooltip.draw(out, rect, { link: { uri: link.uri, ...anchor }, copied: false, thumbnail }, false);
+      drawOver(g, out, rows);
+      if (!thumbnail) return;
+      // Centered in the rows under the copy row's rule, as link_thumbnail.ts places it.
+      const room = linkTooltip.thumbnailCells(thumbnail).rows;
+      const left = ((rect.x + 1 - f.c0) * PIC_CELL.width + ((rect.w - 2) * PIC_CELL.width - thumbnail.width) / 2) / 100;
+      const top = ((rect.y + 3 - f.r0) * PIC_CELL.height + (room * PIC_CELL.height - thumbnail.height) / 2) / 100;
+      Object.assign(img.style, { left: `${left}em`, top: `${top}em`, width: `${thumbnail.width / 100}em`, height: `${thumbnail.height / 100}em` });
+      img.hidden = false;
+    },
+  };
+}
+// The rings that take in a link and its card, once it's open.
+const withCard = (at, s) => {
+  const r = s.S.linkRect;
+  return at && r ? { r0: Math.min(at.r0, r.y), r1: Math.max(at.r1, r.y + r.h - 1), c0: Math.min(at.c0, r.x), c1: Math.max(at.c1, r.x + r.w - 1) } : at;
+};
+
 // moonlander running its dev server, in the window beside its sidebar.
 const CLEVER = { ws: "M", side: "clever34", tabs: { ...TABS, M: [named("server", pane("sh"))] }, focus: { C: "C0", M: "sh" }, server: true };
 // moonlander's link, once corgi's rows go from over it.
 const cleverLink = (g) => find(g, LINK_TEXT, { r0: WS_ROWS.C[0], r1: WS_ROWS.C[0] });
+// What's worth reading in each agent's pane, from one of its texts to
+// another: the step under way, the question waiting, or the answer.
+const INTEREST = {
+  C0: ["Bash(zig build test)", "Testing…"], C1: ["Spawned 2 agents", "Working"], C2: ["╭", "╰"],
+  C3: ["Compacting…", "Compacting…"], C4: ["Cmd+1–9 now switch tabs.", "Worked for"],
+  M0: ["Bash(bun test)", "Tuning…"], M1: ["Two legs", "Doodled"],
+};
+// Once the visitor reads an agent, its pane's part worth reading, to its
+// last written cell.
+function interest(g, s) {
+  const S = s.S, id = S.focus[S.ws], l = S.readAt != null && s.layout().find((p) => p.id === id), marks = INTEREST[id];
+  if (!l || !marks) return null;
+  const area = { r0: l.y, r1: l.y + l.h - 1, c0: l.x, c1: l.x + l.w - 1 }, from = find(g, marks[0], area), to = from && find(g, marks[1], { ...area, r0: from.r0 });
+  if (!to) return null;
+  let c0 = area.c1, c1 = area.c0;
+  for (let r = from.r0; r <= to.r0; r++) for (let c = area.c0; c <= area.c1; c++) if (g[r][c][0] !== " ") { c0 = Math.min(c0, c); c1 = Math.max(c1, c); }
+  return { r0: from.r0, r1: to.r0, c0, c1 };
+}
+const moonOnly = (g) => g.forEach((row, r) => r >= WS_ROWS.C[0] && row.splice(0, SW - 1, ...g[Math.min(r + 3, g.length - 1)].slice(0, SW - 1)));
 const FEATURES = {
   // Each agent's state, and the unread one waiting behind the workspace's pill.
-  agents: { init: { clear: 1, newButton: false, solo: true, compacting: true }, crop: [1, 0, 22, 81], touch: "unread agent ws", live: true,
-    rings: (g) => [find(g, "1 unread →", { r0: 3, r1: 3 }), agentRows(4)],
-    lit: () => [{ r0: AGENT_TOP - 2, r1: WATCH_ROWS[4] + 1, c0: 0, c1: SW - 2 }] },
+  // Nothing dims, so the screen keeps one ground with the box around it;
+  // reading an agent rings what's worth reading in its pane.
+  // The slice starts at the workspaces and ends where the pane's lines do,
+  // so the box's padding is the same all round; past the sidebar, `split`,
+  // it takes the pane's ground.
+  agents: { init: { clear: 1, newButton: false, solo: true, compacting: true }, crop: [2, 1, 21, 78], split: SW, touch: "unread agent ws", live: true,
+    rings: (g) => [find(g, "1 unread →", { r0: 3, r1: 3 }), agentRows(4)], dim: false, focus: interest },
   steps: { init: { hover: 0, card: 0 }, crop: [7, 0, 16, 122], touch: "agent", cards: "keep", rings: (g, s) => [agentRows(s.S.card), recentRows(g, s)], wires: [[0, 1]], lit: (g, s) => [cardRect(s)] },
   // moonlander's thruster tuning, idle under its worktree with the sprite's
   // agent in another, and its changes in the review panel, which has the
@@ -2829,19 +3089,20 @@ const FEATURES = {
       const w = F.review24[0].length, tree = find(g, "⌥", { c1: w - 1 });
       return [{ r0: tree.r0, r1: tree.r0 + 2, c0: 0, c1: w - 2 }, { r0: 0, r1: s.S.rows - 1, c0: COLS - REVIEW_W, c1: COLS - 1 }];
     } },
-  // The worktree overview, live, with its brief of each worktree, over the
-  // sidebar. An empty pane under the card leaves it a clear row each side.
-  worktrees: { init: { side: "wt34", rows: WT_ROWS, trees: "corgi", tabs: { ...TABS, C: [named("fixes", pane("blank")), ...TABS.C.slice(1)] } }, crop: [0, 0, WT_ROWS, 124] },
+  // moonlander alone, its worktree overview open, live, with its brief of
+  // each worktree, over an empty pane; the sidebar lights the agents of the
+  // worktree it browses, as Corgi does, and Review changes opens the panel.
+  worktrees: { init: { ws: "M", alone: true, lights: "wt34", side: "wt34_0", reviewable: true, rows: WT_ROWS, trees: "moonlander alone", single: true, newButton: false, tabs: { ...TABS, M: [named("game", pane("blank"))] } }, crop: [0, 0, WT_ROWS, 124] },
   // Smart Links: moonlander, alone in the sidebar, runs its dev server, and
   // the server's page names the link on moonlander's row. A phone shows the
   // link through to the server's URL.
   clever: { init: CLEVER, crop: [0, 0, 15, 124], phone: [16, 56],
     // corgi's rows go, and the rest of the sidebar moves up.
-    edit: (g) => g.forEach((row, r) => r >= WS_ROWS.C[0] && row.splice(0, SW - 1, ...g[Math.min(r + 3, g.length - 1)].slice(0, SW - 1))),
+    edit: moonOnly,
     rings: (g) => [cleverLink(g), find(g, "➜  Local:   http://localhost:3000/", { c0: SW })],
     wires: [[0, 1]],
-    // The window beside the sidebar, its tab bar too.
-    lit: (g, s) => [{ r0: 0, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
+    // The window beside the sidebar, below its tab bar.
+    lit: (g, s) => [{ r0: 1, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
   // The same window with moonlander's worktree overview open from its
   // badge, a ring on the brief Corgi wrote of each worktree. A phone shows
   // the badge on.
@@ -2852,6 +3113,20 @@ const FEATURES = {
       const o = s.S.trees, card = treesRect(o, s.S.rows), badge = treesBadge(o);
       return [{ r0: card.y, r1: card.y + card.h - 1, c0: card.x, c1: card.x + card.w - 1 }, { r0: badge.y, r1: badge.y, c0: badge.x, c1: card.x }];
     } },
+  // The thruster tuning's pull request, its link's card open. A phone shows
+  // the pane and the card.
+  links: { init: { ws: "M", side: "clever34", rows: 15, tabs: { ...TABS, M: [named("game", pane("M0"))] }, focus: { C: "C0", M: "M0" }, pr: true },
+    crop: [0, 0, 15, 124], phone: [SW, 56], edit: moonOnly,
+    links: [{ text: PR.text, uri: PR.text }],
+    rings: (g, s) => [withCard(find(g, PR.text, { c0: SW }), s)],
+    lit: (g, s) => [{ r0: 1, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
+  // The thruster tuning's screenshot of the game, its card showing the
+  // picture. A phone shows the pane and the card.
+  shots: { init: { ws: "M", side: "clever34", tabs: { ...TABS, M: [named("game", pane("M0"))] }, focus: { C: "C0", M: "M0" }, shot: true },
+    crop: [0, 0, 20, 124], phone: [SW, 56], edit: moonOnly,
+    links: [{ ...SHOT, image: true }],
+    rings: (g, s) => [withCard(find(g, SHOT.text, { c0: SW }), s)],
+    lit: (g, s) => [{ r0: 1, r1: s.S.rows - 1, c0: SW, c1: COLS - 1 }] },
   // corgi's resource card, open beside its workspace's row over one empty
   // pane. As in corgi, its rows hold still under the pointer, a click on a
   // heading sorts by that column, and moonlander's row opens moonlander's.
@@ -2951,17 +3226,21 @@ class Feature {
     if (spec.phone) new ResizeObserver(() => this.fit()).observe(this.el.closest(".band"));
     this.stage = this.el.parentElement;
     this.plan = null;
+    if (spec.split != null) new ResizeObserver(() => this.splitAt()).observe(this.stage);
     // All but what it's about dims, with a ring on each thing it's about.
     if (spec.rings || spec.lit) {
       this.stage.classList.add("marked");
       const dim = document.createElementNS(SVG, "svg"), wire = document.createElementNS(SVG, "svg");
       dim.classList.add("sim-dim"); wire.classList.add("sim-wire");
+      if (spec.dim === false) dim.style.display = "none";
       this.marks = { dim, wire, rings: [] };
       this.stage.append(dim, wire);
     }
+    if (spec.focus) this.stage.append((this.focusRing = el("div", "sim-focus")));
     this.live = false;
+    if (spec.links) this.cards = linkCards(this, spec.links, this.el.querySelector(".shot"), this.el.querySelector(".cursor"));
     if (spec.touch) point(this.el, () => this.session, () => [this.r0, this.c0, this.rows, this.cols], { touch: spec.touch, cards: spec.cards, touched: () => this.touched() });
-    if (this.session.review) reviewInput(this.el, () => this.session, spec.crop);
+    if (this.session.review || spec.init.reviewable) reviewInput(this.el, () => this.session, spec.crop);
     // A ringed overview holds still.
     if (this.session?.S.trees && !spec.rings) {
       treesInput(this.el, () => this.session, spec.crop, () => this.play());
@@ -2977,6 +3256,14 @@ class Feature {
     this.el.querySelectorAll(":scope > .r, :scope > .badge").forEach((node) => node.remove());
     this.screen = new Screen(this.el, cols, this.rows, { badge: this.r0 === 0 && c0 === 0 });
     if (this.full) this.draw(now());
+    this.splitAt();
+  }
+  // Where the box's padding turns from the sidebar's ground to the pane's.
+  splitAt() {
+    if (this.spec.split == null || !this.stage) return;
+    const box = this.stage.getBoundingClientRect(), term = this.el.getBoundingClientRect();
+    const at = term.left - box.left - this.stage.clientLeft + (this.spec.split - this.c0) * (term.width / this.cols);
+    this.stage.style.setProperty("--split", `${at}px`);
   }
   // Every animation frame while a removal plays, not the 50 ms tick.
   play() {
@@ -3008,12 +3295,26 @@ class Feature {
     }
     const full = s.compose(t);
     this.spec.edit?.(full);
+    if (this.cards) { this.cards.draw(full, s.S.rows); s.S.linkRect = this.cards.rect; }
     this.full = full;
     const g = crop(full, this.r0, this.c0, this.rows, this.cols);
     this.screen.paint(g);
+    if (this.focusRing) this.focus(this.live ? this.spec.focus(full, s) : null);
     if (this.live || !this.marks) return;
     const local = (q) => ({ r0: q.r0 - this.r0, r1: q.r1 - this.r0, c0: q.c0 - this.c0, c1: q.c1 - this.c0 });
     this.mark(g, (this.spec.rings?.(full, s) ?? []).filter(Boolean).map(local), (this.spec.lit?.(full, s) ?? []).map(local));
+  }
+  // A ring on the cells of `q`, in the whole session's cells, or none.
+  focus(q) {
+    const ring = this.focusRing;
+    ring.classList.toggle("on", !!q);
+    if (!q) return;
+    const box = this.stage.getBoundingClientRect(), term = this.el.getBoundingClientRect();
+    const cw = term.width / this.cols, rh = term.height / this.rows, em = parseFloat(getComputedStyle(this.el).fontSize);
+    const x = term.left - box.left - this.stage.clientLeft + this.stage.scrollLeft, y = term.top - box.top - this.stage.clientTop + this.stage.scrollTop;
+    const [padX, padY] = [RING_PAD[0] * em, RING_PAD[1] * em + 0.12 * em];
+    const left = x + (q.c0 - this.c0) * cw - padX, top = y + (q.r0 - this.r0) * rh - padY;
+    Object.assign(ring.style, { left: `${left}px`, top: `${top}px`, width: `${(q.c1 - q.c0 + 1) * cw + 2 * padX}px`, height: `${(q.r1 - q.r0 + 1) * rh + 2 * padY}px` });
   }
   mark(g, targets, lit) {
     const stage = this.stage, box = stage.getBoundingClientRect(), term = this.el.getBoundingClientRect();

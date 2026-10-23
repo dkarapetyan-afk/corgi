@@ -25,6 +25,7 @@ import * as worktreeAgents from "../src/worktree_agents";
 import type * as worktrees from "../src/worktrees";
 import type { FileDiff } from "../src/review/diff";
 import * as reviewGit from "../src/review/git";
+import * as reviewPanel from "../src/review/panel";
 import { Menu as LauncherMenu, option, type Row } from "../src/agent_launcher";
 import { historyEntry } from "../src/launcher_resume";
 import { Snapshot as PortsSnapshot } from "../src/trackers/ports";
@@ -56,7 +57,7 @@ const data = JSON.parse(readFileSync(FRAMES, "utf8")) as {
   resources: unknown;
   /** Ghostty's codepoint widths, for the page's text.ts. */
   widths: unknown;
-  /** What git answered about the thruster tuning's checkout, for the page's review panel. */
+  /** What git answered about each of moonlander's checkouts, for the page's review panel. */
   review: unknown;
   /** corgi's and moonlander's worktrees, for the page's worktree overviews. */
   worktrees: unknown;
@@ -874,15 +875,21 @@ function launcher(selected: Row): LauncherMenu {
     usage_fetched_at: secs,
     limits: { windows: [null, { minutes: 10080, used: 18, reset_at: secs + 5 * day }] },
   });
-  // A second Codex account, saved as its own command.
-  const work = menu.commands[0];
-  work.set("CODEX_HOME=~/.codex-slopcorp codex");
-  work.name = "Codex";
-  Object.assign(work.semantics, {
-    provider: "codex",
-    account: "you@slopcorp.ai",
+  // Pi, signed in to the company's ChatGPT Enterprise seat, which Corgi
+  // reads its limits from.
+  menu.preview.names.pi = "slopcorp";
+  menu.preview.options.pi = option({
     model: "gpt-6-astra",
     model_name: "GPT-6 Astra",
+    account: "you@slopcorp.ai",
+    plan: "Enterprise",
+    usage_fetched_at: secs,
+    limits: {
+      windows: [
+        { minutes: 300, used: 12, reset_at: secs + 3 * 3600 + 40 * 60 },
+        { minutes: 10080, used: 33, reset_at: secs + 2 * day + 6 * 3600 },
+      ],
+    },
   });
   return menu;
 }
@@ -932,7 +939,7 @@ function pickerFrames() {
     const out = frame(view, [], PICK.cols, PICK.rows, u);
     keep(name, grid(out, PICK.cols, PICK.rows), out);
   };
-  (["codex", "claude", "custom0", "terminal"] as Row[]).forEach((row, i) => draw(launcher(row), `launcher${i}`));
+  (["codex", "claude", "pi", "terminal"] as Row[]).forEach((row, i) => draw(launcher(row), `launcher${i}`));
   for (const [i, query] of [
     [0, ""],
     [1, "fl"],
@@ -1110,13 +1117,10 @@ function overviewFrames() {
 }
 
 // ---------------------------------------------------------------- worktrees
-// corgi's worktrees: the flicker fix and the viewer refactor, each with its
-// agent, and a Bun upgrade nobody is in.
-const CORGI_ROOT = "/Users/me/dev/corgi";
-const treePath = (name: string) => `${CORGI_ROOT}/.claude/worktrees/${name}`;
-function checkout(name: string, branch: string, fields: Partial<worktrees.Checkout>): worktrees.Checkout {
+/** A checkout at `path`, as the daemon reports it. */
+function checkout(path: string, branch: string, fields: Partial<worktrees.Checkout>): worktrees.Checkout {
   return {
-    path: treePath(name),
+    path,
     head: "",
     branch: `refs/heads/${branch}`,
     primary: false,
@@ -1142,48 +1146,11 @@ const edits = (total: number, added: number, removed: number): worktrees.Changes
   added,
   removed,
 });
-const TREES: worktrees.Snapshot = {
-  common_dir: `${CORGI_ROOT}/.git`,
-  base: { ref: "refs/heads/main", name: "main", head: "8ae5085" },
-  entries: [
-    checkout("", "main", { path: CORGI_ROOT, primary: true }),
-    checkout("flicker", "fix/sidebar-flicker", {
-      comparison: { ahead: 3n, behind: 0n },
-      changes: edits(3, 142, 38),
-      created: ms - 50 * minute,
-      edited: ms - 4 * minute,
-    }),
-    checkout("viewer", "refactor/viewer-input", {
-      comparison: { ahead: 5n, behind: 2n },
-      changes: edits(6, 318, 204),
-      created: ms - 3 * 60 * minute,
-      edited: ms - minute,
-    }),
-    checkout("bun", "chore/bun-1.3.4", {
-      comparison: { ahead: 1n, behind: 9n },
-      changes: edits(0, 0, 0),
-      created: ms - 2 * day * 1000,
-      edited: ms - 2 * day * 1000,
-    }),
-  ],
-  agents: [
-    { target: { pane: CORGI[0].id }, path: treePath("flicker"), source: "write", stale: false },
-    { target: { pane: CORGI[COMPACTOR].id }, path: treePath("viewer"), source: "write", stale: false },
-  ],
-  stale: false,
-};
-/** What Clever Corgi wrote about each. */
-const BRIEFS = new Map<string, worktrees.Brief>(
-  [
-    ["flicker", "Draws each sidebar row in one write"],
-    ["viewer", "Moves input handling out of viewer.zig"],
-    ["bun", "Bumps Bun to 1.3.4 and its lockfile"],
-  ].map(([name, label]) => [treePath(name), { path: treePath(name), label, phase: "ready" }]),
-);
 /** What the page draws each workspace's overview from with Corgi's own
  * code: the worktrees as the daemon sends them, bigints as numbers and times
- * as of `at`, their briefs and agents, and the badge it opens from after each
- * set of removals. */
+ * as of `at`, their briefs and agents, the badge it opens from after each
+ * set of removals, and what each heading's menu says Review changes shows,
+ * once the review's checkouts are made. */
 const overviews: Record<string, unknown> = {};
 function keepOverview(
   name: string,
@@ -1192,57 +1159,14 @@ function keepOverview(
   briefs: Map<string, worktrees.Brief>,
   agents: Map<string, sidebar.Tally>,
   badges: (Rect | null)[],
+  key = name,
 ) {
-  overviews[name] = JSON.parse(
+  overviews[key] = JSON.parse(
     JSON.stringify(
-      { at: ms, name, cwd, snapshot, briefs: [...briefs.values()], agents: [...agents], badges },
+      { at: ms, name, cwd, snapshot, briefs: [...briefs.values()], agents: [...agents], badges, reviews: [] },
       (_, value) => (typeof value === "bigint" ? Number(value) : value),
     ),
   );
-}
-/** The sidebar with corgi's agents under their worktrees, and again after
- * each set of removals the overview can make (bit k for the k-th linked
- * worktree), their agents closed with them. Two more rows fit both groups. */
-const WT_ROWS = ROWS + 4;
-function worktreeFrames() {
-  const linked = TREES.entries.filter(e => !e.primary),
-    badges: (Rect | null)[] = [];
-  let agents = new Map<string, sidebar.Tally>();
-  for (let mask = 0; mask < 1 << linked.length; mask++) {
-    const gone = new Set(linked.filter((_, k) => mask & (1 << k)).map(e => e.path)),
-      closed = new Set(TREES.agents.flatMap(a => (gone.has(a.path) && "pane" in a.target ? [a.target.pane] : []))),
-      trees = {
-        ...TREES,
-        entries: TREES.entries.filter(e => !gone.has(e.path)),
-        agents: TREES.agents.filter(a => !gone.has(a.path)),
-      };
-    // "Refactor the viewer" before it compacts, as the page shows it.
-    const s = scene({ phone: false, corgi: true, unread: 1, ahead: true, focused: false, read: false, early: true });
-    s.entries[0].focused = true;
-    const shut = s.entries.filter(e => "pane" in e.target && closed.has(e.target.pane));
-    const ws = s.workspaces[0];
-    ws.working -= shut.filter(e => e.state === "working").length;
-    ws.agents -= shut.length;
-    ws.worktrees = trees;
-    s.entries = worktreeAgents.grouped(
-      trees,
-      1,
-      s.entries.filter(e => !shut.includes(e)),
-      new worktreeAgents.State(),
-    );
-    const plain = frame(view, [], COLS, WT_ROWS, uiFor(s, 34));
-    keep(
-      mask ? `wt34_${mask}` : "wt34",
-      grid(plain, COLS, WT_ROWS).map(r => r.slice(0, 34)),
-      plain,
-    );
-    const side = sidebar.View.init(COLS, WT_ROWS, true, 0, s.entries.length)
-      .withWidth(34)
-      .withWorkspaces(s.workspaces.length, 0);
-    badges.push(sidebar.worktreeBadge(side, s.workspaces, 1));
-    if (!mask) agents = worktreeAgents.counts(trees, s.entries);
-  }
-  keepOverview("corgi", CORGI_ROOT, TREES, BRIEFS, agents, badges);
 }
 // moonlander's two agents, each in a worktree of its own, for Clever Corgi.
 const MOON_ROOT = "/Users/me/dev/moonlander";
@@ -1251,16 +1175,14 @@ const MOON_TREES: worktrees.Snapshot = {
   common_dir: `${MOON_ROOT}/.git`,
   base: { ref: "refs/heads/main", name: "main", head: "3f1c2d4" },
   entries: [
-    checkout("", "main", { path: MOON_ROOT, primary: true }),
-    checkout("", "feat/thrusters", {
-      path: moonPath("thrusters"),
+    checkout(MOON_ROOT, "main", { primary: true }),
+    checkout(moonPath("thrusters"), "feat/thrusters", {
       comparison: { ahead: 4n, behind: 0n },
       changes: edits(2, 96, 21),
       created: ms - 2 * 60 * minute,
       edited: ms - 2 * minute,
     }),
-    checkout("", "art/lander-sprite", {
-      path: moonPath("sprite"),
+    checkout(moonPath("sprite"), "art/lander-sprite", {
       comparison: { ahead: 2n, behind: 1n },
       changes: edits(0, 0, 0),
       created: ms - 5 * 60 * minute,
@@ -1280,6 +1202,55 @@ const MOON_BRIEFS = new Map<string, worktrees.Brief>(
     ["sprite", "Draws the lander as pixel art"],
   ].map(([name, label]) => [moonPath(name), { path: moonPath(name), label, phase: "ready" }]),
 );
+/** The sidebar with moonlander alone, its agents under their worktrees, and
+ * again after each set of removals the overview can make (bit k for the
+ * k-th linked worktree), their agents closed with them. While the overview
+ * browses the j-th, only its agents are lit, as Corgi lights them. */
+const WT_ROWS = ROWS;
+function worktreeFrames() {
+  const linked = MOON_TREES.entries.filter(e => !e.primary),
+    badges: (Rect | null)[] = [];
+  let agents = new Map<string, sidebar.Tally>();
+  for (let mask = 0; mask < 1 << linked.length; mask++) {
+    const gone = new Set(linked.filter((_, k) => mask & (1 << k)).map(e => e.path)),
+      closed = new Set(MOON_TREES.agents.flatMap(a => (gone.has(a.path) && "pane" in a.target ? [a.target.pane] : []))),
+      trees = {
+        ...MOON_TREES,
+        entries: MOON_TREES.entries.filter(e => !gone.has(e.path)),
+        agents: MOON_TREES.agents.filter(a => !gone.has(a.path)),
+      };
+    const s = scene({ phone: false, corgi: false, unread: 0, ahead: false, focused: false, read: false });
+    s.workspaces = s.workspaces.filter(w => w.id === 2);
+    s.entries[0].focused = true;
+    const shut = s.entries.filter(e => "pane" in e.target && closed.has(e.target.pane));
+    const ws = s.workspaces[0];
+    ws.working -= shut.filter(e => e.state === "working").length;
+    ws.agents -= shut.length;
+    ws.worktrees = trees;
+    s.entries = worktreeAgents.grouped(
+      trees,
+      2,
+      s.entries.filter(e => !shut.includes(e)),
+      new worktreeAgents.State(),
+    );
+    const draw = (name: string, spot: sidebar.Spotlight | null) => {
+      const out = frame(view, [], COLS, WT_ROWS, uiFor(s, 34, { worktree_spotlight: spot }));
+      keep(
+        name,
+        grid(out, COLS, WT_ROWS).map(r => r.slice(0, 34)),
+        out,
+      );
+    };
+    draw(`wt34_${mask}`, null);
+    linked.forEach((e, k) => !gone.has(e.path) && draw(`wt34_${mask}_${k}`, { workspace: 2, path: e.path }));
+    const side = sidebar.View.init(COLS, WT_ROWS, true, 0, s.entries.length)
+      .withWidth(34)
+      .withWorkspaces(s.workspaces.length, 0);
+    badges.push(sidebar.worktreeBadge(side, s.workspaces, 2));
+    if (!mask) agents = worktreeAgents.counts(trees, s.entries);
+  }
+  keepOverview("moonlander", MOON_ROOT, MOON_TREES, MOON_BRIEFS, agents, badges, "moonlander alone");
+}
 /** The sidebar beside moonlander's dev server: its agents under their
  * worktrees, the rule dragged up under the workspaces. Its worktree badge
  * opens moonlander's overview. */
@@ -1320,10 +1291,10 @@ function reviewFrame() {
 }
 
 // ---------------------------------------------------------------- review
-// The thruster tuning's checkout, made for real: main, then the branch's
-// four commits and the gravity fix and its test, not committed yet, each
-// written when the story says. The page runs Corgi's review panel on what
-// git answers about it here. Its lines fit the panel's 52 columns of code.
+// moonlander's two worktrees, made for real: the thruster tuning's, with the
+// gravity fix and its test not committed yet, and the sprite's, each written
+// when the story says. The page runs Corgi's review panel on what git
+// answers about them here. Their lines fit the panel's 52 columns of code.
 const LANDER_TS = `/** Where the lander is and how fast it moves,
  * in metres and m/s, y down. */
 export interface Lander {
@@ -1436,6 +1407,25 @@ export const GRAVITY = 9.81;`,
   `/** The moon's pull, in m/s². */
 export const GRAVITY = 1.62;`,
 );
+/** The lander as the sprite's checkout draws it. */
+const SPRITE_TS = `/** The lander as pixel art, a row a line:
+ * # hull, o window, / and \\ legs. */
+export const sprite = [
+  "   ####   ",
+  "  #o  o#  ",
+  "  ######  ",
+  " ##    ## ",
+  " /      \\ ",
+];
+export const width = sprite[0].length;
+export const height = sprite.length;
+`;
+const LANDER_SPRITE = `import { sprite } from "./sprite";
+
+${LANDER_TS}
+/** The lander's rows, to draw at its place. */
+export const rows = (): readonly string[] => sprite;
+`;
 const PHYSICS_TEST = `import { expect, test } from "bun:test";
 import { spawn } from "./lander";
 import { GRAVITY, safe, step } from "./physics";
@@ -1462,13 +1452,21 @@ const patch = (d: FileDiff) =>
     ...d.rows.map(row => (row.kind === "insertion" ? "+" : row.kind === "deletion" ? "-" : " ") + d.text(row)),
   ].join("\n");
 const sourceKey = (s: reviewGit.Source) => (s.kind === "worktree" ? `w:${s.against}` : `c:${s.hash}`);
-/** What git answers the panel about the checkout, for every scope and file
- * it can show: site/browser/git.ts answers the same on the page. */
-async function reviewFixture() {
+type Tools = {
+  git: (...args: string[]) => void;
+  put: (path: string, text: string) => void;
+  later: (minutes: number) => void;
+  commit: (subject: string) => void;
+};
+/** A checkout `build` makes for real, from `hours` ago, and what git
+ * answers the panel about it, for every scope and file it can show:
+ * site/browser/git.ts answers the same on the page, for the checkout the
+ * page names `root`. */
+async function checkoutFixture(root: string, hours: number, build: (tools: Tools) => void) {
   const repo = join(tmpdir(), "corgi-site", "moonlander");
   rmSync(repo, { recursive: true, force: true });
   mkdirSync(join(repo, "src"), { recursive: true });
-  let clock = secs - 3 * 3600;
+  let clock = secs - hours * 3600;
   const git = (...args: string[]) => {
     const when = `${clock} -0400`;
     const r = spawnSync("git", ["-C", repo, ...args], {
@@ -1497,26 +1495,7 @@ async function reviewFixture() {
   };
   try {
     git("init", "-q", "-b", "main");
-    put("src/lander.ts", LANDER_TS);
-    put("src/physics.ts", PHYSICS_TS);
-    commit("physics: let the lander fall");
-    git("checkout", "-q", "-b", "feat/thrusters");
-    later(65);
-    put("src/lander.ts", LANDER_ENGINE);
-    commit("lander: carry fuel, a tilt and an engine");
-    later(25);
-    put("src/physics.ts", PHYSICS_THRUST);
-    commit("physics: fire the main engine");
-    later(30);
-    put("src/physics.ts", PHYSICS_FUEL);
-    commit("physics: burn fuel while the engine runs");
-    later(38);
-    put("src/physics.ts", PHYSICS_TILT);
-    commit("physics: push along the lander's tilt");
-    later(18);
-    put("src/physics.ts", PHYSICS_MOON);
-    later(2);
-    put("src/physics.test.ts", PHYSICS_TEST);
+    build({ git, put, later, commit });
     const [head, branch, base] = await Promise.all([
       reviewGit.head(repo),
       reviewGit.branch(repo),
@@ -1531,7 +1510,7 @@ async function reviewFixture() {
     ];
     const fixture = {
       at: secs,
-      root: "~/moonlander",
+      root,
       head,
       branch,
       base,
@@ -1560,6 +1539,51 @@ async function reviewFixture() {
     rmSync(join(tmpdir(), "corgi-site"), { recursive: true, force: true });
   }
 }
+/** The thruster tuning's checkout: main, the branch's four commits, then the
+ * gravity fix and its test. */
+const thrustersFixture = () =>
+  checkoutFixture("~/moonlander", 3, ({ git, put, later, commit }) => {
+    put("src/lander.ts", LANDER_TS);
+    put("src/physics.ts", PHYSICS_TS);
+    commit("physics: let the lander fall");
+    git("checkout", "-q", "-b", "feat/thrusters");
+    later(65);
+    put("src/lander.ts", LANDER_ENGINE);
+    commit("lander: carry fuel, a tilt and an engine");
+    later(25);
+    put("src/physics.ts", PHYSICS_THRUST);
+    commit("physics: fire the main engine");
+    later(30);
+    put("src/physics.ts", PHYSICS_FUEL);
+    commit("physics: burn fuel while the engine runs");
+    later(38);
+    put("src/physics.ts", PHYSICS_TILT);
+    commit("physics: push along the lander's tilt");
+    later(18);
+    put("src/physics.ts", PHYSICS_MOON);
+    later(2);
+    put("src/physics.test.ts", PHYSICS_TEST);
+  });
+/** The sprite's checkout: one commit on main since it branched, then its
+ * two drawing the lander, all committed. Git rewrites what a checkout
+ * changes, so the branch's own files are written after it. */
+const spriteFixture = () =>
+  checkoutFixture("~/moonlander/.claude/worktrees/sprite", 6, ({ git, put, later, commit }) => {
+    put("src/lander.ts", LANDER_TS);
+    put("src/physics.ts", PHYSICS_TS);
+    commit("physics: let the lander fall");
+    git("branch", "art/lander-sprite");
+    later(10);
+    put("src/physics.ts", PHYSICS_THRUST);
+    commit("physics: fire the main engine");
+    git("checkout", "-q", "art/lander-sprite");
+    later(50);
+    put("src/sprite.ts", SPRITE_TS);
+    commit("sprite: draw the lander as pixel art");
+    later(260);
+    put("src/lander.ts", LANDER_SPRITE);
+    commit("lander: draw from the sprite");
+  });
 /** Ghostty's width of every codepoint, as the ranges whose width isn't 1. */
 function widthRanges(): [number, number, number][] {
   const table = codepointWidths(),
@@ -1580,7 +1604,16 @@ overviewFrames();
 worktreeFrames();
 cleverFrame();
 reviewFrame();
-const review = await reviewFixture();
+const review = [await thrustersFixture(), await spriteFixture()];
+// What each worktree's Review changes would show, as its heading's menu says
+// it: what the panel lists for its "all" scope.
+(overviews["moonlander alone"] as { reviews: unknown }).reviews = [
+  [moonPath("thrusters"), review[0]],
+  [moonPath("sprite"), review[1]],
+].map(([path, f]: any) => [
+  path,
+  reviewPanel.summaryRuns(f.listings[sourceKey({ kind: "worktree", against: f.base?.merge_base ?? "" })], f.base),
+]);
 if (unknown.size) console.log("unhandled sequences:", [...unknown].join(", "));
 
 /** How a new frame differs from the page's: cells whose text or style changed. */
