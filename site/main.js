@@ -2572,10 +2572,15 @@ function drawHero(t) {
   heroScreen.badge.hidden = !heroReady;
 }
 point(simEl, () => hero, () => [0, 0, ROWS, H.cols], { touch: "link git unread agent res ws tab pane", cards: "hover" });
+// The prerendered page's container query sets --cols, so the band has its new
+// size before the observer runs; without it (the prerender itself), the
+// band's width picks and the script sets it.
 function fitHero() {
-  const single = simEl.closest(".band").clientWidth < heroConfig.mobile.breakpoint;
+  simEl.style.removeProperty("--cols");
+  const styled = +getComputedStyle(simEl).getPropertyValue("--cols");
+  const single = styled ? styled === heroConfig.mobile.cols : simEl.closest(".band").clientWidth < heroConfig.mobile.breakpoint;
   Object.assign(H, { single, cols: single ? heroConfig.mobile.cols : COLS, hover: null, card: null, res: null, resHeld: false, linkHover: false, gitHover: false });
-  simEl.style.setProperty("--cols", H.cols);
+  if (!styled) simEl.style.setProperty("--cols", H.cols);
   drawHero(now());
 }
 new ResizeObserver(fitHero).observe(simEl.closest(".band"));
