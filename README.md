@@ -43,21 +43,6 @@ nothing. Codex asks you to trust the hooks once, in `/hooks`.
 | Resume after a crash or reboot       |      ✓      |   ✓   |  ✓  |    ✓     |
 | Multi accounts                       |      ✓      |   ✓   |  ✓  |          |
 
-Pi and OpenCode show rate limits for ChatGPT sign-ins only.
-
-For a second account, pick the agent under **Add account** in the launcher's
-Manage agents, or run `corgi account add`: it walks you through the agent's own
-sign-in, over SSH too, and names the account for who signed in;
-`corgi account add claude work --dir ~/.claude-work` uses a folder you have,
-and Omarchy's accounts show up on their own. Each account gets its own
-launcher row and usage. OpenCode keeps the login you made in OpenCode.
-
-In **Manage agents**, select an added agent and press **Enter** to edit its
-name, extra flags and environment variables. Launch settings are shared across
-workspaces for that account and apply to new launches, not running agents.
-Flags accept quoted arguments; environment values are literal, without shell
-expansion. **Space** hides an agent from the current workspace's launcher;
-`corgi launcher hide AGENT` does the same from a shell.
 
 ## Scripting
 
