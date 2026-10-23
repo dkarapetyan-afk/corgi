@@ -873,10 +873,10 @@ export class Presentation {
   last_corgi: Mode | null = null;
   reveal_started_ms: number | null = null;
   herd_started_ms = 0;
-  update(mode: Mode, now: number) {
+  update(mode: Mode, now: number, herd_started_ms?: number) {
     this.playback.update(mode === "awake", now);
     if (mode === "herding") {
-      if (this.mode !== "herding") this.herd_started_ms = now;
+      if (herd_started_ms !== undefined || this.mode !== "herding") this.herd_started_ms = herd_started_ms ?? now;
       this.last_corgi = null;
       this.reveal_started_ms = null;
     } else if (mode !== "content") {
@@ -945,7 +945,7 @@ export function beginFrame() {
 export function endFrame() {
   for (const slot of slots) if (!slot.seen) slot.presentation.hide();
 }
-export function observe(key: bigint, mode: Mode, now: number): Presentation | null {
+export function observe(key: bigint, mode: Mode, now: number, herd_started_ms?: number): Presentation | null {
   const id = key;
   let slot = slots.find(s => s.key === id);
   if (!slot) {
@@ -957,6 +957,6 @@ export function observe(key: bigint, mode: Mode, now: number): Presentation | nu
     slot.presentation.playback.random = new Random(randomSeed());
   }
   slot.seen = true;
-  slot.presentation.update(mode, now);
+  slot.presentation.update(mode, now, herd_started_ms);
   return slot.presentation;
 }

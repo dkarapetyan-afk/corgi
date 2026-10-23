@@ -1151,7 +1151,12 @@ export class View {
         : e.state === "idle" && v.corgi_intensity > 0
           ? "asleep"
           : "content";
-    const presentation = corgiAnimation.observe(animation_key, mode, now_ms);
+    const presentation = corgiAnimation.observe(
+      animation_key,
+      mode,
+      now_ms,
+      e.compacting_since > 0 ? e.compacting_since / 1000 : undefined,
+    );
     if (v.corgi_intensity === 0 && !herding) presentation?.hide();
     // Unseen and focused naps stay bright; only the list's dreamer puffs.
     const sleep = new corgiAnimation.Sleep({

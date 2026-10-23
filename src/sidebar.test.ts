@@ -442,7 +442,7 @@ test("compaction herds on the second agent row ahead of waiting and summaries", 
     provider: "codex",
     state: "working",
     compacting: true,
-    compacting_since: 500_000,
+    compacting_since: 1_000_000,
     activity: "Old summary",
     subagents: { running: 0, blocked: 0, waiting: true },
   });
@@ -456,7 +456,7 @@ test("compaction herds on the second agent row ahead of waiting and summaries", 
     [1000 + 12 * 110, "Compacting‹o[/\\]~     "],
     [1000 + 28 * 110, "Compacting...         "],
     [1000 + 29 * 110, "Compacting…         3s"],
-    [92_500, "Compacting…     1m 32s"],
+    [93_000, "Compacting…     1m 32s"],
   ];
   for (const [now, row] of cases) {
     const text = hostText(draw(view, [e], [], now));
@@ -468,7 +468,38 @@ test("compaction herds on the second agent row ahead of waiting and summaries", 
   const out = draw(view.withWidth(23), [e], [], 1000);
   expect(has(out, "\x1b[18;6H" + fg("text") + "Compacting…")).toBe(true);
   expect(has(out, "⣿")).toBe(true);
-  expect(hostText(draw(view.withWidth(23), [e], [], 92_500))).not.toContain("1m 32s");
+  expect(hostText(draw(view.withWidth(23), [e], [], 93_000))).not.toContain("1m 32s");
+});
+
+test("compaction follows its start across scrolling, narrow rows and unseen restarts", () => {
+  const e = entry({
+    target: { pane: 952 },
+    name: "Compacting agent",
+    state: "working",
+    compacting: true,
+    compacting_since: 1_000_000,
+  });
+  const view = View.init(100, 30, true, 0, 1).withWidth(28 + lists_x);
+  const entries = [e, ...Array.from({ length: view.capacity }, (_, i) => entry({ target: { pane: 960 + i } }))];
+  view.count = entries.length;
+  draw(view, [], [], 0);
+  // First seen partway through, not at the scattered opening frame.
+  expect(hostText(draw(view, entries, [], 2320))).toContain("Compacting‹o[/\\]~     ");
+  view.offset = 1;
+  expect(hostText(draw(view, entries, [], 2400))).not.toContain("Compacting agent");
+  view.offset = 0;
+  expect(hostText(draw(view, entries, [], 2430))).toContain("Compacting ~ᐯ•ᴥ•ᐯ");
+  const settled = draw(view, entries, [], 4190);
+  expect(hostText(settled)).toContain("Compacting…         3s");
+  view.offset = 1;
+  draw(view, entries, [], 4200);
+  view.offset = 0;
+  expect(hostText(draw(view, entries, [], 4300))).toContain("Compacting…         3s");
+  draw(view.withWidth(23), entries, [], 4400);
+  expect(hostText(draw(view, entries, [], 4500))).toContain("Compacting…         3s");
+  // A second compaction can begin without a visible non-compacting frame.
+  e.compacting_since = 5_000_000;
+  expect(hostText(draw(view, entries, [], 5000))).toContain("C o  mp  a ct  i n  g ");
 });
 
 const endpoint = (fields: Record<string, unknown>) => ({

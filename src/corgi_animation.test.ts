@@ -323,6 +323,19 @@ test("each compaction herds from the start and ends without a reveal", () => {
   x.update("herding", 700);
   expect(x.herd_started_ms).toBe(700);
 });
+test("herding uses the compaction start even after hiding or missing its transition", () => {
+  const x = new a.Presentation();
+  x.update("herding", 2320, 1000);
+  expect(plain(x.writeHerding(22, 2320))).toBe(plain(a.writeHerd(22, 12)));
+  expect(x.herded(22, 2320)).toBe(false);
+  x.hide();
+  x.update("herding", 4190, 1000);
+  expect(plain(x.writeHerding(22, 4190))).toStartWith("Compacting…");
+  expect(x.herded(22, 4190)).toBe(true);
+  x.update("herding", 5000, 5000);
+  expect(plain(x.writeHerding(22, 5000))).toBe(plain(a.writeHerd(22, 0)));
+  expect(x.herded(22, 5000)).toBe(false);
+});
 const blend = (amount: number) => p.colors.bg.map((v, i) => Math.round(v + (p.colors.faint[i] - v) * amount)) as p.Rgb;
 test("a puff starts lit, fades as it rises, and seen sleepers are dim", () => {
   const lit = a.idle(22, new a.Sleep({ bright: true, puff_ms: 0 }));
