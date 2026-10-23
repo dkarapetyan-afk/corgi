@@ -273,7 +273,7 @@ class Smoke extends Runtime {
     this.assertEqual((await this.workspaces())[0].name, "Custom");
     await this.attach();
     this.assertNotIn("📌", (await this.frame_with("Custom")).join("\n"));
-    await this.input("\x02W");
+    await this.input("\x02Wr");
     await this.frame_with("Rename workspace");
     await this.input("\x03\r");
     await this.frame_with("one");

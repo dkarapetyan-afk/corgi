@@ -751,11 +751,11 @@ class ViewerScenarios extends Viewers {
         .trim(),
       "two",
     );
-    await b.input("\x02W");
+    await b.input("\x02Wr");
     await b.input("Custom\r");
     this.assertIn("Custom", (await a.poll()).data);
     this.assertIn("Custom", (await b.poll()).data);
-    await b.input("\x02W");
+    await b.input("\x02Wr");
     await b.input("\x03\r");
     this.assertEqual((await this.session()).workspaces[0].custom_name, "");
     this.assertEqual(
@@ -813,7 +813,7 @@ class ViewerScenarios extends Viewers {
     this.assertEqual((await b.poll()).pane, second);
     await a.request({ op: "workspace", workspace: before[0].id });
     this.assertEqual(a.state.pane, first);
-    await a.input("\x02W");
+    await a.input("\x02Wr");
     this.assertTrue(a.state.dialog);
     this.assertFalse((await b.poll()).dialog);
     await b.input("\x02");
