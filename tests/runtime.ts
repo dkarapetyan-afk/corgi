@@ -1,5 +1,6 @@
 /** Isolated real Corgi runtime used by the integration scenarios. */
 import { colors } from "../src/palette";
+import { adapter, type Provider } from "../src/providers";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXE, ROOT, TestCase, JsonSocket, run, sleep, tempDir, quote, writeExecutable } from "./support";
@@ -490,7 +491,8 @@ export class Runtime extends TestCase {
         if (!screen[y].slice(2, 27).startsWith(`${icon} `)) continue;
         const actual = screen[y + 1].slice(2, 5).trim();
         if (activity === "thinking" ? !"⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".includes(actual) : actual !== activity) continue;
-        if (screen[y].slice(5, 27).trim() === provider) return screen;
+        // The sidebar names an unnamed agent for its provider, as "Claude".
+        if (screen[y].slice(5, 27).trim() === adapter(provider as Provider).name) return screen;
       }
     }
     this.fail(`missing two-line agent entry ${provider}`);

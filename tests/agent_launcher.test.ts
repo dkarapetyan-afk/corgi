@@ -1084,7 +1084,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   async askUsage() {
     const directory = join(this.temp.name, "asked");
     mkdirSync(directory, { recursive: true });
-    await this.rpc({ op: "agent.track_usage", protocol: 2, workspace: this.ws, cwd: directory });
+    await this.rpc({ op: "agent.track_usage", protocol: 3, workspace: this.ws, cwd: directory });
   }
   async test_claude_control_usage_reuses_process_and_cache_without_credentials() {
     // A stale credential file must not override Claude's own auth status.

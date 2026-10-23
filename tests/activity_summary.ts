@@ -274,7 +274,7 @@ export class ClaudeSummaries extends Runtime {
   async test_displayed_thinking_refreshes_activity_after_abstention() {
     writeFileSync(this.control, JSON.stringify({ delay: 0, label: null }));
     await this.hook("SessionStart");
-    await sleep(0.6);
+    await this.advance(0.6);
     await this.hook("UserPromptSubmit");
     this.record({
       type: "assistant",

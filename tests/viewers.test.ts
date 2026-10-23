@@ -367,11 +367,11 @@ class ViewerScenarios extends Viewers {
     const a = await this.newViewer();
     await a.focus(first);
     await a.input("\x02]");
-    this.assertIn(`codex session ${headless}`, a.state.data);
+    this.assertIn(`Codex session ${headless}`, a.state.data);
     await a.input("\x02\t");
-    this.assertNotIn(`codex session ${headless}`, a.state.data);
+    this.assertNotIn(`Codex session ${headless}`, a.state.data);
     await a.input("\x02\t");
-    this.assertIn(`codex session ${headless}`, a.state.data);
+    this.assertIn(`Codex session ${headless}`, a.state.data);
     this.assertEqual((await a.input("\x02]")).pane, first);
     const empty = (
       await this.command("workspace.create", {

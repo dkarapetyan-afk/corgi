@@ -37,9 +37,9 @@ class SmokeInput extends Runtime {
       event: { hook_event_name: "SessionStart", session_id: "geometry" },
     });
     let frame = (await this.get_type("frame")).data;
-    while (!frame.includes("claude")) frame = (await this.get_type("frame")).data;
+    while (!frame.includes("Claude")) frame = (await this.get_type("frame")).data;
     this.assertIn("\x1b[2;30H\x1b[?25h", frame);
-    this.assertTrue(screen_text(frame).some(row => row.includes("claude")));
+    this.assertTrue(screen_text(frame).some(row => row.includes("Claude")));
     await this.input("\x1b[<4;29;2M\x1b[<36;31;2M\x1b[<4;31;2m");
     frame = (await this.get_type("frame")).data;
     while (!frame.startsWith("\x1b]52;c;")) frame = (await this.get_type("frame")).data;
@@ -165,7 +165,7 @@ class SmokeInput extends Runtime {
     this.assertEqual((await this.panes())[0].attention, "needs_input");
     await this.click_text(
       screen.map(r => r.slice(0, 27)),
-      "codex",
+      "Codex",
     );
     await this.until(async () => {
       const p = (await this.panes())[0];
@@ -426,7 +426,7 @@ class SmokeInput extends Runtime {
     const screen = await this.agent_frame("codex", "●", "🔧", PALETTE.warm);
     await this.click_text(
       screen.map(r => r.slice(0, 27)),
-      "codex",
+      "Codex",
     );
     await this.frame_with(`corgi headless events codex ${ident}`);
     const session = (await this.rpc({ op: "headless.list", protocol: 3 })).sessions[0];

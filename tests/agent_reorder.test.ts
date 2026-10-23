@@ -182,7 +182,7 @@ class AgentReorder extends Viewers {
     const handle = (await this.session()).headless_sessions.find((s: any) => s.session === headless).id;
     const order = [{ headless: handle }, { pane: a }, { pane: b }];
     this.assertEqual(await this.order(), order);
-    this.assertIn("codex", screen_text(viewer.state.data, 100, 30)[16]);
+    this.assertIn("Codex", screen_text(viewer.state.data, 100, 30)[16]);
     const added = await this.new();
     await this.mark_agent(added, "Agent-3");
     await viewer.poll();

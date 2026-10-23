@@ -119,7 +119,7 @@ class Children extends Titles {
     }
     await a.request({ op: "size", cols: 64, rows: 13 });
     rows = screen_text((await a.poll()).data, 64, 13);
-    const smallY = rows.findIndex((r, i) => i > 6 && r.includes("codex"));
+    const smallY = rows.findIndex((r, i) => i > 6 && r.includes("Codex"));
     await a.input(`\x1b[<35;6;${smallY + 1}M`);
     await a.advance(0.6);
     const small = (await a.poll()).data;
@@ -159,7 +159,7 @@ class Children extends Titles {
     this.assertEqual((await this.conversation(C)).usage.tokens.input, 30);
     const viewer = await Viewer.create(this, 120, 40);
     let rows = screen_text((await viewer.poll()).data, 120, 40);
-    const y = rows.findIndex((r, i) => i > 20 && r.includes("codex"));
+    const y = rows.findIndex((r, i) => i > 20 && r.includes("Codex"));
     await viewer.input(`\x1b[<35;6;${y + 1}M`);
     await viewer.advance(0.6);
     let frame = (await viewer.poll()).data;
@@ -225,7 +225,7 @@ class HeadlessUsage extends Runtime {
     const a = await Viewer.create(this, 100, 30),
       b = await Viewer.create(this, 100, 30);
     let rows = screen_text((await a.poll()).data, 100, 30);
-    const y = rows.findIndex((r, i) => i > 15 && r.includes("codex"));
+    const y = rows.findIndex((r, i) => i > 15 && r.includes("Codex"));
     let frame = "";
     for (const hoverY of [y, y + 1]) {
       await a.input(`\x1b[<35;6;${hoverY + 1}M`);
@@ -242,7 +242,7 @@ class HeadlessUsage extends Runtime {
     this.assertNotIn("Total", (await a.poll()).data);
     await a.request({ op: "size", cols: 64, rows: 13 });
     rows = screen_text((await a.poll()).data, 64, 13);
-    const smallY = rows.findIndex((r, i) => i > 6 && r.includes("codex"));
+    const smallY = rows.findIndex((r, i) => i > 6 && r.includes("Codex"));
     await a.input(`\x1b[<35;6;${smallY + 1}M`);
     await a.advance(0.6);
     this.assertIn("Total", (await a.poll()).data);
