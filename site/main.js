@@ -2295,7 +2295,7 @@ function session(init = {}) {
   }
   function termRows(id, t, w, focused) {
     const p = S.term[id];
-    return wrap(p.program ? p.rows : [...p.rows, [...prompt("~/moonlander"), [p.typed, A.text], [focused && Math.floor(t / 530) % 2 === 0 ? " " : "", CURSOR]]], w);
+    return wrap(p.program ? p.rows : [...p.rows, [...(p.ps ?? prompt("~/moonlander")), [p.typed, A.text], [focused && Math.floor(t / 530) % 2 === 0 ? " " : "", CURSOR]]], w);
   }
   // A quiet agent: what it was asked, then working on it, then done.
   function askedRows(id, t) {
@@ -3424,6 +3424,115 @@ document.addEventListener("keydown", (e) => {
   }, shown || still ? 0 : 450);
 });
 
+// ---- tab tricks: the pointer right-clicks Ghostty keybindings' tab and
+// picks Close from corgi's tab menu. The tab goes, its row in the sidebar
+// with it, and the tab before it, a shell, shows, as in corgi. Then
+// Ctrl-Shift-T shows, and its keys go down: both come back where they were,
+// the agent's old screen faded under its Restoring card until it draws. It
+// starts once the whole screen is in view and loops, from the top each time
+// it comes back. A phone shows the window alone, 56 columns.
+const TRICKS_TABS = { ...TABS, C: [...TABS.C.slice(0, 2), named("shell", pane("sh")), TABS.C[2]] };
+// When each step starts, in ms from the start.
+const TRICK = { toTab: 400, menu: 1300, toClose: 1700, closed: 2700, gone: 3200, keys: 3600, press: 4400, up: 5000, keysGone: 5800, loop: 10000 };
+const UNDO_KEYS = ["Ctrl", "Shift", "T"].map((key, i) => ({ key, down: TRICK.press + i * 120 }));
+const REOPENED_AT = UNDO_KEYS.at(-1).down + 60, RESTORED_AFTER = 2300, UNFADE = 400, TRICKS_PHONE = 56;
+// The agent's tab, where the pointer right-clicks it.
+const TRICK_TAB = { x: SW + TRICKS_TABS.C.slice(0, 3).reduce((x, root, i) => x + tabWidth(root, i), 0) + 4, y: 0 };
+const tricksBand = (() => {
+  const screenEl = document.getElementById("v-tricks"), keysEl = document.getElementById("tricks-keys"), cursorEl = screenEl?.querySelector(".cursor"), kbd = document.getElementById("undo-close");
+  if (!screenEl) return null;
+  const stage = screenEl.parentElement, caps = UNDO_KEYS.map((k) => el("kbd", "", k.key)), menu = new TabMenu({ tab: 0, anchor_x: TRICK_TAB.x });
+  keysEl.replaceChildren(...caps);
+  const init = { tabs: TRICKS_TABS, tab: { C: 3, M: 0 }, focus: { C: "C4", M: "M0" }, read: [4], term: { sh: { rows: [], typed: "", ps: prompt("~/dev/corgi") } } };
+  const B = { s: session(init), from: null, shown: false, last: 0, phone: null, c0: 0, cols: COLS, screen: null };
+  // An agent closed: its two rows go, and the separator above them.
+  function dropRow(g, i) {
+    const top = WATCH_ROWS[i], ground = g[ROWS - 1];
+    for (let c = 0; c < SW - 1; c++) {
+      g[top][c] = g[top + 1][c] = [" ", ground[c][1]];
+      const [ch, s] = g[top - 1][c], [fg, bg, bold] = STYLES[s];
+      g[top - 1][c] = [ch, style(fg, bg, bold)];
+    }
+  }
+  // Reopened `ms` ago: corgi's restoring card, centered on the pane as corgi
+  // centers it, over the faded old screen, its dig row from the flipbook;
+  // then the screen comes up as the agent draws.
+  function restoring(g, ms) {
+    const l = B.s.layout().find((p) => p.id === "C4"), k = 0.6 * (1 - Math.min(1, Math.max(0, (ms - RESTORED_AFTER) / UNFADE)));
+    if (k > 0) for (let r = l.y; r < l.y + l.h; r++) for (let c = l.x; c < l.x + l.w; c++) g[r][c] = [g[r][c][0], faded(g[r][c][1], k)];
+    if (ms >= RESTORED_AFTER) return;
+    const pre = B.phone ? "p" : "", card = F[`${pre}reopen`], dig = F[`${pre}reopen_dig`], end = dig[dig.length - 1][0];
+    const left = card[0].findIndex(([ch]) => ch === "╭"), right = card[0].findIndex(([ch]) => ch === "╮");
+    const row = card.findIndex((cells) => cells.every(([ch], c) => ch === end[c][0]));
+    const top = l.y + Math.floor((l.h - card.length) / 2);
+    card.forEach((cells, r) => {
+      const from = r === row ? dig[Math.min(Math.floor(ms / 80), dig.length - 1)][0] : cells;
+      for (let c = left; c <= right; c++) g[top + r][l.x + c] = from[c];
+    });
+  }
+  // The pointer: in the pane, then on the tab, then on the menu's Close,
+  // which lights once it's there. It presses for each click.
+  function pointer(ms) {
+    const b = menu.bounds(B.s.S.cols, ROWS), close = { x: b.x + 9, y: b.y + b.padding + 2 };
+    const at = ms < TRICK.toTab ? { x: TRICK_TAB.x + 8, y: 11 } : ms < TRICK.toClose ? TRICK_TAB : close;
+    Object.assign(cursorEl.style, { left: `calc(${at.x - B.c0 + 0.3} * var(--cell))`, top: `calc(${at.y + 0.35} * 1.42em)` });
+    const pressed = (click) => ms >= click - 150 && ms < click;
+    cursorEl.classList.toggle("on", ms < TRICK.gone && !still);
+    cursorEl.classList.toggle("jump", ms < TRICK.toTab);
+    cursorEl.classList.toggle("over", ms >= TRICK.toClose + 450 && ms < TRICK.closed);
+    cursorEl.classList.toggle("press", pressed(TRICK.menu) || pressed(TRICK.closed));
+    menu.highlighted = ms >= TRICK.toClose + 450 ? 2 : 0;
+  }
+  function draw(t) {
+    if (B.shown && B.from == null && !still) {
+      const box = stage.getBoundingClientRect();
+      if (box.top >= 0 && box.bottom <= innerHeight) B.from = t;
+    }
+    const ms = still ? REOPENED_AT + 1900 : B.from == null ? 0 : (t - B.from) % TRICK.loop, S = B.s.S, closed = ms >= TRICK.closed && ms < REOPENED_AT;
+    S.tabs = closed ? { ...TRICKS_TABS, C: TRICKS_TABS.C.slice(0, -1) } : TRICKS_TABS;
+    S.tab.C = closed ? 2 : 3;
+    S.focus.C = closed ? "sh" : "C4";
+    pointer(ms);
+    const g = B.s.compose(t);
+    if (closed) dropRow(g, 4);
+    else if (ms >= REOPENED_AT) restoring(g, ms - REOPENED_AT);
+    else if (ms >= TRICK.menu) {
+      const out = new Writer();
+      menu.draw(out, S.cols, ROWS);
+      drawOver(g, out, ROWS);
+    }
+    B.screen.paint(crop(g, 0, B.c0, ROWS, B.cols));
+    keysEl.classList.toggle("on", ms >= TRICK.keys && ms < TRICK.keysGone);
+    UNDO_KEYS.forEach((k, i) => caps[i].classList.toggle("down", ms >= k.down && ms < TRICK.up));
+    if (B.last < REOPENED_AT && ms >= REOPENED_AT && !still) {
+      kbd.classList.remove("flash");
+      void kbd.offsetWidth;
+      kbd.classList.add("flash");
+    }
+    B.last = ms;
+  }
+  // A phone's stylesheet gives the screen 56 columns: the window alone, as wide.
+  function fit() {
+    const phone = +getComputedStyle(screenEl).getPropertyValue("--cols") === TRICKS_PHONE;
+    if (phone === B.phone) return;
+    Object.assign(B, { phone, c0: phone ? SW : 0, cols: phone ? TRICKS_PHONE : COLS });
+    B.s.S.cols = B.c0 + B.cols;
+    screenEl.querySelectorAll(":scope > .r, :scope > .badge").forEach((node) => node.remove());
+    B.screen = new Screen(screenEl, B.cols, ROWS, { badge: !phone });
+    keysEl.style.left = `calc(${(SW + B.s.S.cols) / 2 - B.c0} * var(--cell))`;
+    draw(now());
+  }
+  fit();
+  new ResizeObserver(fit).observe(stage.closest(".band"));
+  new IntersectionObserver(([entry]) => {
+    B.shown = entry.isIntersecting;
+    if (B.shown) return;
+    Object.assign(B, { from: null, last: 0 });
+    draw(now());
+  }).observe(stage);
+  return { draw: (t) => B.shown && draw(t) };
+})();
+
 // Rows of runs at the bottom of a screen, a column in from its left edge.
 function bottomGrid(rows, cols, height) {
   const g = blank(height, cols), top = height - rows.length;
@@ -3587,6 +3696,7 @@ function run() {
   if (runningSeen) drawRunning(t);
   for (const f of inView) f.draw(t);
   cliBand?.draw(t);
+  tricksBand?.draw(t);
 }
 run();
 setInterval(run, 50);

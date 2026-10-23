@@ -299,6 +299,17 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
 .running-background { display: flex; justify-content: center; align-items: baseline; gap: 1ch; margin-top: 20px; color: var(--muted); font-size: 12px; }
 .running-replay { padding: 2px 1ch; border: 0; background: none; color: var(--faint); font: inherit; font-size: 12px; cursor: pointer; }
 .running-replay:hover { color: var(--strong); }
+/* Tab tricks: the keys pressed, as a screencast shows them, over the foot
+   of the window beside the sidebar. */
+.keycast { position: absolute; z-index: 2; bottom: 1.8em; display: flex; align-items: center; gap: .3em; padding: .4em .55em; border: 1px solid var(--line); border-radius: .45em; background: color-mix(in srgb, var(--bg) 94%, transparent); box-shadow: 0 .5em 1.5em rgb(0 0 0 / .5); font-size: 1.2em; white-space: nowrap; transform: translateX(-50%); opacity: 0; transition: opacity .25s; pointer-events: none; }
+.keycast.on { opacity: 1; }
+.keycast kbd { min-width: 1.5em; padding: .15em .45em; border: 1px solid var(--line); border-radius: .3em; background: var(--surface); box-shadow: 0 .14em 0 var(--line); font-size: 1em; line-height: 1.25; text-align: center; transition: transform .06s, box-shadow .06s, border-color .06s; }
+.keycast kbd.down { border-color: var(--accent); box-shadow: 0 0 0 var(--line); transform: translateY(.14em); }
+.keycast [hidden] { display: none; }
+/* The pointer glides between clicks and dips for each one. */
+#v-tricks .cursor { transform-origin: 0 0; transition: left .6s cubic-bezier(.3, .7, .2, 1), top .6s cubic-bezier(.3, .7, .2, 1), opacity .3s, transform .12s; }
+#v-tricks .cursor.jump { transition: opacity .3s; }
+#v-tricks .cursor.press { transform: scale(.82); }
 @container (width < 760px) {
   .running-desktop { padding: 12px; }
   .running-windows { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -307,7 +318,7 @@ h1 { margin: 0; font-size: 48px; line-height: 1.05; font-weight: 700; color: var
   .running-background { margin-top: 12px; font-size: min(11px, calc((100cqw - 28px) / 49 / .6)); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .running-window { transition: none; }
+  .running-window, .keycast, .keycast kbd, #v-tricks .cursor { transition: none; }
 }
 
 .band > h3 { margin: 32px 0 0; font-size: inherit; font-weight: 700; color: var(--strong); }

@@ -17,7 +17,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { drawRestoring, frame, ui as uiOf, type Ui } from "../src/render";
+import { drawRestoring, frame, ui as uiOf, type Restoring, type Ui } from "../src/render";
+import { adapter } from "../src/providers";
 import { Model, Rect, Selection, View as LayoutView } from "../src/layout";
 import * as sidebar from "../src/sidebar";
 import * as subagentTooltip from "../src/subagent_tooltip";
@@ -733,24 +734,17 @@ function pickerFrames() {
   ] as const) {
     const card = (n: number, t: number) => {
       const e = HISTORY[n],
-        id = (((n + 1) * 0x9e3779b1) >>> 0).toString(16).padStart(8, "0") + "-4e1b-4c8e-9d2a-51b0e6f3a7c" + n,
-        out = new Writer();
-      out.write("\x1b[0m\x1b[H\x1b[J");
-      drawRestoring(
-        out,
-        new Rect(0, 0, w, h),
+        id = (((n + 1) * 0x9e3779b1) >>> 0).toString(16).padStart(8, "0") + "-4e1b-4c8e-9d2a-51b0e6f3a7c" + n;
+      return restoringCard(
         {
           command: e.provider === "claude" ? `claude --resume ${id}` : `codex resume ${id}`,
           name: e.title,
           meta: `${e.provider} · ${models[e.provider]} · ~/dev/corgi`,
           dig: "restoring",
         },
+        w,
+        h,
         t,
-      );
-      const rows = grid(out.buffered(), w, h);
-      return rows.slice(
-        rows.findIndex(row => row.some(([ch]) => ch === "╭")),
-        rows.findIndex(row => row.some(([ch]) => ch === "╰")) + 1,
       );
     };
     const digs = new Set<number>();
@@ -760,11 +754,52 @@ function pickerFrames() {
       keep(`${pre}rest${n}`, last);
       if (digs.has(width)) return;
       digs.add(width);
-      const row = last.findIndex((cells, r) => cells.some(([ch], c) => ch !== card(n, 0)[r][c][0]));
-      const frames: Cell[][][] = [];
-      for (let t = 0; t <= 3600; t += 80) frames.push([card(n, t)[row]]);
-      keep(`${pre}dig${width}`, frames);
+      keep(
+        `${pre}dig${width}`,
+        digRows(t => card(n, t)),
+      );
     });
+  }
+}
+/** corgi's restoring card centered on a `w` by `h` pane, `t` ms into its
+ * dig: the pane's rows from the card's top border to its bottom. */
+function restoringCard(band: Restoring, w: number, h: number, t: number): Cell[][] {
+  const out = new Writer();
+  out.write("\x1b[0m\x1b[H\x1b[J");
+  drawRestoring(out, new Rect(0, 0, w, h), band, t);
+  const rows = grid(out.buffered(), w, h);
+  return rows.slice(
+    rows.findIndex(row => row.some(([ch]) => ch === "╭")),
+    rows.findIndex(row => row.some(([ch]) => ch === "╰")) + 1,
+  );
+}
+/** The card's one row that moves, every 80 ms of its dig. */
+function digRows(card: (t: number) => Cell[][]): Cell[][][] {
+  const first = card(0),
+    row = card(3600).findIndex((cells, r) => cells.some(([ch], c) => ch !== first[r][c][0]));
+  const frames: Cell[][][] = [];
+  for (let t = 0; t <= 3600; t += 80) frames.push([card(t)[row]]);
+  return frames;
+}
+
+// ---------------------------------------------------------------- tab tricks
+// Ghostty keybindings' restoring card as Ctrl-Shift-T reopens its tab, on
+// the pane the page gives it under the tab bar: 90 columns beside the
+// sidebar, or a phone's 56 alone.
+function reopenFrames() {
+  const band: Restoring = {
+    command: "codex resume 0199f3c2-7b4e-7d10-9c3a-5e2b8f61d4a7",
+    name: CORGI[4].name,
+    meta: `${adapter("codex").name} · GPT-6 Astra · ~/dev/corgi`,
+    dig: "restoring",
+  };
+  for (const [pre, w] of [
+    ["", 90],
+    ["p", 56],
+  ] as const) {
+    const card = (t: number) => restoringCard(band, w, ROWS - 1, t);
+    keep(`${pre}reopen`, card(3600));
+    keep(`${pre}reopen_dig`, digRows(card));
   }
 }
 
@@ -1390,6 +1425,7 @@ function widthRanges(): [number, number, number][] {
 if (dumpDir) mkdirSync(dumpDir, { recursive: true });
 watchFrames();
 pickerFrames();
+reopenFrames();
 overviewFrames();
 worktreeFrames();
 cleverFrame();
