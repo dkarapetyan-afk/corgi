@@ -1,0 +1,373 @@
+Third-party software
+====================
+
+Corgi includes the software below, each under its own license.
+
+
+MIT License
+-----------
+
+These are distributed under the MIT License, whose text follows the list.
+
+  Ghostty, terminal emulation: https://ghostty.org
+    Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+
+  Zig standard library: https://ziglang.org
+    Copyright (c) Zig contributors
+
+  uucode, Unicode properties: https://github.com/jacobsandlund/uucode
+    Copyright (c) 2026 Jacob Sandlund
+
+  Bjoern Hoehrmann's UTF-8 decoder: https://bjoern.hoehrmann.de/utf-8/decoder/dfa/
+    Copyright (c) 2008-2009 Bjoern Hoehrmann <bjoern@hoehrmann.de>
+
+  Wuffs, image pixels: https://github.com/google/wuffs
+    Copyright 2023 The Wuffs Authors
+
+  sentry-native, crash reports: https://github.com/getsentry/sentry-native
+    Copyright (c) 2019 Sentry (https://sentry.io) and individual contributors.
+    All rights reserved.
+
+  MPack: https://github.com/ludocode/mpack
+    Copyright (c) 2015-2018 Nicholas Fraser
+
+  pi-tui: https://github.com/earendil-works/pi
+    Copyright (c) 2025 Mario Zechner
+
+  get-east-asian-width: https://github.com/sindresorhus/get-east-asian-width
+    Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+  herdr-reviewr, which the review panel follows: https://github.com/persiyanov/herdr-reviewr
+    Copyright (c) 2026 Dmitry Persiyanov
+
+  Bun, the JavaScript runtime: https://bun.com
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Bun's runtime
+-------------
+
+Corgi's binary is a Bun standalone executable. Bun statically links
+JavaScriptCore and WebKit, which are under the GNU LGPL 2, and other
+libraries, listed with their licenses at
+https://github.com/oven-sh/bun/blob/main/LICENSE.md. The WebKit source Bun
+builds from is at https://github.com/oven-sh/WebKit.
+
+
+Public domain
+-------------
+
+  stb_sprintf, in Linux builds: https://github.com/nothings/stb
+
+
+X11 color names
+---------------
+
+Ghostty's named colors come from X.Org's rgb.txt:
+https://gitlab.freedesktop.org/xorg/app/rgb
+
+Copyright 1985, 1989, 1998  The Open Group
+
+Permission to use, copy, modify, distribute, and sell this software and its
+documentation for any purpose is hereby granted without fee, provided that
+the above copyright notice appear in all copies and that both that
+copyright notice and this permission notice appear in supporting
+documentation.
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE OPEN GROUP BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of The Open Group shall
+not be used in advertising or otherwise to promote the sale, use or
+other dealings in this Software without prior written authorization
+from The Open Group.
+
+Copyright (c) 1994, 2008, Oracle and/or its affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+Unicode data
+------------
+
+uucode's tables are generated from the Unicode Character Database.
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2025 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+
+Tab marks
+---------
+
+Untitled tabs show the mark of the program they run. The marks are
+trademarks of their owners, shown only to name the program. Most are Simple
+Icons' one-color tracings (CC0, https://simpleicons.org), drawn in their
+brand colors. These come under their own licenses, which also cover the
+versions in Corgi:
+
+  Ruby: Copyright (c) 2006, Yukihiro Matsumoto.
+    CC BY-SA 2.5, https://creativecommons.org/licenses/by-sa/2.5/
+  PHP: by Colin Viebrock.
+    CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/
+  R: (c) 2016 The R Foundation.
+    CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/
+  Zig: the Zig project, https://github.com/ziglang/logo
+    CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/
+  Perl: MetaCPAN, https://github.com/metacpan/perl-assets
+    CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+  Rust: owned by the Rust Foundation.
+    CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+  Kubernetes: The Kubernetes Authors.
+    CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+  Git: Git Logo by Jason Long.
+    CC BY 3.0, https://creativecommons.org/licenses/by/3.0/
+  Neovim: Neovim logo by Jason Long.
+    CC BY 3.0, https://creativecommons.org/licenses/by/3.0/
+
+tmux's mark, https://github.com/tmux/tmux/tree/master/logo:
+
+Copyright (c) 2015, Jason Long <jason@jasonlong.me>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Homebrew's mark, https://github.com/Homebrew/brew.sh:
+
+BSD 2-Clause License
+
+Copyright (c) 2009-present, Homebrew contributors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Hack's mark is the one in HHVM's documentation,
+https://github.com/hhvm/user-documentation:
+
+BSD License
+
+For HHVM and Hack User Documentation
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Meta nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific
+   prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Vim's mark is runtime/vimlogo.svg from Vim, https://github.com/vim/vim,
+unmodified:
+
+VIM LICENSE
+
+I)  There are no restrictions on distributing unmodified copies of Vim except
+    that they must include this license text.  You can also distribute
+    unmodified parts of Vim, likewise unrestricted except that they must
+    include this license text.  You are also allowed to include executables
+    that you made from the unmodified Vim sources, plus your own usage
+    examples and Vim scripts.
+
+II) It is allowed to distribute a modified (or extended) version of Vim,
+    including executables and/or source code, when the following four
+    conditions are met:
+    1) This license text must be included unmodified.
+    2) The modified Vim must be distributed in one of the following five ways:
+       a) If you make changes to Vim yourself, you must clearly describe in
+          the distribution how to contact you.  When the maintainer asks you
+          (in any way) for a copy of the modified Vim you distributed, you
+          must make your changes, including source code, available to the
+          maintainer without fee.  The maintainer reserves the right to
+          include your changes in the official version of Vim.  What the
+          maintainer will do with your changes and under what license they
+          will be distributed is negotiable.  If there has been no negotiation
+          then this license, or a later version, also applies to your changes.
+          The current maintainers are listed here: https://github.com/orgs/vim/people.
+          If this changes it will be announced in appropriate places (most likely
+          vim.sf.net, www.vim.org and/or comp.editors). When it is completely
+          impossible to contact the maintainer, the obligation to send him
+          your changes ceases.  Once the maintainer has confirmed that he has
+          received your changes they will not have to be sent again.
+       b) If you have received a modified Vim that was distributed as
+          mentioned under a) you are allowed to further distribute it
+          unmodified, as mentioned at I).  If you make additional changes the
+          text under a) applies to those changes.
+       c) Provide all the changes, including source code, with every copy of
+          the modified Vim you distribute.  This may be done in the form of a
+          context diff.  You can choose what license to use for new code you
+          add.  The changes and their license must not restrict others from
+          making their own changes to the official version of Vim.
+       d) When you have a modified Vim which includes changes as mentioned
+          under c), you can distribute it without the source code for the
+          changes if the following three conditions are met:
+          - The license that applies to the changes permits you to distribute
+            the changes to the Vim maintainer without fee or restriction, and
+            permits the Vim maintainer to include the changes in the official
+            version of Vim without fee or restriction.
+          - You keep the changes for at least three years after last
+            distributing the corresponding modified Vim.  When the maintainer
+            or someone who you distributed the modified Vim to asks you (in
+            any way) for the changes within this period, you must make them
+            available to him.
+          - You clearly describe in the distribution how to contact you.  This
+            contact information must remain valid for at least three years
+            after last distributing the corresponding modified Vim, or as long
+            as possible.
+       e) When the GNU General Public License (GPL) applies to the changes,
+          you can distribute the modified Vim under the GNU GPL version 2 or
+          any later version.
+    3) A message must be added, at least in the output of the ":version"
+       command and in the intro screen, such that the user of the modified Vim
+       is able to see that it was modified.  When distributing as mentioned
+       under 2)e) adding the message is only required for as far as this does
+       not conflict with the license used for the changes.
+    4) The contact information as required under 2)a) and 2)d) must not be
+       removed or changed, except that the person himself can make
+       corrections.
+
+III) If you distribute a modified version of Vim, you are encouraged to use
+     the Vim license for your changes and make them available to the
+     maintainer, including the source code.  The preferred way to do this is
+     by e-mail or by uploading the files to a server and e-mailing the URL.
+     If the number of changes is small (e.g., a modified Makefile) e-mailing a
+     context diff will do.  The e-mail address to be used is
+     <maintainer@vim.org>
+
+IV)  It is not allowed to remove this license from the distribution of the Vim
+     sources, parts of it or from a modified version.  You may use this
+     license for previous Vim releases instead of the license that they came
+     with, at your option.
+
+
+herdr notification sounds
+-------------------------
+
+done.mp3 and request.mp3 come unchanged from herdr
+(https://github.com/herdrdev/herdr) and are distributed under the Apache
+License 2.0:
+

@@ -216,6 +216,10 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "--version":
       process.stdout.write(`corgi ${config.releaseVersion} (${config.releaseCommit})\n`);
       return;
+    case "licenses":
+      if (args.length !== 1) throw Error("Usage");
+      process.stdout.write((await import("./licenses")).text);
+      return;
     case "serve": {
       const { Server } = await import("./server");
       await new Server(path, executable, buildId()).run();

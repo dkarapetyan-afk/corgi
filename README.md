@@ -88,3 +88,15 @@ feedback: [Max Bittker](https://x.com/MaxBittker),
 [Aaron Blakeman](https://github.com/ablakeman),
 [Kai Johnson](https://github.com/sirkaiserkai) and
 [Luke Alonso](https://github.com/lukealonso).
+
+## License
+
+Corgi is released under the [MIT License](LICENSE).
+
+The notification sounds in [`assets/sounds/`](assets/sounds/) come unchanged
+from herdr and stay under herdr's
+[Apache License 2.0](assets/sounds/LICENSE); see
+[their README](assets/sounds/README.md).
+
+`corgi licenses` prints these together with the licenses of the other
+software Corgi includes, listed in [`assets/licenses.txt`](assets/licenses.txt).

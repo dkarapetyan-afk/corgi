@@ -6,6 +6,10 @@ declare module "*.mp3" {
   const path: string;
   export default path;
 }
+declare module "*LICENSE" {
+  const text: string;
+  export default text;
+}
 declare module "*.schema" {
   const text: string;
   export default text;
