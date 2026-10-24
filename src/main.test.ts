@@ -147,9 +147,17 @@ test("every source file is in the test root", () => {
   const config = JSON.parse(readFileSync(resolve(import.meta.dir, "../tsconfig.json"), "utf8"));
   expect(config.include).toContain("src/**/*.ts");
   const parser = new Bun.Transpiler({ loader: "ts" });
-  for (const file of new Bun.Glob("**/*.ts").scanSync(import.meta.dir)) {
-    if (file.endsWith(".d.ts")) continue;
-    expect(() => parser.transformSync(readFileSync(resolve(import.meta.dir, file), "utf8"))).not.toThrow();
+  const cwd = process.cwd();
+  try {
+    for (const file of new Bun.Glob("**/*.ts").scanSync(import.meta.dir)) {
+      if (file.endsWith(".d.ts")) continue;
+      const path = resolve(import.meta.dir, file);
+      // The transpiler finds a file's macros from the working directory.
+      process.chdir(dirname(path));
+      expect(() => parser.transformSync(readFileSync(path, "utf8"))).not.toThrow();
+    }
+  } finally {
+    process.chdir(cwd);
   }
 });
 test("the daemon and the viewer never import each other", () => {

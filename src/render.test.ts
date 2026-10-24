@@ -18,7 +18,9 @@ import {
   commandLines,
   drawPrefixBar,
   untitledTab,
+  tabBrand,
   type Pointer,
+  type Ui,
   type Restoring,
 } from "./render";
 import { Model, Selection, View, Rect, type Axis } from "./layout";
@@ -28,6 +30,7 @@ import * as resourceTooltip from "./resource_tooltip";
 import * as corgiBadge from "./corgi_badge";
 import { TabMenu } from "./commands";
 import { agent, type Pane } from "./mirror";
+import { Icons } from "./tab_icons";
 import { Menu as LauncherMenu } from "./agent_launcher";
 import { Writer } from "./text";
 import type { Prefix } from "./keymap";
@@ -208,6 +211,51 @@ test("tabs show each number in a badge before the title, the active one's in the
   expect(cut).toContain(`${fade(65)}n`);
   expect(cut).toContain(`${fade(35)}t`);
   expect(out).not.toContain(fade(35));
+});
+
+test("a tab wears its program's mark after its number, once the host holds it, and not under a menu", () => {
+  const m = new Model();
+  const selection = new Selection();
+  const view = new View(m, selection);
+  m.newTab("");
+  m.newTab("");
+  selection.reconcile(m);
+  const terminal = { updateRender() {}, hyperlinks: () => [], cursor: () => null, rows: () => "" };
+  const pane = (id: number, command: string, brand: Pane["brand"]) =>
+    ({ id, label: "", cwd: "/w/corgi", command, brand, agent: agent(), restoring: "", terminal }) as unknown as Pane;
+  const panes = [pane(m.firstPane(m.tabs[0].root), "node", "node"), pane(m.firstPane(m.tabs[1].root), "htop", null)];
+  const icons = new Icons();
+  const shown = (fields: Partial<Ui> = {}) =>
+    frame(view, panes, 60, 10, ui({ sidebar_open: false, message: "", copy_mode: false, ...fields }));
+  const row = (out: string) => out.slice(0, out.indexOf("\x1b[2;")).replace(/\x1b\[[?0-9;:]*[a-zA-Z]/g, "");
+  // Without Kitty images or the cell's size, nothing makes room for it.
+  expect(row(shown())).toContain("▐1▌node     ▐2▌htop     ▐+▌");
+  const graphics = { tab_icons: icons, cell_pixels: { width: 9, height: 18 } };
+  const first = shown(graphics);
+  expect(row(first)).toContain("▐1▌  node   ▐2▌htop     ▐+▌");
+  expect(first).not.toContain("\x1b_Ga=p");
+  expect(icons.end()).toContain("i=730300,");
+  icons.begin();
+  expect(shown(graphics)).toContain("\x1b7\x1b[1;4H\x1b_Ga=p,i=730300,p=1,");
+  icons.begin();
+  const menu = shown({ ...graphics, tab_menu: new TabMenu({ tab: m.tabs[0].id, anchor_x: 0 }) });
+  expect(menu).not.toContain("\x1b_Ga=p");
+  icons.begin();
+  expect(
+    shown({
+      ...graphics,
+      agent_launcher: new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true }),
+    }),
+  ).not.toContain("\x1b_Ga=p");
+});
+
+test("an agent's tab wears its provider's mark", () => {
+  const pane = (fields: Partial<Pane>) =>
+    ({ label: "", cwd: "/w/corgi", command: "", brand: null, agent: agent(), ...fields }) as Pane;
+  expect(tabBrand(pane({ agent: agent({ provider: "codex" }) }))).toBe("openai");
+  expect(tabBrand(pane({ agent: agent({ provider: "claude" }), brand: "node" }))).toBe("claude");
+  expect(tabBrand(pane({ agent: agent({ provider: "pi" }), brand: "node" }))).toBe("node");
+  expect(tabBrand(pane({ brand: "bun" }))).toBe("bun");
 });
 
 test("an untitled tab shows its pane's name, its agent's, its program or its folder", () => {

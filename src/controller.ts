@@ -64,6 +64,7 @@ import { installedShells } from "./launch/command";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
 import * as paneImages from "./pane_images";
+import * as tabIcons from "./tab_icons";
 import * as resourceTooltip from "./resource_tooltip";
 import * as worktreeTooltip from "./worktree_tooltip";
 import * as worktreeAgents from "./worktree_agents";
@@ -314,6 +315,7 @@ export class Controller {
     this.dirty = true;
     this.wake();
   });
+  tab_icons = new tabIcons.Icons();
   git_hover: number | null = null;
   worktree_card = new worktreeTooltip.State();
   /** The worktree the overview selects once the removed one is gone. */
@@ -5924,9 +5926,9 @@ export class Controller {
     return this.link_tooltip.ready(target, milliTimestamp());
   }
   frame(): string {
-    const hide = this.images.begin();
+    const hide = this.images.begin() + this.tab_icons.begin();
     const frame = this.renderFrame();
-    const writes = this.images.end();
+    const writes = this.images.end() + this.tab_icons.end();
     if (writes) this.queueEffect({ write_terminal: writes });
     return hide ? "\x1b[?2026h" + hide + frame + "\x1b[?2026l" : frame;
   }
@@ -6045,6 +6047,7 @@ export class Controller {
         corgi_badge: this.corgi_badge,
         supports_kitty_graphics: this.supports_kitty_graphics,
         images: this.images,
+        tab_icons: this.supports_kitty_graphics ? this.tab_icons : null,
         cell_pixels: this.cell_pixels,
         dragged_workspace:
           this.workspace_drag && this.workspace_drag.preview !== null

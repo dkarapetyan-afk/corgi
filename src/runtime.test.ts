@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Runtime, Pane, Launch, Ghost, ending } from "./runtime";
+import { program } from "./process_name";
 import { Terminal } from "./pane/terminal";
 import { n, ptr, waitpid } from "./native_bridge";
 import { Text } from "./providers";
@@ -125,23 +126,23 @@ test("a program in front of the shell shows on a second look, and the prompt at 
   const { r, w } = setup();
   try {
     const p = add(r, w);
-    const front = (pgid: number, command: string | null) => ({ pgid, command, job: null });
+    const front = (pgid: number, name: string) => ({ pgid, program: program([name]), job: null });
     p.detected = { output: p.terminal.surface_revision, at: 10000 };
     // A quick command seen once never shows, and a forked shell's first look is the shell's.
     expect(p.observeFront(front(7, "ls"))).toBe(false);
     expect(p.detectionDue(10250)).toBe(true);
-    expect(p.observeFront(front(1, ""))).toBe(false);
+    expect(p.observeFront(front(1, "-zsh"))).toBe(false);
     expect(p.detectionDue(10250)).toBe(false);
-    expect(p.observeFront(front(8, ""))).toBe(false);
+    expect(p.observeFront(front(8, "-zsh"))).toBe(false);
     expect(p.observeFront(front(8, "vim"))).toBe(false);
     expect(p.observeFront(front(8, "vim"))).toBe(true);
-    expect(p.command).toBe("vim");
+    expect([p.command, p.brand]).toEqual(["vim", "vim"]);
     expect(p.detectionDue(10250)).toBe(false);
     // Another program waits for its own second look; the prompt or nothing in front clears it.
     expect(p.observeFront(front(9, "htop"))).toBe(false);
     expect(p.command).toBe("vim");
-    expect(p.observeFront(front(1, ""))).toBe(true);
-    expect(p.command).toBe("");
+    expect(p.observeFront(front(1, "-zsh"))).toBe(true);
+    expect([p.command, p.brand]).toEqual(["", null]);
     p.observeFront(front(9, "htop"));
     p.observeFront(front(9, "htop"));
     expect(p.observeFront(null)).toBe(true);

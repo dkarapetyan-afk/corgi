@@ -11,6 +11,7 @@ import * as agentOptions from "./agent_options";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type ActorId } from "./conversations";
 import { Tracker, locate, process_buffer, type Foreground } from "./detection";
+import type { Brand } from "./process_name";
 import { ResumeHint } from "./resume_hint";
 import { waitpid, tcgetpgrp, systemCall } from "./native_bridge";
 import * as keys from "./keys";
@@ -203,9 +204,10 @@ export class Pane {
   /** The account the agent a saved command started reads from its own
    * environment, which can say what the command's text can't. */
   running_account: string | null = null;
-  /** The program in front of its shell, "" at a prompt. It shows on a second
-   * look, so a quick command doesn't flash. */
+  /** The program in front of its shell, "" at a prompt, and its brand. It
+   * shows on a second look, so a quick command doesn't flash. */
   command = "";
+  brand: Brand | null = null;
   /** The foreground group and program the last look saw. */
   private seen_front = "";
   private confirming = false;
@@ -237,12 +239,14 @@ export class Pane {
   }
   /** Follows its foreground group; true when `command` changed. */
   observeFront(front: Foreground | null) {
-    const command = front?.command ?? "",
+    const command = front?.program?.name ?? "",
+      brand = (command && front?.program?.brand) || null,
       seen = front && command ? `${front.pgid} ${command}` : "";
     this.confirming = seen !== "" && seen !== this.seen_front;
     this.seen_front = seen;
-    if (this.confirming || command === this.command) return false;
+    if (this.confirming || (command === this.command && brand === this.brand)) return false;
     this.command = command;
+    this.brand = brand;
     return true;
   }
   detectionDue(now: number) {

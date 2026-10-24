@@ -137,30 +137,30 @@ export class Tracker implements PaneMemory {
   }
 }
 
-/** A terminal's foreground group: the agent it runs, if one does, and what
- * names the program in front. */
-export type Foreground = { pgid: number; command: string | null; job: Job | null };
+/** A terminal's foreground group: the agent it runs, if one does, and the
+ * program in front. */
+export type Foreground = { pgid: number; program: processName.Program | null; job: Job | null };
 /** Reads one member of `front`'s group: the first readable one names it,
  * and the first agent is its job. True once it has its job. */
 function inspect(front: Foreground, pid: number): boolean {
   const info = processArgs(pid);
-  front.command ??= named(pid, info.argv);
+  front.program ??= named(pid, info.argv);
   const provider = info.complete ? identify(info.argv) : null;
   if (provider) front.job = { pid, provider };
   return provider !== null;
 }
-/** A process's name from its argv, or from its executable where macOS hides
- * another user's argv, as sudo's; null once it's gone. */
-function named(pid: number, argv: string[]): string | null {
-  if (argv.length) return processName.name(argv);
+/** A process's program from its argv, or from its executable where macOS
+ * hides another user's argv, as sudo's; null once it's gone. */
+function named(pid: number, argv: string[]): processName.Program | null {
+  if (argv.length) return processName.program(argv);
   const exe = processPath(pid);
-  return exe === null ? null : processName.name([exe]);
+  return exe === null ? null : processName.program([exe]);
 }
 
 export function foreground(fd: number): Foreground | null {
   const pgid = n.probe_foreground(fd);
   if (pgid <= 0) return null;
-  const front: Foreground = { pgid, command: null, job: null };
+  const front: Foreground = { pgid, program: null, job: null };
   if (inspect(front, pgid)) return front;
   // The group's other members, found with getpgid rather than by reading
   // every process's /proc stat, as detection.zig does.
@@ -201,7 +201,7 @@ export function foregrounds(terminals: { fd: number; pid: number }[]) {
     }
     let front = fronts.get(pgid);
     if (!front) {
-      front = { pgid, command: null, job: null };
+      front = { pgid, program: null, job: null };
       fronts.set(pgid, front);
       if (!inspect(front, pgid)) groups.set(pgid, []);
     }

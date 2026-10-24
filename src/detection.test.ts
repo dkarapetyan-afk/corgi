@@ -255,11 +255,11 @@ test("a terminal's foreground is named for the program in front", async () => {
     await terminal.spawn("/tmp", "", 1, process.execPath, "exec sleep 60");
     const deadline = Date.now() + 3000;
     let front = foreground(terminal.fd);
-    while (Date.now() < deadline && front?.command !== "sleep") {
+    while (Date.now() < deadline && front?.program?.name !== "sleep") {
       await Bun.sleep(10);
       front = foreground(terminal.fd);
     }
-    expect(front).toEqual({ pgid: terminal.pid, command: "sleep", job: null });
+    expect(front).toEqual({ pgid: terminal.pid, program: { name: "sleep", brand: null }, job: null });
   } finally {
     terminal.destroy();
     closeReadiness();

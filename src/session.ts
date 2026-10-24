@@ -608,6 +608,7 @@ function build(r: Runtime, viewer: boolean) {
       name: p.label,
       cwd: p.cwd,
       command: p.command,
+      brand: p.brand,
       pid: p.terminal.pid,
       cols: p.terminal.vt.cols,
       rows: p.terminal.vt.rows,

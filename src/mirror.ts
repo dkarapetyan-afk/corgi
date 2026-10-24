@@ -18,6 +18,7 @@ import { Provider, byProvider, adapter } from "./providers";
 import { type Conversation, conversation, usageView } from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as errors from "./errors";
+import * as processName from "./process_name";
 import {
   snapshot as worktreeSnapshot,
   removal as worktreeRemoval,
@@ -275,8 +276,9 @@ export interface Pane {
   id: number;
   label: string;
   cwd: string;
-  /** The program in front of its shell, "" at a prompt. */
+  /** The program in front of its shell, "" at a prompt, and its brand. */
   command: string;
+  brand: processName.Brand | null;
   agent: Agent;
   /** The provider account its agent runs in, "" for the default. */
   account: string;
@@ -462,6 +464,7 @@ export class Runtime {
           label: info.name ?? "",
           cwd: info.cwd ?? "",
           command: typeof info.command === "string" ? info.command : "",
+          brand: processName.brand(info.brand),
           agent: agent(info.agent),
           account: typeof info.account === "string" ? info.account : "",
           terminal: term,

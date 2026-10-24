@@ -147,7 +147,7 @@ function fixture() {
 test("the runtime wire matches protocol.version", () => {
   expect(protocol.version).toBe(3);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "c61e638685bd9c665965dd118dc186f91654604e4abd77b70478390281ded335",
+    "b9fe73a61573944634501f96b9508d7393de834600f2be2af8664e2aa6f92dad",
   );
   const { server, client, dispose } = fixture();
   try {

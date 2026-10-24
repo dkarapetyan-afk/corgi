@@ -27,6 +27,8 @@ import * as resourceTooltip from "./resource_tooltip";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
 import type { Images } from "./pane_images";
+import * as tabIcons from "./tab_icons";
+import { brandOf, type Brand } from "./process_name";
 import * as worktreeTooltip from "./worktree_tooltip";
 import { milliTimestamp } from "./clock";
 import * as subagentTooltip from "./subagent_tooltip";
@@ -167,6 +169,8 @@ export interface Ui {
   corgi_badge: corgiBadge.Mode;
   supports_kitty_graphics: boolean;
   images: Images | null;
+  /** The brand marks the host holds for untitled tabs, where it shows Kitty images. */
+  tab_icons: tabIcons.Icons | null;
   /** The host's cell in pixels, when it reports it. */
   cell_pixels: Cell | null;
   dragged_workspace: Preview | null;
@@ -235,6 +239,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     corgi_badge: "none",
     supports_kitty_graphics: false,
     images: null,
+    tab_icons: null,
     cell_pixels: null,
     dragged_workspace: null,
     dragged_agent: null,
@@ -268,6 +273,13 @@ export function untitledTab(p: Pane): string {
   const folder = directoryLabel(p.cwd, process.env.HOME ?? null);
   return cleanLabel(folder === "/" ? folder : folder.slice(folder.lastIndexOf("/") + 1));
 }
+/** The brand whose mark an untitled tab wears for its focused pane: its
+ * agent's, or the program's in front of its shell. */
+export function tabBrand(p: Pane): Brand | null {
+  return (p.agent.provider !== null && brandOf(p.agent.provider)) || p.brand;
+}
+/** A brand mark a tab shows at column `x` of the top row. */
+type TabMark = { brand: Brand; x: number };
 /** A tab is a half cell of bar, its number, the badge's half cell, then its
  * label and a space. Untitled tabs keep one width, so they don't move when an
  * agent renames itself; a renamed tab fits its whole title. */
@@ -519,6 +531,8 @@ function drawTabs(
   left: number,
   space: number,
   thumb: TabThumb | null,
+  /** Collects the tabs' brand marks; null shows none and leaves them no room. */
+  marks: TabMark[] | null = null,
 ): void {
   const model = view.model;
   w.write(`\x1b[1;${left + 1}H`);
@@ -534,16 +548,20 @@ function drawTabs(
     const p = tab.title.length === 0 ? panes.find(p => p.id === focus) : undefined;
     // The label is cut to leave a space at its end, unless the bar already cuts the tab.
     const name = p ? untitledTab(p) : tab.title;
-    let label = byteSlice(name, sat(len, number.length + (len < tabWidth(view, i) ? 2 : 3)));
+    const brand = p && marks ? tabBrand(p) : null,
+      mark = brand ? tabIcons.cols : 0;
+    let label = byteSlice(name, sat(len, number.length + mark + (len < tabWidth(view, i) ? 2 : 3)));
     const cut = label.length < name.length;
     if (cut) label = label.trimEnd();
     const text = columns(label);
-    const cells = ["▐", ...number, "▌", ...text].slice(0, len);
+    // The mark goes over blank cells after the number's badge.
+    if (brand && len >= number.length + 2 + mark) marks!.push({ brand, x: left + x + number.length + 2 });
+    const cells = ["▐", ...number, "▌", ..." ".repeat(mark), ...text].slice(0, len);
     while (cells.length < len) cells.push(" ");
     const [open, badge, end, plain, faded] = active
       ? [tab_open_active, tab_badge_active, tab_badge_end_active, tab_active, tab_fade_active]
       : [tab_open, tab_badge, tab_badge_end, tab_inactive, tab_fade];
-    const label_end = number.length + 2 + text.length;
+    const label_end = number.length + 2 + mark + text.length;
     const styles = cells.map((_, c) =>
       c === 0
         ? open
@@ -595,7 +613,9 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   // The scrollbar shows while the pointer is where the wheel scrolls the tabs.
   const over_tabs = u.pointer !== null && u.pointer.y === 0 && u.pointer.x >= side.tabX() && noOverlay(u);
   const thumb = over_tabs ? tabThumb(view, width - side.tabX() - side.panel) : null;
-  drawTabs(w, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb);
+  // Marks take room in their tabs only where the host can show them.
+  const marks: TabMark[] | null = u.tab_icons && u.cell_pixels ? [] : null;
+  drawTabs(w, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb, marks);
   if (u.tab_drop_x !== null)
     w.write(`\x1b[1;${side.tabX() + u.tab_drop_x + 1}H\x1b[1m` + palette.fg("strong") + "│\x1b[0m");
   if (model.count === 0) {
@@ -938,6 +958,11 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
       w.write(images.draw(pane.terminal.images, rect, cell_pixels, read, hidden ? [rect] : covered));
     }
   }
+  // Like pane images, a mark goes under nothing drawn over it.
+  if (marks && u.tab_icons && u.cell_pixels && !u.agent_launcher && !u.corgi_setup && !u.signin_draw && !u.signin_exit)
+    for (const { brand, x } of marks)
+      if (!covered.some(box => box.y === 0 && box.h > 0 && box.x < x + tabIcons.cols && box.x + box.w > x))
+        w.write(u.tab_icons.place(brand, x, 0, u.cell_pixels));
   if (dragging) w.write("\x1b[?25l");
   // Include the shape in each complete frame so reconnects and overlay changes
   // cannot leave the host pointer stuck on a previously hovered link.
